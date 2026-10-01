@@ -1,0 +1,246 @@
+using System.Text.Json;
+using ScheduleApp.Models;
+using ScheduleApp.Services;
+
+namespace ScheduleApp.UI;
+
+/// <summary>Cài đặt chung: chạy flow, ngày nghỉ, kênh thông báo (Telegram / email / webhook).</summary>
+internal sealed class SettingsForm : BaseForm
+{
+    private readonly AppSettings _s;
+
+    // Chung
+    private readonly CheckBox _chkScreenshot = new() { Text = "Chụp màn hình khi bước bị lỗi (lưu trong thư mục log, gửi kèm thông báo)", AutoSize = true };
+    private readonly NumericUpDown _numKeep = new() { Minimum = 0, Maximum = 3650, Width = 70 };
+    private readonly CheckBox _chkSafe = new() { Text = "Chế độ an toàn: tạm dừng flow và hỏi khi tôi dùng chuột/bàn phím trong lúc flow chạy", AutoSize = true };
+    private readonly CheckBox _chkAwake = new() { Text = "Không cho máy ngủ / tắt màn hình khi flow đang chạy", AutoSize = true };
+    private readonly NumericUpDown _numPort = new() { Minimum = 1024, Maximum = 65535, Width = 90 };
+
+    // Ngày nghỉ
+    private readonly TextBox _txtHolidays = new() { Multiline = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, AcceptsReturn = true };
+
+    // Thông báo
+    private readonly CheckBox _chkTelegram = new() { Text = "Gửi qua Telegram", AutoSize = true };
+    private readonly TextBox _txtTgToken = new() { Width = 380, UseSystemPasswordChar = true };
+    private readonly TextBox _txtTgChat = new() { Width = 200 };
+    private readonly CheckBox _chkTgPhoto = new() { Text = "Kèm ảnh chụp màn hình lỗi", AutoSize = true };
+    private readonly CheckBox _chkEmail = new() { Text = "Gửi email (SMTP)", AutoSize = true };
+    private readonly TextBox _txtHost = new() { Width = 200 };
+    private readonly NumericUpDown _numSmtpPort = new() { Minimum = 1, Maximum = 65535, Width = 70 };
+    private readonly CheckBox _chkSsl = new() { Text = "SSL/TLS", AutoSize = true };
+    private readonly TextBox _txtUser = new() { Width = 220 };
+    private readonly TextBox _txtPass = new() { Width = 180, UseSystemPasswordChar = true };
+    private readonly TextBox _txtFrom = new() { Width = 220 };
+    private readonly TextBox _txtTo = new() { Width = 380 };
+    private readonly CheckBox _chkAttach = new() { Text = "Đính kèm ảnh chụp màn hình lỗi", AutoSize = true };
+    private readonly CheckBox _chkWebhook = new() { Text = "Gửi tới webhook (Teams / Slack / Discord / Google Chat)", AutoSize = true };
+    private readonly TextBox _txtWebhook = new() { Width = 520 };
+
+    private const string Unchanged = "••••••••";
+
+    public SettingsForm()
+    {
+        // Sửa trên bản sao — chỉ ghi lại khi bấm Lưu.
+        _s = JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(SettingsStore.Current, JsonDefaults.Options), JsonDefaults.Options)!;
+
+        SuspendLayout();
+        Text = "Cài đặt — ScheduleApp";
+        Size = new Size(760, 600);
+        MinimumSize = new Size(700, 520);
+        StartPosition = FormStartPosition.CenterParent;
+        ShowInTaskbar = false;
+        MinimizeBox = false;
+        Padding = new Padding(10);
+
+        var tabs = new TabControl { Dock = DockStyle.Fill };
+        tabs.TabPages.Add(GeneralTab());
+        tabs.TabPages.Add(HolidaysTab());
+        tabs.TabPages.Add(NotifyTab());
+
+        var ok = new Button { Text = "Lưu", AutoSize = true, MinimumSize = new Size(90, 0) };
+        var cancel = new Button { Text = "Hủy", AutoSize = true, MinimumSize = new Size(90, 0), DialogResult = DialogResult.Cancel };
+        ok.Click += (_, _) => Save();
+        CancelButton = cancel;
+        var buttons = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Bottom, Padding = new Padding(0, 8, 0, 0) };
+        buttons.Controls.AddRange([cancel, ok]);
+
+        Controls.Add(tabs);
+        Controls.Add(buttons);
+        ResumeLayout(true);
+        LoadValues();
+    }
+
+    private static Label Caption(string text) => new() { Text = text, AutoSize = true, Margin = new Padding(3, 7, 6, 3) };
+
+    private static FlowLayoutPanel Line(params Control[] controls)
+    {
+        var p = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 2, 0, 2) };
+        p.Controls.AddRange(controls);
+        return p;
+    }
+
+    private static Label Hint(string text) =>
+        new() { Text = text, AutoSize = true, MaximumSize = new Size(680, 0), ForeColor = UiText.Muted, Margin = new Padding(22, 0, 3, 8) };
+
+    private TabPage GeneralTab()
+    {
+        var page = new TabPage("Chung") { Padding = new Padding(10), UseVisualStyleBackColor = true, AutoScroll = true };
+        var col = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, Dock = DockStyle.Fill, AutoScroll = true };
+        col.Controls.Add(_chkScreenshot);
+        col.Controls.Add(Line(Caption("   Tự xóa ảnh lỗi cũ hơn (ngày, 0 = giữ mãi):"), _numKeep));
+        col.Controls.Add(_chkSafe);
+        col.Controls.Add(Hint("Khi bật, nếu bạn click / gõ phím vào ứng dụng khác lúc flow đang chạy, flow tạm dừng trước bước kế tiếp và hỏi chạy tiếp hay dừng. " +
+                              "Tránh việc flow gõ nhầm vào chỗ bạn đang làm."));
+        col.Controls.Add(_chkAwake);
+        col.Controls.Add(Line(Caption("Cổng điều khiển trình duyệt (remote debugging):"), _numPort));
+        col.Controls.Add(Hint("Dùng cho các bước \"Trình duyệt\". Đổi nếu cổng 9222 đã bị phần mềm khác dùng."));
+        col.Controls.Add(Caption("Dòng lệnh:"));
+        col.Controls.Add(Hint("ScheduleApp.exe --run \"Tên công việc\"   ·   ScheduleApp.exe --stop   ·   ScheduleApp.exe --minimized\n" +
+                              "Chuột phải một công việc → \"Tạo shortcut trên Desktop\" để chạy bằng 1 cú nhấp đúp."));
+        page.Controls.Add(col);
+        return page;
+    }
+
+    private TabPage HolidaysTab()
+    {
+        var page = new TabPage("Ngày nghỉ") { Padding = new Padding(10), UseVisualStyleBackColor = true };
+        var hint = new Label
+        {
+            Text = "Mỗi dòng một ngày. \"dd/MM\" = lặp lại hằng năm (vd 30/04), \"dd/MM/yyyy\" = một ngày cụ thể (Tết âm lịch, Giỗ Tổ, ngày nghỉ bù…).\n" +
+                   "Công việc bật \"Bỏ qua ngày nghỉ lễ\" sẽ không chạy vào các ngày này; lịch \"Ngày làm việc đầu/cuối tháng\" cũng tránh các ngày này.",
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            MaximumSize = new Size(700, 0),
+            ForeColor = UiText.Muted,
+            Padding = new Padding(0, 0, 0, 6)
+        };
+        page.Controls.Add(_txtHolidays);
+        page.Controls.Add(hint);
+        return page;
+    }
+
+    private TabPage NotifyTab()
+    {
+        var page = new TabPage("Thông báo") { Padding = new Padding(10), UseVisualStyleBackColor = true };
+        var col = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, Dock = DockStyle.Fill, AutoScroll = true };
+
+        var testTg = new Button { Text = "Gửi thử", AutoSize = true };
+        testTg.Click += async (_, _) => await TestAsync("Telegram", () => NotificationService.SendTelegramAsync(ReadTelegram(), "🔔 ScheduleApp", "Tin nhắn thử từ " + Environment.MachineName, null));
+        col.Controls.Add(_chkTelegram);
+        col.Controls.Add(Line(Caption("   Bot token:"), _txtTgToken));
+        col.Controls.Add(Line(Caption("   Chat id:"), _txtTgChat, _chkTgPhoto, testTg));
+        col.Controls.Add(Hint("Tạo bot với @BotFather để lấy token; nhắn cho bot một tin rồi mở https://api.telegram.org/bot<token>/getUpdates để lấy chat id."));
+
+        var testMail = new Button { Text = "Gửi thử", AutoSize = true };
+        testMail.Click += async (_, _) => await TestAsync("Email", () => NotificationService.SendEmailAsync(ReadEmail(), "Thư thử", "Thư thử từ ScheduleApp trên " + Environment.MachineName, null));
+        col.Controls.Add(_chkEmail);
+        col.Controls.Add(Line(Caption("   Máy chủ SMTP:"), _txtHost, Caption("Cổng:"), _numSmtpPort, _chkSsl));
+        col.Controls.Add(Line(Caption("   Tài khoản:"), _txtUser, Caption("Mật khẩu:"), _txtPass));
+        col.Controls.Add(Line(Caption("   Người gửi:"), _txtFrom, _chkAttach));
+        col.Controls.Add(Line(Caption("   Gửi tới:"), _txtTo, testMail));
+        col.Controls.Add(Hint("Gmail: smtp.gmail.com, cổng 587, SSL — dùng \"App password\" thay cho mật khẩu thường. Nhiều người nhận cách nhau dấu phẩy."));
+
+        var testHook = new Button { Text = "Gửi thử", AutoSize = true };
+        testHook.Click += async (_, _) => await TestAsync("Webhook", () => NotificationService.SendWebhookAsync(new WebhookSettings { Url = _txtWebhook.Text }, "🔔 ScheduleApp", "Tin nhắn thử"));
+        col.Controls.Add(_chkWebhook);
+        col.Controls.Add(Line(Caption("   URL:"), _txtWebhook, testHook));
+        col.Controls.Add(Hint("Mật khẩu và token được mã hóa bằng Windows DPAPI theo tài khoản của bạn. Chọn khi nào gửi trong tab \"Lỗi & thông báo\" của từng công việc."));
+        page.Controls.Add(col);
+        return page;
+    }
+
+    private void LoadValues()
+    {
+        _chkScreenshot.Checked = _s.ScreenshotOnError;
+        _numKeep.Value = Math.Clamp(_s.KeepScreenshotsDays, 0, 3650);
+        _chkSafe.Checked = _s.SafeMode;
+        _chkAwake.Checked = _s.PreventSleepWhileRunning;
+        _numPort.Value = Math.Clamp(_s.BrowserPort, 1024, 65535);
+        _txtHolidays.Text = string.Join(Environment.NewLine, _s.Holidays);
+
+        _chkTelegram.Checked = _s.Telegram.Enabled;
+        _txtTgToken.Text = _s.Telegram.BotToken.Length > 0 ? Unchanged : "";
+        _txtTgChat.Text = _s.Telegram.ChatId;
+        _chkTgPhoto.Checked = _s.Telegram.SendScreenshot;
+
+        _chkEmail.Checked = _s.Email.Enabled;
+        _txtHost.Text = _s.Email.Host;
+        _numSmtpPort.Value = Math.Clamp(_s.Email.Port, 1, 65535);
+        _chkSsl.Checked = _s.Email.UseSsl;
+        _txtUser.Text = _s.Email.User;
+        _txtPass.Text = _s.Email.Password.Length > 0 ? Unchanged : "";
+        _txtFrom.Text = _s.Email.From;
+        _txtTo.Text = _s.Email.To;
+        _chkAttach.Checked = _s.Email.AttachScreenshot;
+
+        _chkWebhook.Checked = _s.Webhook.Enabled;
+        _txtWebhook.Text = _s.Webhook.Url;
+    }
+
+    private TelegramSettings ReadTelegram() => new()
+    {
+        Enabled = _chkTelegram.Checked,
+        BotToken = _txtTgToken.Text == Unchanged ? _s.Telegram.BotToken : Protector.Protect(_txtTgToken.Text.Trim()),
+        ChatId = _txtTgChat.Text.Trim(),
+        SendScreenshot = _chkTgPhoto.Checked
+    };
+
+    private EmailSettings ReadEmail() => new()
+    {
+        Enabled = _chkEmail.Checked,
+        Host = _txtHost.Text.Trim(),
+        Port = (int)_numSmtpPort.Value,
+        UseSsl = _chkSsl.Checked,
+        User = _txtUser.Text.Trim(),
+        Password = _txtPass.Text == Unchanged ? _s.Email.Password : Protector.Protect(_txtPass.Text),
+        From = _txtFrom.Text.Trim(),
+        To = _txtTo.Text.Trim(),
+        AttachScreenshot = _chkAttach.Checked
+    };
+
+    private async Task TestAsync(string channel, Func<Task> send)
+    {
+        UseWaitCursor = true;
+        try
+        {
+            await send();
+            MessageBox.Show(this, $"Đã gửi thử qua {channel}.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Gửi {channel} thất bại:\n{ex.Message}", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            UseWaitCursor = false;
+        }
+    }
+
+    private void Save()
+    {
+        var holidays = _txtHolidays.Lines.Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+        var bad = holidays.FirstOrDefault(h =>
+            !DateTime.TryParseExact(h, ["d/M/yyyy", "dd/MM/yyyy"], null, System.Globalization.DateTimeStyles.None, out _) &&
+            !DateTime.TryParseExact(h + "/2000", ["d/M/yyyy", "dd/MM/yyyy"], null, System.Globalization.DateTimeStyles.None, out _));
+        if (bad != null)
+        {
+            MessageBox.Show(this, $"Ngày nghỉ \"{bad}\" không đúng định dạng dd/MM hoặc dd/MM/yyyy.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        _s.ScreenshotOnError = _chkScreenshot.Checked;
+        _s.KeepScreenshotsDays = (int)_numKeep.Value;
+        _s.SafeMode = _chkSafe.Checked;
+        _s.PreventSleepWhileRunning = _chkAwake.Checked;
+        _s.BrowserPort = (int)_numPort.Value;
+        _s.Holidays = holidays;
+        _s.Telegram = ReadTelegram();
+        _s.Email = ReadEmail();
+        _s.Webhook = new WebhookSettings { Enabled = _chkWebhook.Checked, Url = _txtWebhook.Text.Trim() };
+        _s.LastAlive = SettingsStore.Current.LastAlive;
+        SettingsStore.Replace(_s);
+        Log.Info("Đã lưu cài đặt.");
+        DialogResult = DialogResult.OK;
+        Close();
+    }
+}

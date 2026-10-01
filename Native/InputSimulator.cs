@@ -43,6 +43,51 @@ internal static class InputSimulator
         }
     }
 
+    /// <summary>Cuộn chuột N nấc (dương = lên, âm = xuống) tại vị trí con trỏ hiện tại.</summary>
+    public static void Scroll(int notches)
+    {
+        if (notches == 0) return;
+        var input = Mouse(0x0800); // MOUSEEVENTF_WHEEL
+        input.U.mi.mouseData = unchecked((uint)(notches * 120));
+        Send(input);
+    }
+
+    /// <summary>Nhấn giữ nút chuột tại (x1, y1), kéo dần tới (x2, y2) rồi thả.</summary>
+    public static void Drag(int x1, int y1, int x2, int y2, MouseButtonKind button, CancellationToken ct)
+    {
+        var (down, up) = button switch
+        {
+            MouseButtonKind.Right => (0x0008u, 0x0010u),
+            MouseButtonKind.Middle => (0x0020u, 0x0040u),
+            _ => (0x0002u, 0x0004u)
+        };
+        MoveTo(x1, y1);
+        Thread.Sleep(80);
+        Send(Mouse(down));
+        Thread.Sleep(120);
+        // Di chuyển từng đoạn nhỏ để ứng dụng nhận ra thao tác kéo (OLE drag cần vài sự kiện di chuột).
+        const int steps = 20;
+        for (int i = 1; i <= steps; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            MoveTo(x1 + (x2 - x1) * i / steps, y1 + (y2 - y1) * i / steps);
+            Thread.Sleep(15);
+        }
+        Thread.Sleep(120);
+        Send(Mouse(up));
+    }
+
+    /// <summary>Di chuột tới tọa độ màn hình bằng SendInput (sinh sự kiện di chuột thật, khác SetCursorPos).</summary>
+    public static void MoveTo(int x, int y)
+    {
+        var vs = SystemInformation.VirtualScreen;
+        var input = Mouse(0x0001 | 0x8000 | 0x4000); // MOVE | ABSOLUTE | VIRTUALDESK
+        input.U.mi.dx = (int)Math.Round((x - vs.Left) * 65535.0 / Math.Max(1, vs.Width - 1));
+        input.U.mi.dy = (int)Math.Round((y - vs.Top) * 65535.0 / Math.Max(1, vs.Height - 1));
+        Send(input);
+        Win32.SetCursorPos(x, y); // chỉnh lại cho đúng pixel (làm tròn tọa độ chuẩn hóa có thể lệch 1px)
+    }
+
     /// <summary>Gõ văn bản Unicode (hỗ trợ tiếng Việt có dấu).</summary>
     public static void TypeText(string text, CancellationToken ct)
     {
@@ -101,7 +146,7 @@ internal static class InputSimulator
         return result;
     }
 
-    private static ushort ParseKey(string name)
+    internal static ushort ParseKey(string name)
     {
         if (KeyNames.TryGetValue(name, out var vk)) return vk;
 

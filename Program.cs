@@ -1,39 +1,58 @@
+using ScheduleApp.Services;
 using ScheduleApp.UI;
 
 namespace ScheduleApp;
 
+/// <summary>
+/// Tham số dòng lệnh:
+///   --minimized            khởi động ẩn ở khay hệ thống
+///   --run "Tên công việc"  chạy ngay một công việc (gửi tới phiên bản đang chạy nếu có)
+///   --stop                 dừng flow đang chạy
+/// </summary>
 internal static class Program
 {
     private const string MutexName = "ScheduleApp_SingleInstance_7F3A1C";
-    private const string ShowEventName = "ScheduleApp_ShowMainWindow_7F3A1C";
 
     [STAThread]
     private static void Main(string[] args)
     {
+        string? runJob = ArgValue(args, "--run");
+        bool stop = HasArg(args, "--stop");
+        bool startHidden = HasArg(args, "--minimized") || runJob != null || stop;
+
         using var mutex = new Mutex(true, MutexName, out bool isFirstInstance);
         if (!isFirstInstance)
         {
-            // Đã có một phiên bản đang chạy -> yêu cầu nó hiện cửa sổ chính rồi thoát.
-            try { using var ev = EventWaitHandle.OpenExisting(ShowEventName); ev.Set(); } catch { }
+            // Đã có một phiên bản đang chạy → chuyển lệnh cho nó rồi thoát.
+            var command = runJob != null ? "run " + runJob : stop ? "stop" : "show";
+            if (!CommandServer.Send(command))
+                MessageBox.Show("ScheduleApp đang chạy nhưng không nhận được lệnh. Hãy thử lại.", "ScheduleApp",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
+        if (stop) return; // không có flow nào đang chạy
 
         ApplicationConfiguration.Initialize();
 
-        bool startHidden = args.Any(a => a.Equals("--minimized", StringComparison.OrdinalIgnoreCase));
-        using var showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName);
-        var form = new MainForm(startHidden);
-
-        var listener = new Thread(() =>
+        var form = new MainForm(startHidden, runJob != null ? "run " + runJob : null);
+        using var cts = new CancellationTokenSource();
+        _ = CommandServer.ListenAsync(cmd =>
         {
-            while (showEvent.WaitOne())
-            {
-                if (form.IsDisposed) break;
-                try { form.BeginInvoke(new MethodInvoker(form.ShowMain)); } catch { break; }
-            }
-        }) { IsBackground = true, Name = "SingleInstanceListener" };
-        listener.Start();
+            if (form.IsDisposed) return;
+            try { form.BeginInvoke(new MethodInvoker(() => form.HandleCommand(cmd))); }
+            catch (InvalidOperationException) { }
+        }, cts.Token);
 
         Application.Run(form);
+        cts.Cancel();
+    }
+
+    private static bool HasArg(string[] args, string name) =>
+        args.Any(a => a.Equals(name, StringComparison.OrdinalIgnoreCase));
+
+    private static string? ArgValue(string[] args, string name)
+    {
+        int i = Array.FindIndex(args, a => a.Equals(name, StringComparison.OrdinalIgnoreCase));
+        return i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
     }
 }

@@ -1,4 +1,6 @@
 using ScheduleApp.Models;
+using ScheduleApp.Native;
+using ScheduleApp.Services.Engine;
 
 namespace ScheduleApp.Services;
 
@@ -8,6 +10,7 @@ namespace ScheduleApp.Services;
 public sealed class FlowRunner
 {
     private readonly IUserNotifier _ui;
+    private readonly Func<Guid, Job?> _findJob;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _sync = new();
     private readonly HashSet<Guid> _pending = [];
@@ -19,15 +22,25 @@ public sealed class FlowRunner
     /// <summary>(jobId, thời điểm bắt đầu, thành công?, thông điệp). Có thể phát từ luồng nền.</summary>
     public event Action<Guid, DateTime, bool, string>? JobFinished;
 
-    public FlowRunner(IUserNotifier ui) => _ui = ui;
+    /// <summary>Flow bắt đầu / kết thúc chạy (true = bắt đầu). Có thể phát từ luồng nền.</summary>
+    public event Action<bool>? RunningChanged;
+
+    /// <summary>Kiểm tra trước mỗi bước (chế độ an toàn).</summary>
+    public Func<FlowContext, Task>? BeforeStep { get; set; }
+
+    public FlowRunner(IUserNotifier ui, Func<Guid, Job?> findJob)
+    {
+        _ui = ui;
+        _findJob = findJob;
+    }
 
     public bool IsBusy
     {
         get { lock (_sync) return _pending.Count > 0; }
     }
 
-    /// <summary>Đưa công việc vào hàng đợi; task hoàn thành khi flow chạy xong (hoặc bị hủy).</summary>
-    public async Task EnqueueAsync(Job job, string trigger)
+    /// <summary>Đưa công việc vào hàng đợi; task hoàn thành khi flow chạy xong. Null nếu bị bỏ qua / hủy trong hàng đợi.</summary>
+    public async Task<FlowResult?> EnqueueAsync(Job job, string trigger, RunOptions? options = null)
     {
         CancellationToken stopToken;
         lock (_sync)
@@ -35,7 +48,7 @@ public sealed class FlowRunner
             if (!_pending.Add(job.Id))
             {
                 Log.Warn($"[{job.Name}] đang chạy hoặc đã trong hàng đợi — bỏ qua lần kích hoạt ({trigger}).");
-                return;
+                return null;
             }
             stopToken = _stopAll.Token;
         }
@@ -48,20 +61,41 @@ public sealed class FlowRunner
             await _gate.WaitAsync(stopToken);
             entered = true;
             started = DateTime.Now;
+            RunningChanged?.Invoke(true);
 
-            var (ok, message) = await Task.Run(() => RunFlowAsync(job, trigger, stopToken));
-            JobFinished?.Invoke(job.Id, started, ok, message);
-            if (!ok) _ui.Notify($"Flow \"{job.Name}\" không hoàn thành", message, true);
+            var result = await Task.Run(() => RunFlowAsync(job, trigger, options ?? RunOptions.Default, stopToken));
+            var record = new RunRecord
+            {
+                JobId = job.Id,
+                JobName = job.Name,
+                Trigger = trigger,
+                Start = started,
+                End = DateTime.Now,
+                Ok = result.Ok,
+                Message = result.Message,
+                FailedStep = Math.Max(0, result.FailedStep),
+                Screenshot = result.Screenshot
+            };
+            RunHistory.Add(record);
+            JobFinished?.Invoke(job.Id, started, result.Ok, result.Message);
+            if (!result.Ok) _ui.Notify($"Flow \"{job.Name}\" không hoàn thành", result.Message, true);
+            if (options?.IsTest != true) _ = NotificationService.SendForRunAsync(job, record);
+            return result;
         }
         catch (OperationCanceledException)
         {
             Log.Warn($"[{job.Name}] đã hủy khi đang chờ trong hàng đợi.");
             JobFinished?.Invoke(job.Id, started, false, "Đã hủy (trong hàng đợi)");
+            return null;
         }
         finally
         {
             lock (_sync) _pending.Remove(job.Id);
-            if (entered) _gate.Release();
+            if (entered)
+            {
+                _gate.Release();
+                RunningChanged?.Invoke(false);
+            }
             StatusChanged?.Invoke(IsBusy ? "Đang chờ flow tiếp theo…" : "Sẵn sàng");
         }
     }
@@ -78,67 +112,89 @@ public sealed class FlowRunner
         Log.Warn("■ Đã yêu cầu dừng tất cả flow.");
     }
 
-    private async Task<(bool Ok, string Message)> RunFlowAsync(Job job, string trigger, CancellationToken ct)
+    private async Task<FlowResult> RunFlowAsync(Job job, string trigger, RunOptions options, CancellationToken ct)
     {
-        var steps = job.Steps;
-        int total = steps.Count;
-        int errors = 0;
-        Log.Info($"▶ Bắt đầu \"{job.Name}\" ({trigger}) — {total} bước");
+        int total = job.Steps.Count;
+        var wrapped = new RunOptions
+        {
+            StartIndex = options.StartIndex,
+            IsTest = options.IsTest,
+            StepMode = options.StepMode,
+            UseBreakpoints = options.UseBreakpoints,
+            Variables = options.Variables,
+            StepStarted = i =>
+            {
+                StatusChanged?.Invoke($"Đang chạy \"{job.Name}\" — bước {i + 1}/{total}: {job.Steps[i].Describe()}");
+                options.StepStarted?.Invoke(i);
+            }
+        };
+        var ctx = new FlowContext(job, _ui, wrapped, _findJob, ct) { BeforeStep = BeforeStep };
+        ctx.Vars["job.name"] = job.Name;
+        ctx.Vars["run.trigger"] = trigger;
+        ctx.Vars["run.start"] = DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss");
+        ctx.Vars["computer"] = Environment.MachineName;
+        ctx.Vars["user"] = Environment.UserName;
+        ctx.Vars["lastError"] = "";
+        ctx.Vars["lastOutput"] = "";
+        if (options.Variables != null)
+            foreach (var (k, v) in options.Variables) ctx.Vars[k] = v;
+
+        Log.Info($"▶ Bắt đầu \"{job.Name}\" ({trigger}) — {total} bước" + (options.StartIndex > 0 ? $", từ bước {options.StartIndex + 1}" : ""));
 
         IDisposable? screen = null;
+        IDisposable? awake = null;
         try
         {
-            if (steps.Any(s => s.Enabled && (s.UsesInput || s.UsesScreen))) screen = _ui.ClearScreenForAutomation();
+            if (NeedsScreen(job, 0)) screen = _ui.ClearScreenForAutomation();
+            if (SettingsStore.Current.PreventSleepWhileRunning) awake = PowerHelper.KeepAwake($"ScheduleApp đang chạy \"{job.Name}\"");
 
-            for (int i = 0; i < total; i++)
+            var result = await FlowEngine.RunAsync(job, ctx, options.StartIndex, isRoot: true);
+
+            if (!result.Ok && job.OnFailureJobId is Guid cleanupId && _findJob(cleanupId) is { } cleanup && cleanup.Id != job.Id)
             {
-                var step = steps[i];
-                if (!step.Enabled) continue;
-                ct.ThrowIfCancellationRequested();
-
-                var desc = step.Describe();
-                StatusChanged?.Invoke($"Đang chạy \"{job.Name}\" — bước {i + 1}/{total}: {desc}");
-                Log.Info($"   [{i + 1}/{total}] {desc}");
-
-                try
-                {
-                    await StepExecutor.ExecuteAsync(step, job, _ui, ct);
-                }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    errors++;
-                    Log.Error($"   ✖ Bước {i + 1} lỗi: {ex.Message}");
-                    if (job.StopOnError) return (false, $"Lỗi ở bước {i + 1}: {ex.Message}");
-                }
-
-                if (step.DelayAfterMs > 0) await Task.Delay(step.DelayAfterMs, ct);
+                Log.Warn($"   ↪ Chạy công việc xử lý lỗi \"{cleanup.Name}\"…");
+                ctx.Vars["failed.message"] = result.Message;
+                ctx.Vars["failed.step"] = result.FailedStep.ToString();
+                ctx.Depth = 1;
+                var r = await FlowEngine.RunAsync(cleanup, ctx, 0, isRoot: false);
+                if (!r.Ok) Log.Error($"   Công việc xử lý lỗi cũng thất bại: {r.Message}");
             }
 
-            if (errors > 0)
-            {
-                Log.Warn($"◼ \"{job.Name}\" xong nhưng có {errors} bước lỗi.");
-                return (false, $"Xong, {errors} bước lỗi");
-            }
-            Log.Info($"✔ Hoàn thành \"{job.Name}\".");
-            return (true, "Thành công");
+            if (result.Ok) Log.Info($"✔ Hoàn thành \"{job.Name}\".");
+            else Log.Warn($"◼ \"{job.Name}\": {result.Message}");
+            return result;
         }
         catch (OperationCanceledException)
         {
             Log.Warn($"■ \"{job.Name}\" đã bị dừng.");
-            return (false, "Đã dừng");
+            return new FlowResult(false, "Đã dừng");
         }
         catch (Exception ex)
         {
             Log.Error($"✖ \"{job.Name}\" lỗi: {ex.Message}");
-            return (false, ex.Message);
+            return new FlowResult(false, ex.Message, -1, ctx.LastScreenshot);
         }
         finally
         {
+            awake?.Dispose();
             screen?.Dispose();
         }
+    }
+
+    /// <summary>Flow (kể cả các công việc con được gọi) có giả lập chuột/phím hoặc đọc màn hình không.</summary>
+    private bool NeedsScreen(Job job, int depth)
+    {
+        if (depth > 8) return false;
+        foreach (var s in job.Steps)
+        {
+            if (!s.Enabled) continue;
+            if (s.Type == StepType.CallJob)
+            {
+                if (s.JobRef is Guid id && _findJob(id) is { } sub && NeedsScreen(sub, depth + 1)) return true;
+                continue;
+            }
+            if (s.UsesInput || s.UsesScreen) return true;
+        }
+        return false;
     }
 }

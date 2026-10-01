@@ -76,14 +76,14 @@ internal static class ScreenHelper
     /// Đếm ngược rồi trả về vị trí con trỏ chuột và cửa sổ nằm dưới con trỏ.
     /// Các cửa sổ ScheduleApp được dời đi trong lúc đếm để người dùng trỏ vào ứng dụng đích.
     /// </summary>
-    public static async Task<(Point Point, IntPtr Window)> CaptureCursorAsync(int seconds)
+    public static async Task<(Point Point, IntPtr Window)> CaptureCursorAsync(int seconds, string message = "Di chuột tới vị trí cần click…")
     {
         using var away = MoveAppWindowsAway();
         using var overlay = new CaptureOverlay();
         overlay.Show();
         for (int tick = seconds * 10; tick > 0; tick--)
         {
-            overlay.UpdateAt(Cursor.Position, $"Di chuột tới vị trí cần click… {Math.Ceiling(tick / 10.0)}");
+            overlay.UpdateAt(Cursor.Position, $"{message} {Math.Ceiling(tick / 10.0)}");
             await Task.Delay(100);
         }
         var p = Cursor.Position;

@@ -6,8 +6,11 @@ namespace ScheduleApp.Services;
 /// <summary>Lưu/đọc danh sách công việc dạng JSON trong %AppData%\ScheduleApp.</summary>
 public static class JobStore
 {
+    /// <summary>Thư mục dữ liệu: %AppData%\ScheduleApp, hoặc biến môi trường SCHEDULEAPP_DATA_DIR (bản portable / kiểm thử).</summary>
     public static string DataDir { get; } =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ScheduleApp");
+        Environment.GetEnvironmentVariable("SCHEDULEAPP_DATA_DIR") is { Length: > 0 } custom
+            ? Path.GetFullPath(Environment.ExpandEnvironmentVariables(custom))
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ScheduleApp");
 
     private static string FilePath => Path.Combine(DataDir, "jobs.json");
 
@@ -39,14 +42,32 @@ public static class JobStore
         File.WriteAllText(path, JsonSerializer.Serialize(jobs.ToList(), JsonDefaults.Options));
 
     /// <summary>Đọc công việc từ file; gán Id mới để không trùng với công việc đang có.</summary>
-    public static List<Job> Import(string path)
+    public static List<Job> Import(string path) => Renew(ReadFile(path));
+
+    /// <summary>Đọc công việc từ chuỗi JSON (vd mẫu nhúng sẵn); gán Id mới.</summary>
+    public static List<Job> ImportJson(string json) =>
+        Renew(JsonSerializer.Deserialize<List<Job>>(json, JsonDefaults.Options) ?? []);
+
+    /// <summary>
+    /// Gán Id mới cho các công việc, đồng thời cập nhật tham chiếu giữa chúng (bước "Chạy công việc khác",
+    /// công việc xử lý lỗi) để vẫn trỏ đúng sau khi nhập.
+    /// </summary>
+    private static List<Job> Renew(List<Job> jobs)
     {
-        var jobs = ReadFile(path);
+        var map = new Dictionary<Guid, Guid>();
         foreach (var j in jobs)
         {
-            j.Id = Guid.NewGuid();
+            var id = Guid.NewGuid();
+            map.TryAdd(j.Id, id);
+            j.Id = id;
+        }
+        foreach (var j in jobs)
+        {
             j.LastRun = null;
             j.LastResult = null;
+            if (j.OnFailureJobId is Guid f) j.OnFailureJobId = map.TryGetValue(f, out var nf) ? nf : null;
+            foreach (var s in j.Steps)
+                if (s.JobRef is Guid r && map.TryGetValue(r, out var nr)) s.JobRef = nr;
         }
         return jobs;
     }

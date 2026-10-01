@@ -18,7 +18,6 @@ internal static class ScreenLocator
     /// <summary>Tìm lặp lại cho tới khi thấy hoặc hết timeout của bước.</summary>
     public static async Task<LocateResult> WaitAsync(ActionStep s, CancellationToken ct)
     {
-        using var template = LoadTemplate(s);
         var sw = Stopwatch.StartNew();
 
         IntPtr window = IntPtr.Zero;
@@ -27,6 +26,7 @@ internal static class ScreenLocator
             window = await WindowHelper.WaitForAsync(s.Target, Math.Max(1000, s.DelayMs), ct);
             WindowHelper.Focus(window);
         }
+        using var template = LoadTemplate(s, AreaOf(window));
 
         while (true)
         {
@@ -68,8 +68,32 @@ internal static class ScreenLocator
             $"{matches.Count} vị trí khớp, dòng \"{matches[index].LineText}\"");
     }
 
-    public static Bitmap? LoadTemplate(ActionStep s) =>
-        s.IsImageStep && !string.IsNullOrEmpty(s.ImageData) ? ScreenCapture.FromBase64Png(s.ImageData) : null;
+    /// <summary>
+    /// Hình mẫu của bước; nếu màn hình tìm kiếm có mức scale khác lúc chụp (vd chụp ở 100%, chạy ở 125%)
+    /// thì hình mẫu được phóng/thu theo tỉ lệ tương ứng.
+    /// </summary>
+    public static Bitmap? LoadTemplate(ActionStep s, Rectangle area)
+    {
+        if (!s.IsImageStep || string.IsNullOrEmpty(s.ImageData)) return null;
+        var template = ScreenCapture.FromBase64Png(s.ImageData);
+        if (s.ImageScale <= 0) return template;
+
+        double now = PowerHelper.ScaleAt(new Point(area.X + area.Width / 2, area.Y + area.Height / 2));
+        double ratio = now / s.ImageScale;
+        if (Math.Abs(ratio - 1) < 0.02) return template;
+
+        int w = Math.Max(2, (int)Math.Round(template.Width * ratio)), h = Math.Max(2, (int)Math.Round(template.Height * ratio));
+        var scaled = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(scaled))
+        {
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            g.DrawImage(template, new Rectangle(0, 0, w, h), new Rectangle(0, 0, template.Width, template.Height), GraphicsUnit.Pixel);
+        }
+        template.Dispose();
+        Services.Log.Info($"      Hình mẫu chụp ở scale {s.ImageScale:P0}, màn hình hiện tại {now:P0} → co giãn {ratio:0.##}×.");
+        return scaled;
+    }
 
     /// <summary>Vùng tìm: cửa sổ (cắt theo màn hình) hoặc toàn bộ màn hình ảo.</summary>
     public static Rectangle AreaOf(IntPtr window)

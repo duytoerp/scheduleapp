@@ -2,10 +2,11 @@ using System.Diagnostics;
 using ScheduleApp.Models;
 using ScheduleApp.Native;
 using ScheduleApp.Services;
+using ScheduleApp.Services.Engine;
 
 namespace ScheduleApp.UI;
 
-internal sealed class MainForm : BaseForm, IUserNotifier
+internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost
 {
     private const int StopHotkeyId = 0x5AFE;
     private const int MaxLogChars = 200_000;
@@ -13,6 +14,8 @@ internal sealed class MainForm : BaseForm, IUserNotifier
     private readonly List<Job> _jobs;
     private readonly FlowRunner _runner;
     private readonly Scheduler _scheduler;
+    private readonly TriggerManager _triggers;
+    private readonly UserInputGuard _guard = new();
 
     private readonly ListView _list = new()
     {
@@ -22,7 +25,8 @@ internal sealed class MainForm : BaseForm, IUserNotifier
         CheckBoxes = true,
         HideSelection = false,
         MultiSelect = false,
-        GridLines = true
+        GridLines = true,
+        ShowGroups = true
     };
 
     private readonly TextBox _log = new()
@@ -43,37 +47,61 @@ internal sealed class MainForm : BaseForm, IUserNotifier
         Padding = new Padding(8, 4, 8, 4)
     };
 
+    private readonly ToolStripTextBox _search = new() { AutoSize = false, Width = 180, ToolTipText = "Tìm theo tên / nhóm công việc" };
     private readonly ToolStripStatusLabel _status = new() { Spring = true, TextAlign = ContentAlignment.MiddleLeft, Text = "Sẵn sàng" };
     private readonly ToolStripButton _btnStop = new("■ Dừng flow") { Enabled = false, ToolTipText = "Dừng flow đang chạy (Ctrl+Shift+Q)" };
     private readonly NotifyIcon _tray = new();
     private readonly System.Windows.Forms.Timer _uiTimer = new() { Interval = 1000 };
+    private readonly string? _startupCommand;
 
     private bool _hideOnFirstShow;
     private bool _exiting;
     private bool _suppressCheck;
     private bool _trayTipShown;
 
-    public MainForm(bool startHidden)
+    public MainForm(bool startHidden, string? startupCommand = null)
     {
         _hideOnFirstShow = startHidden;
+        _startupCommand = startupCommand;
         _jobs = JobStore.Load();
-        _runner = new FlowRunner(this);
+        _runner = new FlowRunner(this, FindJob);
         _scheduler = new Scheduler(_jobs, _runner);
 
         SuspendLayout();
         Text = "ScheduleApp — Đặt lịch, nhắc nhở & tự động thao tác";
-        Size = new Size(1180, 720);
-        MinimumSize = new Size(820, 480);
+        Size = new Size(1240, 760);
+        MinimumSize = new Size(860, 500);
         StartPosition = FormStartPosition.CenterScreen;
         BuildUi();
         ResumeLayout(true);
 
         _ = Handle; // tạo handle sớm để nhận BeginInvoke / hotkey kể cả khi khởi động ẩn
+        _triggers = new TriggerManager(_jobs, _runner, this);
         WireEvents();
 
         _scheduler.Start();
+        _triggers.Reload();
         RefreshList();
         Log.Info($"ScheduleApp khởi động — {_jobs.Count} công việc. Dữ liệu: {JobStore.DataDir}");
+        _ = Task.Run(ErrorScreenshots.Cleanup);
+
+        // Trình kích hoạt "khi khởi động" và lệnh dòng lệnh chạy sau khi giao diện đã sẵn sàng.
+        var startup = new System.Windows.Forms.Timer { Interval = 4000 };
+        startup.Tick += (_, _) =>
+        {
+            startup.Dispose();
+            _triggers.OnAppStartup();
+        };
+        startup.Start();
+        if (_startupCommand != null) BeginInvoke(new MethodInvoker(() => HandleCommand(_startupCommand)));
+    }
+
+    private Job? FindJob(Guid id)
+    {
+        // Gọi từ luồng nền khi chạy flow con — đọc danh sách là an toàn (chỉ thay phần tử trên luồng UI).
+        foreach (var j in _jobs.ToArray())
+            if (j.Id == id) return j;
+        return null;
     }
 
     // ───────────────────────────── Giao diện ─────────────────────────────
@@ -82,6 +110,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier
     {
         var toolbar = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden, Padding = new Padding(6, 2, 6, 2), ImageScalingSize = new Size(16, 16) };
         toolbar.Items.Add(Button("＋ Thêm công việc", (_, _) => AddJob()));
+        toolbar.Items.Add(Button("Mẫu có sẵn…", (_, _) => AddFromTemplate()));
         toolbar.Items.Add(Button("Sửa", (_, _) => EditSelected()));
         toolbar.Items.Add(Button("Nhân bản", (_, _) => DuplicateSelected()));
         toolbar.Items.Add(Button("Xóa", (_, _) => DeleteSelected()));
@@ -90,9 +119,18 @@ internal sealed class MainForm : BaseForm, IUserNotifier
         _btnStop.Click += (_, _) => _runner.StopAll();
         toolbar.Items.Add(_btnStop);
         toolbar.Items.Add(new ToolStripSeparator());
-        toolbar.Items.Add(Button("Nhập…", (_, _) => ImportJobs()));
-        toolbar.Items.Add(Button("Xuất…", (_, _) => ExportJobs()));
-        toolbar.Items.Add(Button("Thư mục log", (_, _) => OpenFolder(Log.LogDir)));
+        toolbar.Items.Add(Button("📋 Lịch sử", (_, _) => ShowHistory(null)));
+        toolbar.Items.Add(Button("🔑 Bí mật", (_, _) => { using var f = new SecretsForm(); f.ShowDialog(this); }));
+        toolbar.Items.Add(Button("⚙ Cài đặt", (_, _) => ShowSettings()));
+        toolbar.Items.Add(new ToolStripSeparator());
+        var more = new ToolStripDropDownButton("Thêm") { DisplayStyle = ToolStripItemDisplayStyle.Text };
+        more.DropDownItems.Add("Nhập công việc…", null, (_, _) => ImportJobs());
+        more.DropDownItems.Add("Xuất công việc…", null, (_, _) => ExportJobs());
+        more.DropDownItems.Add(new ToolStripSeparator());
+        more.DropDownItems.Add("Mở thư mục log", null, (_, _) => OpenFolder(Log.LogDir));
+        more.DropDownItems.Add("Mở thư mục ảnh lỗi", null, (_, _) => OpenFolder(ErrorScreenshots.Dir));
+        more.DropDownItems.Add("Mở thư mục dữ liệu", null, (_, _) => OpenFolder(JobStore.DataDir));
+        toolbar.Items.Add(more);
 
         var startup = new ToolStripButton("Khởi động cùng Windows")
         {
@@ -111,14 +149,28 @@ internal sealed class MainForm : BaseForm, IUserNotifier
             catch (Exception ex) { ShowError("Không thay đổi được cài đặt khởi động: " + ex.Message); }
         };
         toolbar.Items.Add(startup);
+        _search.Alignment = ToolStripItemAlignment.Right;
+        _search.TextChanged += (_, _) => RefreshList();
+        toolbar.Items.Add(_search);
+        toolbar.Items.Add(new ToolStripLabel("🔍") { Alignment = ToolStripItemAlignment.Right });
 
         _list.Columns.Add("Công việc");
-        _list.Columns.Add("Lịch");
+        _list.Columns.Add("Lịch / kích hoạt");
         _list.Columns.Add("Lần chạy tới");
         _list.Columns.Add("Còn lại");
         _list.Columns.Add("Lần chạy trước");
         _list.Columns.Add("Kết quả");
         _list.Resize += (_, _) => FitColumns();
+
+        var listMenu = new ContextMenuStrip();
+        listMenu.Items.Add("▶ Chạy ngay", null, (_, _) => RunSelected());
+        listMenu.Items.Add("Sửa…", null, (_, _) => EditSelected());
+        listMenu.Items.Add("Nhân bản", null, (_, _) => DuplicateSelected());
+        listMenu.Items.Add("Lịch sử chạy…", null, (_, _) => { if (SelectedJob() is { } j) ShowHistory(j.Id); });
+        listMenu.Items.Add("Tạo shortcut trên Desktop (chạy công việc này)", null, (_, _) => CreateShortcut());
+        listMenu.Items.Add(new ToolStripSeparator());
+        listMenu.Items.Add("Xóa", null, (_, _) => DeleteSelected());
+        _list.ContextMenuStrip = listMenu;
 
         var logHeader = new Label
         {
@@ -134,19 +186,30 @@ internal sealed class MainForm : BaseForm, IUserNotifier
 
         _split.Panel1.Controls.Add(_list);
         _split.Panel2.Controls.Add(logPanel);
-        var split = _split;
 
         var statusBar = new StatusStrip();
         statusBar.Items.Add(_status);
         statusBar.Items.Add(new ToolStripStatusLabel("Dừng khẩn cấp: Ctrl+Shift+Q") { ForeColor = UiText.Muted });
 
-        Controls.Add(split);
+        Controls.Add(_split);
         Controls.Add(toolbar);
         Controls.Add(statusBar);
 
         // Khay hệ thống
         var trayMenu = new ContextMenuStrip();
         trayMenu.Items.Add("Mở ScheduleApp", null, (_, _) => ShowMain());
+        var trayRun = new ToolStripMenuItem("Chạy công việc");
+        trayRun.DropDownOpening += (_, _) =>
+        {
+            trayRun.DropDownItems.Clear();
+            foreach (var j in _jobs.OrderBy(j => j.Group).ThenBy(j => j.Name))
+            {
+                var job = j;
+                trayRun.DropDownItems.Add((job.Group.Length > 0 ? job.Group + " › " : "") + job.Name, null, (_, _) => RunJob(job, "chạy từ khay"));
+            }
+        };
+        trayRun.DropDownItems.Add("(trống)");
+        trayMenu.Items.Add(trayRun);
         trayMenu.Items.Add("Dừng flow đang chạy", null, (_, _) => _runner.StopAll());
         trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add("Thoát", null, (_, _) => ExitApp());
@@ -166,7 +229,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier
 
     private void FitColumns()
     {
-        float[] weights = [0.22f, 0.20f, 0.14f, 0.09f, 0.14f, 0.21f];
+        float[] weights = [0.22f, 0.22f, 0.13f, 0.09f, 0.13f, 0.21f];
         int width = _list.ClientSize.Width;
         if (width <= 0) return;
         for (int i = 0; i < weights.Length && i < _list.Columns.Count; i++)
@@ -206,12 +269,41 @@ internal sealed class MainForm : BaseForm, IUserNotifier
             }));
         };
 
+        // Chế độ an toàn: theo dõi chuột/phím thật trong lúc flow chạy.
+        _runner.RunningChanged += running =>
+        {
+            if (IsDisposed) return;
+            BeginInvoke(new MethodInvoker(() =>
+            {
+                if (running && SettingsStore.Current.SafeMode) _guard.Start();
+                else _guard.Stop();
+            }));
+        };
+        _runner.BeforeStep = async ctx =>
+        {
+            if (!_guard.Triggered) return;
+            _guard.Reset();
+            Log.Warn("   ⏸ Phát hiện người dùng dùng chuột/bàn phím — tạm dừng flow (chế độ an toàn).");
+            bool go = await AskContinueAsync("Chế độ an toàn",
+                $"Bạn vừa dùng chuột hoặc bàn phím trong lúc \"{ctx.RootJob.Name}\" đang chạy.\n\n" +
+                "Chạy tiếp flow? (Hãy để yên chuột/bàn phím sau khi bấm Chạy tiếp.)", ctx.Ct);
+            _guard.Reset();
+            if (!go) throw new OperationCanceledException("Người dùng dừng flow (chế độ an toàn).");
+        };
+
         _scheduler.Changed += RefreshList;
         _scheduler.ReminderDue += job =>
         {
             var msg = $"\"{job.Name}\" sẽ tự động chạy lúc {job.NextRun:HH:mm} ({job.Schedule.Describe()}).";
             Log.Info($"🔔 Nhắc trước: {msg}");
             _ = ShowReminderAsync($"Sắp chạy: {job.Name}", msg, false, CancellationToken.None);
+        };
+        _scheduler.MissedRunAsk += async (job, missedAt) =>
+        {
+            bool run = await AskContinueAsync("Lỡ lịch chạy",
+                $"Công việc \"{job.Name}\" lẽ ra chạy lúc {missedAt:HH:mm dd/MM/yyyy} nhưng máy tắt / ngủ / ScheduleApp không chạy.\n\nChạy bù ngay bây giờ?",
+                CancellationToken.None, "Chạy bù", "Bỏ qua");
+            if (run) RunJob(job, $"chạy bù lịch {missedAt:HH:mm dd/MM}");
         };
 
         _list.ItemChecked += (_, e) =>
@@ -221,6 +313,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier
             if (_suppressCheck || !_list.Focused || e.Item.Tag is not Job job || job.Enabled == e.Item.Checked) return;
             job.Enabled = e.Item.Checked;
             _scheduler.Recalculate(job);
+            _triggers.Reload();
             Log.Info($"{(job.Enabled ? "Bật" : "Tắt")} công việc \"{job.Name}\".");
             SaveJobs();
             UpdateItem(e.Item);
@@ -230,6 +323,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier
         {
             if (e.KeyCode == Keys.Delete) DeleteSelected();
             else if (e.KeyCode == Keys.Enter) EditSelected();
+            else if (e.KeyCode == Keys.F5) RunSelected();
         };
 
         _uiTimer.Tick += (_, _) =>
@@ -252,19 +346,38 @@ internal sealed class MainForm : BaseForm, IUserNotifier
     private void RefreshList()
     {
         var selectedId = SelectedJob()?.Id;
+        var filter = _search.Text.Trim();
         _suppressCheck = true;
         _list.BeginUpdate();
         try
         {
             _list.Items.Clear();
+            _list.Groups.Clear();
+            var groups = new Dictionary<string, ListViewGroup>(StringComparer.CurrentCultureIgnoreCase);
             foreach (var job in _jobs)
             {
-                var item = new ListViewItem(job.Name) { Tag = job, Checked = job.Enabled };
+                if (filter.Length > 0 &&
+                    !job.Name.Contains(filter, StringComparison.CurrentCultureIgnoreCase) &&
+                    !job.Group.Contains(filter, StringComparison.CurrentCultureIgnoreCase))
+                    continue;
+
+                var groupName = string.IsNullOrWhiteSpace(job.Group) ? "(Chưa phân nhóm)" : job.Group.Trim();
+                if (!groups.TryGetValue(groupName, out var group))
+                {
+                    group = new ListViewGroup(groupName, groupName);
+                    groups[groupName] = group;
+                }
+
+                var item = new ListViewItem(job.Name) { Tag = job, Checked = job.Enabled, Group = group };
                 for (int i = 1; i < _list.Columns.Count; i++) item.SubItems.Add("");
                 UpdateItem(item);
                 _list.Items.Add(item);
                 if (job.Id == selectedId) item.Selected = true;
             }
+            // Nhóm sắp theo tên, "(Chưa phân nhóm)" ở cuối.
+            foreach (var g in groups.Values.OrderBy(g => g.Header.StartsWith('(')).ThenBy(g => g.Header, StringComparer.CurrentCultureIgnoreCase))
+                _list.Groups.Add(g);
+            _list.ShowGroups = groups.Count > 1;
         }
         finally
         {
@@ -277,8 +390,9 @@ internal sealed class MainForm : BaseForm, IUserNotifier
     private static void UpdateItem(ListViewItem item)
     {
         var job = (Job)item.Tag!;
+        int triggers = job.Triggers.Count(t => t.Enabled);
         item.Text = job.Name;
-        item.SubItems[1].Text = job.Schedule.Describe();
+        item.SubItems[1].Text = job.Schedule.Describe() + (triggers > 0 ? $"  ⚡{string.Join(", ", job.Triggers.Where(t => t.Enabled).Select(t => t.Describe()))}" : "");
         item.SubItems[2].Text = job.NextRun?.ToString("HH:mm:ss  dd/MM/yyyy") ?? "—";
         item.SubItems[3].Text = Countdown(job);
         item.SubItems[4].Text = job.LastRun?.ToString("HH:mm:ss  dd/MM/yyyy") ?? "—";
@@ -304,33 +418,55 @@ internal sealed class MainForm : BaseForm, IUserNotifier
         catch (Exception ex) { Log.Error("Không lưu được danh sách công việc: " + ex.Message); }
     }
 
-    // ───────────────────────────── Thao tác ─────────────────────────────
-
-    private void AddJob()
+    /// <summary>Lưu, tính lại lịch, đăng ký lại trình kích hoạt và vẽ lại danh sách sau khi công việc thay đổi.</summary>
+    private void JobsChanged(Job? recalc = null)
     {
-        using var editor = new JobEditorForm(new Job(), _runner, isNew: true);
-        if (editor.ShowDialog(this) != DialogResult.OK) return;
-        var job = editor.Job;
-        _jobs.Add(job);
-        _scheduler.Recalculate(job);
+        if (recalc != null) _scheduler.Recalculate(recalc);
+        _triggers.Reload();
         SaveJobs();
         RefreshList();
-        Log.Info($"Đã thêm công việc \"{job.Name}\".");
+    }
+
+    // ───────────────────────────── Thao tác ─────────────────────────────
+
+    private void AddJob() => AddJob(new Job(), isNew: true);
+
+    private void AddJob(Job job, bool isNew)
+    {
+        using var editor = new JobEditorForm(job, _runner, _jobs, this, isNew);
+        if (editor.ShowDialog(this) != DialogResult.OK) return;
+        var added = editor.Job;
+        _jobs.Add(added);
+        JobsChanged(added);
+        Log.Info($"Đã thêm công việc \"{added.Name}\".");
+    }
+
+    private void AddFromTemplate()
+    {
+        using var picker = new TemplatePickerForm();
+        if (picker.ShowDialog(this) != DialogResult.OK || picker.Selected == null) return;
+        // Mẫu gọi tới mẫu khác (vd "Nhập liệu" gọi "Đăng nhập") → thêm luôn các mẫu đó (Id đã được gán mới khi nạp).
+        foreach (var dep in picker.Dependencies.Where(d => _jobs.All(j => j.Id != d.Id)))
+        {
+            _jobs.Add(dep);
+            _scheduler.Recalculate(dep);
+            Log.Info($"Đã thêm công việc phụ thuộc \"{dep.Name}\" từ mẫu.");
+        }
+        if (picker.Dependencies.Count > 0) JobsChanged();
+        AddJob(picker.Selected, isNew: true);
     }
 
     private void EditSelected()
     {
         var job = SelectedJob();
         if (job == null) return;
-        using var editor = new JobEditorForm(job.Clone(), _runner, isNew: false);
+        using var editor = new JobEditorForm(job.Clone(), _runner, _jobs, this, isNew: false);
         if (editor.ShowDialog(this) != DialogResult.OK) return;
         int index = _jobs.FindIndex(j => j.Id == job.Id);
         if (index < 0) return;
         var updated = editor.Job;
         _jobs[index] = updated;
-        _scheduler.Recalculate(updated);
-        SaveJobs();
-        RefreshList();
+        JobsChanged(updated);
         Log.Info($"Đã cập nhật công việc \"{updated.Name}\".");
     }
 
@@ -344,20 +480,19 @@ internal sealed class MainForm : BaseForm, IUserNotifier
         copy.LastRun = null;
         copy.LastResult = null;
         _jobs.Insert(_jobs.IndexOf(job) + 1, copy);
-        _scheduler.Recalculate(copy);
-        SaveJobs();
-        RefreshList();
+        JobsChanged(copy);
     }
 
     private void DeleteSelected()
     {
         var job = SelectedJob();
         if (job == null) return;
-        if (MessageBox.Show(this, $"Xóa công việc \"{job.Name}\"?", "Xác nhận xóa",
+        var callers = _jobs.Where(j => j.Id != job.Id && (j.OnFailureJobId == job.Id || j.Steps.Any(s => s.JobRef == job.Id))).Select(j => j.Name).ToList();
+        var warning = callers.Count > 0 ? $"\n\n⚠ Công việc này đang được gọi bởi: {string.Join(", ", callers)}." : "";
+        if (MessageBox.Show(this, $"Xóa công việc \"{job.Name}\"?{warning}", "Xác nhận xóa",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
         _jobs.Remove(job);
-        SaveJobs();
-        RefreshList();
+        JobsChanged();
         Log.Info($"Đã xóa công việc \"{job.Name}\".");
     }
 
@@ -369,13 +504,87 @@ internal sealed class MainForm : BaseForm, IUserNotifier
             MessageBox.Show(this, "Hãy chọn một công việc để chạy.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
+        RunJob(job, "chạy thủ công");
+    }
+
+    private void RunJob(Job job, string trigger)
+    {
         if (job.Steps.Count(s => s.Enabled) == 0)
         {
-            MessageBox.Show(this, "Công việc chưa có bước nào được bật.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            Notify("Không chạy được", $"\"{job.Name}\" chưa có bước nào được bật.", true);
             return;
         }
         _btnStop.Enabled = true;
-        _ = _runner.EnqueueAsync(job, "chạy thủ công");
+        _ = _runner.EnqueueAsync(job, trigger);
+    }
+
+    /// <summary>Lệnh từ dòng lệnh / phiên bản khác: "show", "run &lt;tên&gt;", "stop".</summary>
+    public void HandleCommand(string command)
+    {
+        var cmd = command.Trim();
+        if (cmd.Equals("show", StringComparison.OrdinalIgnoreCase))
+        {
+            ShowMain();
+        }
+        else if (cmd.Equals("stop", StringComparison.OrdinalIgnoreCase))
+        {
+            _runner.StopAll();
+        }
+        else if (cmd.StartsWith("run ", StringComparison.OrdinalIgnoreCase))
+        {
+            var name = cmd[4..].Trim().Trim('"');
+            var job = _jobs.FirstOrDefault(j => j.Name.Equals(name, StringComparison.CurrentCultureIgnoreCase))
+                      ?? (_jobs.Where(j => j.Name.Contains(name, StringComparison.CurrentCultureIgnoreCase)).ToList() is { Count: 1 } one ? one[0] : null);
+            if (job == null)
+            {
+                Log.Warn($"Dòng lệnh: không tìm thấy công việc \"{name}\".");
+                Notify("Không tìm thấy công việc", name, true);
+                return;
+            }
+            RunJob(job, "dòng lệnh");
+        }
+    }
+
+    private void ShowHistory(Guid? jobId)
+    {
+        var form = new HistoryForm(_jobs, jobId);
+        form.Show(this);
+    }
+
+    private void ShowSettings()
+    {
+        using var f = new SettingsForm();
+        if (f.ShowDialog(this) != DialogResult.OK) return;
+        _scheduler.RecalculateAll(); // ngày nghỉ có thể đã đổi
+        RefreshList();
+    }
+
+    /// <summary>Tạo shortcut .lnk trên Desktop chạy công việc đang chọn (ScheduleApp.exe --run "Tên").</summary>
+    private void CreateShortcut()
+    {
+        var job = SelectedJob();
+        if (job == null || Environment.ProcessPath is not string exe) return;
+        try
+        {
+            var safe = string.Concat(job.Name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+            var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), safe + ".lnk");
+            var shellType = Type.GetTypeFromProgID("WScript.Shell") ?? throw new InvalidOperationException("Không có WScript.Shell.");
+            dynamic shell = Activator.CreateInstance(shellType)!;
+            dynamic link = shell.CreateShortcut(path);
+            link.TargetPath = exe;
+            link.Arguments = $"--run \"{job.Name}\"";
+            link.WorkingDirectory = Path.GetDirectoryName(exe);
+            link.IconLocation = exe + ",0";
+            link.Description = $"Chạy \"{job.Name}\" bằng ScheduleApp";
+            link.Save();
+            Log.Info($"Đã tạo shortcut: {path}");
+            MessageBox.Show(this, $"Đã tạo shortcut trên Desktop:\n{path}\n\nCó thể gán phím tắt trong Properties của shortcut, hoặc dùng cho Stream Deck.",
+                Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            ShowError("Không tạo được shortcut: " + ex.Message);
+        }
     }
 
     private void ImportJobs()
@@ -387,8 +596,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier
             var imported = JobStore.Import(dlg.FileName);
             _jobs.AddRange(imported);
             foreach (var j in imported) _scheduler.Recalculate(j);
-            SaveJobs();
-            RefreshList();
+            JobsChanged();
             Log.Info($"Đã nhập {imported.Count} công việc từ {dlg.FileName}.");
         }
         catch (Exception ex) { ShowError("Không nhập được file: " + ex.Message); }
@@ -401,7 +609,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier
         try
         {
             JobStore.Export(dlg.FileName, _jobs);
-            Log.Info($"Đã xuất {_jobs.Count} công việc ra {dlg.FileName}.");
+            Log.Info($"Đã xuất {_jobs.Count} công việc ra {dlg.FileName} (bí mật không nằm trong file xuất).");
         }
         catch (Exception ex) { ShowError("Không xuất được file: " + ex.Message); }
     }
@@ -478,8 +686,12 @@ internal sealed class MainForm : BaseForm, IUserNotifier
     {
         _uiTimer.Stop();
         _scheduler.Dispose();
+        _triggers.Dispose();
+        _guard.Dispose();
         _tray.Visible = false;
         _tray.Dispose();
+        SettingsStore.Current.LastAlive = DateTime.Now;
+        SettingsStore.Save();
         SaveJobs();
         base.OnFormClosed(e);
     }
@@ -499,10 +711,20 @@ internal sealed class MainForm : BaseForm, IUserNotifier
 
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == Win32.WM_HOTKEY && m.WParam == StopHotkeyId)
-            _runner.StopAll();
+        if (m.Msg == Win32.WM_HOTKEY)
+        {
+            int id = (int)m.WParam;
+            if (id == StopHotkeyId) _runner.StopAll();
+            else _triggers?.OnHotkey(id);
+        }
         base.WndProc(ref m);
     }
+
+    // ───────────────────────────── IHotkeyHost ─────────────────────────────
+
+    public bool RegisterHotkey(int id, uint modifiers, uint vk) => Win32.RegisterHotKey(Handle, id, modifiers, vk);
+
+    public void UnregisterHotkey(int id) => Win32.UnregisterHotKey(Handle, id);
 
     // ───────────────────────────── IUserNotifier ─────────────────────────────
 
@@ -531,7 +753,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier
     {
         if (IsDisposed) return;
         BeginInvoke(new MethodInvoker(() =>
-            _tray.ShowBalloonTip(5000, title, text, isError ? ToolTipIcon.Error : ToolTipIcon.Info)));
+            _tray.ShowBalloonTip(5000, title, text.Length > 0 ? text : " ", isError ? ToolTipIcon.Error : ToolTipIcon.Info)));
     }
 
     public IDisposable ClearScreenForAutomation()
@@ -539,6 +761,56 @@ internal sealed class MainForm : BaseForm, IUserNotifier
         IDisposable? restore = null;
         Invoke(new MethodInvoker(() => restore = ScreenHelper.MoveAppWindowsAway()));
         return new InvokeOnDispose(this, restore!);
+    }
+
+    /// <summary>Hiện một form không chặn trên luồng UI và chờ kết quả của nó.</summary>
+    private Task<T> ShowAndWait<T>(Func<Form> create, Func<Form, T> result, T canceled, CancellationToken ct)
+    {
+        var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        BeginInvoke(new MethodInvoker(() =>
+        {
+            var form = create();
+            var registration = ct.Register(() =>
+            {
+                try { form.BeginInvoke(new MethodInvoker(form.Close)); } catch (InvalidOperationException) { }
+            });
+            form.FormClosed += (_, _) =>
+            {
+                registration.Dispose();
+                tcs.TrySetResult(form.DialogResult is DialogResult.OK or DialogResult.Yes ? result(form) : canceled);
+                form.Dispose();
+            };
+            form.Show();
+        }));
+        return tcs.Task.WaitAsync(ct);
+    }
+
+    public Task<string?> PromptAsync(string title, string message, string defaultValue, bool password, CancellationToken ct) =>
+        ShowAndWait<string?>(() => new InputPromptForm(title, message, defaultValue, password), f => ((InputPromptForm)f).Value, null, ct);
+
+    public Task<bool> AskContinueAsync(string title, string message, CancellationToken ct) =>
+        AskContinueAsync(title, message, ct, "▶ Chạy tiếp", "■ Dừng flow");
+
+    private Task<bool> AskContinueAsync(string title, string message, CancellationToken ct, string yes, string no) =>
+        ShowAndWait(() => new ConfirmForm(title, message, yes, no), _ => true, false, ct);
+
+    public Task<DebugCommand> DebugPauseAsync(string jobName, int stepIndex, string stepText, string reason,
+        IReadOnlyDictionary<string, string> variables, CancellationToken ct)
+    {
+        var snapshot = new Dictionary<string, string>(variables, StringComparer.OrdinalIgnoreCase);
+        var tcs = new TaskCompletionSource<DebugCommand>(TaskCreationOptions.RunContinuationsAsynchronously);
+        BeginInvoke(new MethodInvoker(() =>
+        {
+            var bar = new DebugToolbar(jobName, stepText, reason, snapshot);
+            var registration = ct.Register(() =>
+            {
+                try { bar.BeginInvoke(new MethodInvoker(bar.Close)); } catch (InvalidOperationException) { }
+            });
+            bar.FormClosed += (_, _) => registration.Dispose();
+            _ = bar.Result.ContinueWith(t => tcs.TrySetResult(t.Result), TaskScheduler.Default);
+            bar.Show();
+        }));
+        return tcs.Task.WaitAsync(ct);
     }
 
     private sealed class InvokeOnDispose(Control owner, IDisposable inner) : IDisposable

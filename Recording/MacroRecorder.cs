@@ -82,42 +82,66 @@ internal sealed class MacroRecorder : IDisposable
     {
         if (nCode >= 0)
         {
-            MouseButtonKind? button = (int)wParam switch
-            {
-                0x201 => MouseButtonKind.Left,
-                0x204 => MouseButtonKind.Right,
-                0x207 => MouseButtonKind.Middle,
-                _ => null
-            };
-            if (button != null)
+            int msg = (int)wParam;
+            if (msg is 0x201 or 0x202 or 0x204 or 0x205 or 0x207 or 0x208 or 0x20A)
             {
                 var info = Marshal.PtrToStructure<Win32.MSLLHOOKSTRUCT>(lParam);
-                try { OnClick(new Point(info.pt.X, info.pt.Y), button.Value); }
+                var p = new Point(info.pt.X, info.pt.Y);
+                try
+                {
+                    switch (msg)
+                    {
+                        case 0x201: OnButtonDown(p, MouseButtonKind.Left); break;
+                        case 0x204: OnButtonDown(p, MouseButtonKind.Right); break;
+                        case 0x207: OnButtonDown(p, MouseButtonKind.Middle); break;
+                        case 0x202 or 0x205 or 0x208: OnButtonUp(p); break;
+                        case 0x20A: OnWheel(p, (short)(info.mouseData >> 16)); break;
+                    }
+                }
                 catch (Exception ex) { Debug.WriteLine(ex); }
             }
         }
         return Win32.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
     }
 
-    private void OnClick(Point p, MouseButtonKind button)
+    private (Point Point, MouseButtonKind Button, IntPtr Root, long Tick)? _pressed;
+
+    private void OnButtonDown(Point p, MouseButtonKind button)
     {
         var root = WindowHelper.RootWindowAt(p);
-        if (root == IntPtr.Zero || WindowHelper.BelongsToThisApp(root)) return;
+        if (root == IntPtr.Zero || WindowHelper.BelongsToThisApp(root))
+        {
+            _pressed = null;
+            return;
+        }
+        _pressed = (p, button, root, Environment.TickCount64);
+    }
+
+    /// <summary>Thả chuột: di chuyển xa điểm nhấn → kéo thả, ngược lại → click.</summary>
+    private void OnButtonUp(Point p)
+    {
+        if (_pressed is not { } down) return;
+        _pressed = null;
 
         FlushTyped();
-        long now = Environment.TickCount64;
-        var target = TargetFor(root);
-        int x = p.X, y = p.Y;
-        if (target.Length > 0)
+        long now = down.Tick;
+        var target = TargetFor(down.Root);
+        var origin = target.Length > 0 ? WindowHelper.GetRect(down.Root).Location : Point.Empty;
+        int x = down.Point.X - origin.X, y = down.Point.Y - origin.Y;
+
+        if (Math.Abs(p.X - down.Point.X) > 8 || Math.Abs(p.Y - down.Point.Y) > 8)
         {
-            var rect = WindowHelper.GetRect(root);
-            x -= rect.Left;
-            y -= rect.Top;
+            Add(new ActionStep
+            {
+                Type = StepType.MouseDrag, Target = target, X = x, Y = y,
+                X2 = p.X - origin.X, Y2 = p.Y - origin.Y, Button = down.Button
+            }, now, Environment.TickCount64);
+            return;
         }
 
         // Hai click liên tiếp cùng chỗ trong thời gian double-click của Windows → gộp thành double-click.
         if (_steps.Count > 0 && _steps[^1] is { Type: StepType.MouseClick, DoubleClick: false } last &&
-            last.Button == button && last.Target == target &&
+            last.Button == down.Button && last.Target == target &&
             now - _lastTick <= Win32.GetDoubleClickTime() &&
             Math.Abs(last.X - x) <= 4 && Math.Abs(last.Y - y) <= 4)
         {
@@ -127,7 +151,30 @@ internal sealed class MacroRecorder : IDisposable
             return;
         }
 
-        Add(new ActionStep { Type = StepType.MouseClick, Target = target, X = x, Y = y, Button = button }, now, now);
+        Add(new ActionStep { Type = StepType.MouseClick, Target = target, X = x, Y = y, Button = down.Button }, now, now);
+    }
+
+    /// <summary>Cuộn chuột: các lần cuộn liên tiếp trong cùng cửa sổ được gộp thành một bước.</summary>
+    private void OnWheel(Point p, short delta)
+    {
+        var root = WindowHelper.RootWindowAt(p);
+        if (root == IntPtr.Zero || WindowHelper.BelongsToThisApp(root)) return;
+        FlushTyped();
+        long now = Environment.TickCount64;
+        var target = TargetFor(root);
+        int notches = delta / 120;
+        if (notches == 0) notches = Math.Sign(delta);
+
+        if (_steps.Count > 0 && _steps[^1] is { Type: StepType.MouseScroll } last && last.Target == target &&
+            now - _lastTick < 1000 && Math.Sign(last.Count) == Math.Sign(notches))
+        {
+            last.Count += notches;
+            _lastTick = now;
+            Changed?.Invoke();
+            return;
+        }
+        var origin = target.Length > 0 ? WindowHelper.GetRect(root).Location : Point.Empty;
+        Add(new ActionStep { Type = StepType.MouseScroll, Target = target, X = p.X - origin.X, Y = p.Y - origin.Y, Count = notches, DelayAfterMs = 300 }, now, now);
     }
 
     // ───────────────────────────── Bàn phím ─────────────────────────────
@@ -234,10 +281,27 @@ internal sealed class MacroRecorder : IDisposable
         {
             _typedTarget = target;
             _typedStart = now;
+            CheckPasswordField();
         }
         _typed.Append(text);
         _typedEnd = now;
         Changed?.Invoke();
+    }
+
+    private volatile bool _typedIsPassword;
+
+    /// <summary>Kiểm tra (nền) ô đang nhập có phải ô mật khẩu không — nếu có, chữ gõ sẽ không được lưu.</summary>
+    private void CheckPasswordField()
+    {
+        _typedIsPassword = false;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                if (System.Windows.Automation.AutomationElement.FocusedElement?.Current.IsPassword == true) _typedIsPassword = true;
+            }
+            catch (Exception ex) { Debug.WriteLine(ex); }
+        });
     }
 
     private void FlushTyped()
@@ -245,6 +309,9 @@ internal sealed class MacroRecorder : IDisposable
         if (_typed.Length == 0) return;
         var text = _typed.ToString();
         _typed.Clear();
+        // Ô mật khẩu: không lưu chữ thật vào jobs.json, dùng bí mật mã hóa thay thế.
+        if (_typedIsPassword) text = "{{secret:MatKhau}}";
+        _typedIsPassword = false;
         Add(new ActionStep { Type = StepType.TypeText, Target = _typedTarget, Text = text }, _typedStart, _typedEnd);
     }
 
@@ -276,6 +343,12 @@ internal sealed class MacroRecorder : IDisposable
     private void Add(ActionStep step, long start, long end)
     {
         if (_steps.Count > 0) _steps[^1].DelayAfterMs = (int)Math.Clamp(start - _lastTick, 150, 5000);
+
+        // Chuyển sang cửa sổ khác (thường là cửa sổ vừa mở) → chờ cửa sổ đó xuất hiện trước khi thao tác.
+        var previousTarget = _steps.LastOrDefault(s => s.Type != StepType.WaitForWindow)?.Target;
+        if (step.Target.Length > 0 && previousTarget != null && previousTarget.Length > 0 && previousTarget != step.Target)
+            _steps.Add(new ActionStep { Type = StepType.WaitForWindow, Target = step.Target, DelayMs = 15_000, DelayAfterMs = 300 });
+
         _steps.Add(step);
         _lastTick = end;
         Changed?.Invoke();

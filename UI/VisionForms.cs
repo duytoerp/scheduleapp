@@ -17,6 +17,9 @@ internal sealed class RegionSelectorForm : Form
 
     public Bitmap? Result { get; private set; }
 
+    /// <summary>Mức scale (DPI/96) của màn hình chứa vùng vừa chọn ở lần chọn gần nhất.</summary>
+    public static double LastScale { get; private set; } = 1.0;
+
     public RegionSelectorForm()
     {
         _virtual = ScreenCapture.VirtualScreen;
@@ -119,6 +122,8 @@ internal sealed class RegionSelectorForm : Form
             return;
         }
         Result = ScreenCapture.Crop(_screen, _selection);
+        LastScale = Native.PowerHelper.ScaleAt(new Point(
+            _virtual.X + _selection.X + _selection.Width / 2, _virtual.Y + _selection.Y + _selection.Height / 2));
         DialogResult = DialogResult.OK;
     }
 
@@ -213,7 +218,8 @@ internal sealed class RecorderToolbar : BaseForm
 
         var hint = new Label
         {
-            Text = "Thao tác bình thường trên các ứng dụng khác — mọi click và phím gõ được ghi lại (lưu dạng chữ thường, tránh gõ mật khẩu).",
+            Text = "Thao tác bình thường trên các ứng dụng khác — click, kéo thả, cuộn chuột và phím gõ được ghi lại. " +
+                   "Chữ gõ vào ô mật khẩu được thay bằng {{secret:MatKhau}} (không lưu mật khẩu thật).",
             AutoSize = true,
             MaximumSize = new Size(560, 0),
             ForeColor = UiText.Muted,

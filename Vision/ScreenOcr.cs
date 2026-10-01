@@ -142,6 +142,27 @@ internal static class ScreenOcr
         return prev[b.Length];
     }
 
+    /// <summary>Đọc toàn bộ chữ trên ảnh, mỗi dòng OCR một dòng.</summary>
+    public static async Task<string> ReadTextAsync(Bitmap image)
+    {
+        double scale = Math.Max(image.Width, image.Height) * 2 <= OcrEngine.MaxImageDimension ? 2.0 : 1.0;
+        using var scaled = scale == 1.0 ? ScreenCapture.Crop(image, new Rectangle(0, 0, image.Width, image.Height)) : Resize(image, scale);
+        var result = await Engine.RecognizeAsync(await ToSoftwareBitmapAsync(scaled));
+        return string.Join("\n", result.Lines.Select(l => l.Text));
+    }
+
+    /// <summary>Bỏ dấu tiếng Việt (giữ nguyên chữ hoa/thường, khoảng trắng và dấu câu).</summary>
+    public static string RemoveDiacritics(string s)
+    {
+        var sb = new StringBuilder(s.Length);
+        foreach (var c in s.Normalize(NormalizationForm.FormD))
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.NonSpacingMark) continue;
+            sb.Append(c switch { 'đ' => 'd', 'Đ' => 'D', _ => c });
+        }
+        return sb.ToString().Normalize(NormalizationForm.FormC);
+    }
+
     /// <summary>Chuẩn hóa để so khớp: bỏ dấu tiếng Việt, chữ thường, chỉ giữ chữ và số.</summary>
     public static string Squash(string s)
     {
