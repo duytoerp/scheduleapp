@@ -222,7 +222,7 @@ internal static class BrowserClient
 
     private sealed record TabInfo(string Id, string Title, string Url, string WebSocketUrl);
 
-    private static async Task<TabInfo> FindTabAsync(string query, CancellationToken ct)
+    private static async Task<List<TabInfo>> ListTabsAsync(CancellationToken ct)
     {
         string json;
         try
@@ -242,6 +242,51 @@ internal static class BrowserClient
             tabs.Add(new TabInfo(t.GetProperty("id").GetString() ?? "", t.GetProperty("title").GetString() ?? "",
                 t.GetProperty("url").GetString() ?? "", ws.GetString() ?? ""));
         }
+        return tabs;
+    }
+
+    /// <summary>
+    /// Tab cần điều khiển: <paramref name="query"/> nếu có, ngược lại tab đầu tiên có URL chứa một trong <paramref name="preferred"/>
+    /// (vd "main.aspx" của Dynamics 365), không có thì tab đầu tiên.
+    /// </summary>
+    internal static async Task<string> PreferTabAsync(string query, string[] preferred, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(query)) return query;
+        var tabs = await ListTabsAsync(ct);
+        foreach (var p in preferred)
+            if (tabs.Any(t => t.Url.Contains(p, StringComparison.OrdinalIgnoreCase))) return p;
+        return "";
+    }
+
+    /// <summary>Trình duyệt điều khiển đang mở (cổng remote debugging trả lời).</summary>
+    internal static Task<bool> IsRunningAsync(CancellationToken ct) => IsAvailableAsync(ct);
+
+    /// <summary>Chụp ảnh nội dung tab (PNG) — chụp được cả khi cửa sổ trình duyệt bị che hoặc chạy headless.</summary>
+    internal static async Task<byte[]> CaptureScreenshotAsync(string tabQuery, CancellationToken ct)
+    {
+        var result = await SendAsync(tabQuery, "Page.captureScreenshot", new { format = "png" }, ct);
+        return Convert.FromBase64String(result.GetProperty("data").GetString() ?? "");
+    }
+
+    /// <summary>Phần tử có trên trang không; chờ tối đa <paramref name="timeoutMs"/> (0 = kiểm tra một lần).</summary>
+    internal static async Task<bool> ExistsAsync(string tabQuery, string selector, int timeoutMs, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(selector)) throw new InvalidOperationException("Chưa nhập bộ chọn phần tử (CSS selector).");
+        var probe = $$"""
+            (() => { {{FindFunction}} const el = __find({{JsonSerializer.Serialize(selector)}}); return !!el && (el.offsetParent !== null || getComputedStyle(el).position === 'fixed'); })()
+            """;
+        var sw = Stopwatch.StartNew();
+        while (true)
+        {
+            if (await EvalAsync(tabQuery, probe, ct) == "true") return true;
+            if (sw.ElapsedMilliseconds >= timeoutMs) return false;
+            await Task.Delay(PollMs, ct);
+        }
+    }
+
+    private static async Task<TabInfo> FindTabAsync(string query, CancellationToken ct)
+    {
+        var tabs = await ListTabsAsync(ct);
         var tab = PickTab(tabs.Select(t => (t.Url, t.Title)).ToList(), query);
         if (tab < 0)
             throw new InvalidOperationException(tabs.Count == 0 ? "Trình duyệt không có tab nào đang mở." : $"Không có tab nào có URL/tiêu đề chứa \"{query.Trim()}\".");
@@ -274,12 +319,12 @@ internal static class BrowserClient
     }
 
     /// <summary>Gửi một lệnh DevTools tới tab và trả về phần "result".</summary>
-    private static async Task<JsonElement> SendAsync(string tabQuery, string method, object parameters, CancellationToken ct)
+    private static async Task<JsonElement> SendAsync(string tabQuery, string method, object parameters, CancellationToken ct, int timeoutMs = 30_000)
     {
         var tab = await FindTabAsync(tabQuery, ct);
         using var ws = new ClientWebSocket();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        timeout.CancelAfter(Math.Max(5_000, timeoutMs));
         await ws.ConnectAsync(new Uri(tab.WebSocketUrl), timeout.Token);
 
         int id = Interlocked.Increment(ref _messageId);
@@ -309,10 +354,10 @@ internal static class BrowserClient
     }
 
     /// <summary>Chạy JavaScript trong tab, trả kết quả dạng chuỗi (đối tượng → JSON).</summary>
-    public static async Task<string> EvalAsync(string tabQuery, string expression, CancellationToken ct)
+    public static async Task<string> EvalAsync(string tabQuery, string expression, CancellationToken ct, int timeoutMs = 30_000)
     {
         var result = await SendAsync(tabQuery, "Runtime.evaluate",
-            new { expression, awaitPromise = true, returnByValue = true, userGesture = true }, ct);
+            new { expression, awaitPromise = true, returnByValue = true, userGesture = true }, ct, timeoutMs);
         if (result.TryGetProperty("exceptionDetails", out var ex))
         {
             var msg = ex.TryGetProperty("exception", out var e) && e.TryGetProperty("description", out var d)

@@ -3,6 +3,7 @@ using ScheduleApp.Models;
 using ScheduleApp.Native;
 using ScheduleApp.Services;
 using ScheduleApp.Services.Engine;
+using ScheduleApp.Services.Testing;
 
 namespace ScheduleApp.UI;
 
@@ -143,6 +144,18 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         more.DropDownItems.Add(new ToolStripSeparator());
         more.DropDownItems.Add("Mở thư mục log", null, (_, _) => OpenFolder(Log.LogDir));
         more.DropDownItems.Add("Mở thư mục ảnh lỗi", null, (_, _) => OpenFolder(ErrorScreenshots.Dir));
+        more.DropDownItems.Add("Mở thư mục báo cáo kiểm thử", null, (_, _) => OpenFolder(TestReport.RootDir));
+        more.DropDownItems.Add("🧪 Chạy mọi kịch bản kiểm thử", null, async (_, _) =>
+        {
+            var tests = TestSuite.Select(_jobs, "*");
+            if (tests.Count == 0)
+            {
+                MessageBox.Show(this, "Chưa có kịch bản kiểm thử nào. Mở công việc → tab \"Lỗi · thông báo · kiểm thử\" → tick \"Đây là kịch bản kiểm thử\".",
+                    Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            await RunTestsAsync(tests, "Tất cả kịch bản kiểm thử");
+        });
         more.DropDownItems.Add("Mở thư mục dữ liệu", null, (_, _) => OpenFolder(JobStore.DataDir));
         more.DropDownItems.Add(new ToolStripSeparator());
         more.DropDownItems.Add("Kiểm tra cập nhật…", null, async (_, _) => await CheckUpdateAsync());
@@ -183,6 +196,22 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
 
         var listMenu = new ContextMenuStrip();
         listMenu.Items.Add("▶ Chạy ngay", null, (_, _) => RunSelected());
+        listMenu.Items.Add("🧪 Chạy kiểm thử && xem báo cáo", null, async (_, _) =>
+        {
+            if (SelectedJob() is { } j) await RunTestsAsync([j], j.Name);
+        });
+        var runGroup = new ToolStripMenuItem("🧪 Chạy cả nhóm như bộ kiểm thử");
+        runGroup.Click += async (_, _) =>
+        {
+            if (SelectedJob() is { Group.Length: > 0 } j) await RunTestsAsync(TestSuite.Select(_jobs, j.Group), j.Group);
+        };
+        listMenu.Items.Add(runGroup);
+        listMenu.Opening += (_, _) =>
+        {
+            var g = SelectedJob()?.Group ?? "";
+            runGroup.Text = g.Length > 0 ? $"🧪 Chạy nhóm \"{g}\" như bộ kiểm thử" : "🧪 Chạy cả nhóm như bộ kiểm thử";
+            runGroup.Enabled = g.Length > 0;
+        };
         listMenu.Items.Add("Sửa…", null, (_, _) => EditSelected());
         listMenu.Items.Add("Nhân bản", null, (_, _) => DuplicateSelected());
         listMenu.Items.Add("Lịch sử chạy…", null, (_, _) => { if (SelectedJob() is { } j) ShowHistory(j.Id); });
@@ -736,6 +765,28 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
             Log.Info($"Đã xuất {_jobs.Count} công việc ra {dlg.FileName} (bí mật không nằm trong file xuất).");
         }
         catch (Exception ex) { ShowError("Không xuất được file: " + ex.Message); }
+    }
+
+    /// <summary>Chạy các kịch bản như một bộ kiểm thử rồi mở báo cáo HTML.</summary>
+    private async Task RunTestsAsync(IReadOnlyList<Job> jobs, string name)
+    {
+        var runnable = jobs.Where(j => j.Steps.Any(s => s.Enabled)).ToList();
+        if (runnable.Count == 0)
+        {
+            Notify("Không chạy được", "Không có kịch bản nào có bước được bật.", true);
+            return;
+        }
+        _btnStop.Enabled = true;
+        try
+        {
+            var result = await TestSuite.RunAsync(_runner, runnable, name);
+            Notify(result.Ok ? "🧪 Kiểm thử ĐẠT" : "🧪 Kiểm thử KHÔNG ĐẠT", TestReport.Summary(result.Cases), !result.Ok);
+            Process.Start(new ProcessStartInfo(result.ReportPath) { UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            ShowError("Không ghi / mở được báo cáo kiểm thử: " + ex.Message);
+        }
     }
 
     private static void OpenFolder(string path)

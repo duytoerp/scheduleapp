@@ -32,5 +32,5 @@ public class SampleTests
     }
 
     [Fact]
-    public void ThreeSampleFilesAreEmbedded() => Assert.Equal(3, SampleFiles().Count());
+    public void FourSampleFilesAreEmbedded() => Assert.Equal(4, SampleFiles().Count());
 }

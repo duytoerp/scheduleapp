@@ -23,7 +23,22 @@ public sealed class RunOptions
     /// <summary>Biến có sẵn khi bắt đầu (vd {{trigger.file}} khi kích hoạt do có file mới).</summary>
     public Dictionary<string, string>? Variables { get; init; }
 
+    /// <summary>Chạy kiểm thử: ghi lại kết quả từng bước để xuất báo cáo (null = không ghi).</summary>
+    public Testing.TestRecorder? Recorder { get; init; }
+
     public static readonly RunOptions Default = new();
+
+    /// <summary>Bản sao có gắn bộ ghi kết quả kiểm thử.</summary>
+    public RunOptions With(Testing.TestRecorder recorder) => new()
+    {
+        StartIndex = StartIndex,
+        IsTest = IsTest,
+        StepMode = StepMode,
+        UseBreakpoints = UseBreakpoints,
+        StepStarted = StepStarted,
+        Variables = Variables,
+        Recorder = recorder
+    };
 }
 
 /// <summary>Lệnh của người dùng khi flow đang tạm dừng gỡ lỗi.</summary>
@@ -49,6 +64,7 @@ public sealed class FlowContext
         Ct = ct;
         StepMode = options.StepMode;
         Expander = new VariableExpander(Vars);
+        CurrentJob = rootJob;
     }
 
     public Job RootJob { get; }
@@ -72,6 +88,14 @@ public sealed class FlowContext
     /// <summary>Ảnh chụp màn hình lần lỗi gần nhất.</summary>
     public string? LastScreenshot { get; set; }
 
+    /// <summary>Công việc đang chạy (gốc hoặc công việc con được gọi).</summary>
+    public Job CurrentJob { get; set; }
+
+    /// <summary>Giá trị thực tế của điều kiện vừa đánh giá (vd giá trị field) — hiện trong báo cáo khi bước Kiểm tra sai.</summary>
+    public string ConditionDetail { get; set; } = "";
+
+    public Testing.TestRecorder? Recorder => Options.Recorder;
+
     /// <summary>Kiểm tra trước mỗi bước (chế độ an toàn: tạm dừng khi người dùng đụng chuột/phím).</summary>
     public Func<FlowContext, Task>? BeforeStep { get; init; }
 
@@ -87,6 +111,7 @@ public sealed class FlowContext
         copy.Text = s.Type == StepType.WriteData ? s.Text : Expand(s.Text);
         copy.RowRef = Expand(s.RowRef);
         copy.Headers = Expand(s.Headers);
+        copy.Message = Expand(s.Message);
         return copy;
     }
 

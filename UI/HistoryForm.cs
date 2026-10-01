@@ -34,10 +34,11 @@ internal sealed class HistoryForm : BaseForm
         _list.Columns.Add("Ảnh", 50);
 
         var openShot = new Button { Text = "Mở ảnh", AutoSize = true };
+        var openReport = new Button { Text = "Mở báo cáo kiểm thử", AutoSize = true };
         var openLog = new Button { Text = "Mở nhật ký ngày này", AutoSize = true };
         var clear = new Button { Text = "Xóa lịch sử", AutoSize = true };
         var top = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Top, WrapContents = false, Padding = new Padding(0, 0, 0, 6) };
-        top.Controls.AddRange([new Label { Text = "Công việc:", AutoSize = true, Margin = new Padding(3, 6, 3, 3) }, _cboJob, _chkErrors, openShot, openLog, clear, _lblStats]);
+        top.Controls.AddRange([new Label { Text = "Công việc:", AutoSize = true, Margin = new Padding(3, 6, 3, 3) }, _cboJob, _chkErrors, openShot, openReport, openLog, clear, _lblStats]);
 
         _split.Panel1.Controls.Add(_list);
         _split.Panel2.Controls.Add(_picture);
@@ -65,6 +66,10 @@ internal sealed class HistoryForm : BaseForm
         _list.SelectedIndexChanged += (_, _) => ShowSelectedScreenshot();
         _list.DoubleClick += (_, _) => OpenScreenshot();
         openShot.Click += (_, _) => OpenScreenshot();
+        openReport.Click += (_, _) =>
+        {
+            if (Selected()?.Report is string report && File.Exists(report)) Process.Start(new ProcessStartInfo(report) { UseShellExecute = true });
+        };
         openLog.Click += (_, _) =>
         {
             if (Selected() is not { } r) return;
@@ -110,7 +115,7 @@ internal sealed class HistoryForm : BaseForm
             var item = new ListViewItem([
                 r.Start.ToString("HH:mm:ss dd/MM/yyyy"), r.JobName, r.Trigger,
                 r.Duration.TotalSeconds < 60 ? $"{r.Duration.TotalSeconds:0.#} giây" : $"{r.Duration.TotalMinutes:0.#} phút",
-                (r.Ok ? "✔ " : "✖ ") + r.Message, r.Screenshot != null ? "📷" : ""
+                (r.Ok ? "✔ " : "✖ ") + r.Message, (r.Screenshot != null ? "📷" : "") + (r.Report != null ? "📄" : "")
             ]) { Tag = r, ForeColor = r.Ok ? SystemColors.WindowText : Color.FromArgb(180, 30, 20) };
             _list.Items.Add(item);
         }

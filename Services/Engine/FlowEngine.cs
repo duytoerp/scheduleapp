@@ -1,4 +1,5 @@
 using ScheduleApp.Models;
+using ScheduleApp.Services.Testing;
 
 namespace ScheduleApp.Services.Engine;
 
@@ -15,6 +16,20 @@ public static class FlowEngine
 
     /// <param name="isRoot">Flow gốc (báo vị trí bước cho UI, áp dụng điểm dừng). Flow con chạy "trong" bước gọi nó.</param>
     public static async Task<FlowResult> RunAsync(Job job, FlowContext ctx, int startIndex, bool isRoot)
+    {
+        var caller = ctx.CurrentJob;
+        ctx.CurrentJob = job;
+        try
+        {
+            return await RunCoreAsync(job, ctx, startIndex, isRoot);
+        }
+        finally
+        {
+            ctx.CurrentJob = caller;
+        }
+    }
+
+    private static async Task<FlowResult> RunCoreAsync(Job job, FlowContext ctx, int startIndex, bool isRoot)
     {
         var steps = job.Steps;
         var fs = FlowStructure.Build(steps);
@@ -177,6 +192,11 @@ public static class FlowEngine
                     if (step.Force)
                     {
                         Log.Warn($"{indent}   ■ Dừng flow (lỗi){(msg.Length > 0 ? ": " + msg : "")}");
+                        ctx.Recorder?.Add(new StepRecord
+                        {
+                            Number = pc + 1, Depth = ctx.Depth, JobName = job.Name, Description = Log.Redact(step.Describe()),
+                            Ok = false, Detail = Log.Redact(msg), Start = DateTime.Now
+                        });
                         return new FlowResult(false, msg.Length > 0 ? msg : "Dừng flow theo bước " + (pc + 1), pc + 1, ctx.LastScreenshot);
                     }
                     Log.Info($"{indent}   ■ Dừng flow{(msg.Length > 0 ? ": " + msg : "")}");
@@ -237,12 +257,16 @@ public static class FlowEngine
     {
         int attempts = 1 + Math.Max(0, step.Retries);
         string error = "";
+        var started = DateTime.Now;
+        ActionStep? lastExpanded = null;
         for (int i = 1; i <= attempts; i++)
         {
             ActionStep? expanded = null;
             try
             {
+                ctx.ConditionDetail = "";
                 expanded = ctx.ExpandStep(step);
+                lastExpanded = expanded;
                 await action(expanded);
                 // Nếu/Lặp chỉ đọc trạng thái lỗi — không xóa, để các bước bên trong khối vẫn dùng được {{lastError}}.
                 if (!step.IsControl)
@@ -250,6 +274,7 @@ public static class FlowEngine
                     ctx.LastStepFailed = false;
                     ctx.Vars["lastError"] = "";
                 }
+                Record(ctx, step, expanded, pc, started, true, step.Type == StepType.Assert ? ctx.ConditionDetail : "");
                 return new Attempt(true, "", expanded);
             }
             catch (OperationCanceledException) when (ctx.Ct.IsCancellationRequested)
@@ -270,7 +295,29 @@ public static class FlowEngine
         ctx.Vars["lastError"] = error;
         if (screenshot && SettingsStore.Current.ScreenshotOnError)
             ctx.LastScreenshot = ErrorScreenshots.Capture(ctx.RootJob.Name, pc + 1) ?? ctx.LastScreenshot;
+        var record = Record(ctx, step, lastExpanded, pc, started, false, error);
+        if (record != null && screenshot) record.Screenshot = await ctx.Recorder!.CaptureAsync(lastExpanded ?? step, pc + 1, ctx.Ct);
         return new Attempt(false, error, null);
+    }
+
+    /// <summary>Ghi kết quả bước vào báo cáo kiểm thử (khi đang chạy kiểm thử).</summary>
+    private static StepRecord? Record(FlowContext ctx, ActionStep step, ActionStep? expanded, int pc, DateTime started, bool ok, string detail)
+    {
+        if (ctx.Recorder == null) return null;
+        var record = new StepRecord
+        {
+            Number = pc + 1,
+            Depth = ctx.Depth,
+            JobName = ctx.CurrentJob.Name,
+            Description = Log.Redact((expanded ?? step).Describe()),
+            IsAssert = step.Type == StepType.Assert,
+            Ok = ok,
+            Detail = Log.Redact(detail),
+            Start = started,
+            Seconds = (DateTime.Now - started).TotalSeconds
+        };
+        ctx.Recorder.Add(record);
+        return record;
     }
 
     /// <summary>
@@ -283,9 +330,10 @@ public static class FlowEngine
         fail = null;
         Log.Error($"{new string(' ', ctx.Depth * 3)}   ✖ Bước {pc + 1} lỗi: {error}");
 
-        var action = step.OnError == ErrorAction.Default
-            ? (job.StopOnError ? ErrorAction.Stop : ErrorAction.Continue)
-            : step.OnError;
+        // Kiểm tra (Assert) mặc định là "kiểm tra mềm": ghi nhận sai rồi chạy tiếp để thấy hết các chỗ sai trong một lần chạy.
+        var action = step.OnError != ErrorAction.Default ? step.OnError
+            : step.Type == StepType.Assert ? ErrorAction.Continue
+            : job.StopOnError ? ErrorAction.Stop : ErrorAction.Continue;
 
         switch (action)
         {

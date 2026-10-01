@@ -8,6 +8,7 @@ namespace ScheduleApp;
 ///   --minimized            khởi động ẩn ở khay hệ thống
 ///   --run "Tên công việc"  chạy ngay một công việc (gửi tới phiên bản đang chạy nếu có)
 ///   --stop                 dừng flow đang chạy
+///   --test "Nhóm/Tên"      chạy bộ kiểm thử không mở giao diện, xuất báo cáo (--report "thư mục"); mã thoát 0 = đạt, 1 = không đạt
 /// </summary>
 internal static class Program
 {
@@ -16,6 +17,13 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        if (HasArg(args, "--test"))
+        {
+            // Chạy độc lập với phiên bản đang mở (không cần giao diện) — dùng cho CI / lịch chạy đêm.
+            Environment.ExitCode = Services.Testing.TestCli.Run(ArgValue(args, "--test") ?? "", ArgValue(args, "--report"));
+            return;
+        }
+
         string? runJob = ArgValue(args, "--run");
         bool stop = HasArg(args, "--stop");
         bool startHidden = HasArg(args, "--minimized") || runJob != null || stop;

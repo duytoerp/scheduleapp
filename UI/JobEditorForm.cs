@@ -65,6 +65,17 @@ internal sealed class JobEditorForm : BaseForm
     private readonly CheckBox _chkStopOnError = new() { Text = "Dừng flow khi một bước bị lỗi (mặc định cho các bước \"Theo cài đặt của công việc\")", AutoSize = true };
     private readonly ComboBox _cboFailureJob = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 320 };
     private readonly ComboBox _cboNotify = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
+    private readonly CheckBox _chkTestCase = new()
+    {
+        Text = "🧪 Đây là kịch bản kiểm thử — mỗi lần chạy ghi kết quả từng bước / từng Kiểm tra và xuất báo cáo (HTML + JUnit XML)",
+        AutoSize = true,
+        Margin = new Padding(3, 14, 3, 3)
+    };
+    private readonly CheckBox _chkCleanup = new()
+    {
+        Text = "Tự xóa dữ liệu Dynamics 365 do flow tạo ra ({{d365.created}}) sau khi chạy — kể cả khi kiểm thử thất bại",
+        AutoSize = true
+    };
 
     private readonly FlowDesigner _designer = new() { Dock = DockStyle.Fill };
     private readonly StepToolbox _toolbox = new() { Dock = DockStyle.Fill };
@@ -376,7 +387,7 @@ internal sealed class JobEditorForm : BaseForm
 
     private TabPage BuildErrorTab()
     {
-        var page = new TabPage("Lỗi & thông báo") { Padding = new Padding(6), UseVisualStyleBackColor = true };
+        var page = new TabPage("Lỗi · thông báo · kiểm thử") { Padding = new Padding(6), UseVisualStyleBackColor = true };
         var grid = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 2 };
         grid.Controls.Add(_chkStopOnError, 0, 0);
         grid.SetColumnSpan(_chkStopOnError, 2);
@@ -395,6 +406,10 @@ internal sealed class JobEditorForm : BaseForm
             });
         grid.Controls.Add(Caption("Gửi thông báo (Telegram/email/webhook):"), 0, 2);
         grid.Controls.Add(_cboNotify, 1, 2);
+        grid.Controls.Add(_chkTestCase, 0, 3);
+        grid.SetColumnSpan(_chkTestCase, 2);
+        grid.Controls.Add(_chkCleanup, 0, 4);
+        grid.SetColumnSpan(_chkCleanup, 2);
 
         var hint = new Label
         {
@@ -406,7 +421,7 @@ internal sealed class JobEditorForm : BaseForm
             ForeColor = UiText.Muted,
             Margin = new Padding(3, 10, 3, 3)
         };
-        grid.Controls.Add(hint, 0, 3);
+        grid.Controls.Add(hint, 0, 6);
         grid.SetColumnSpan(hint, 2);
         page.Controls.Add(grid);
         return page;
@@ -446,6 +461,8 @@ internal sealed class JobEditorForm : BaseForm
         _chkStopOnError.Checked = _job.StopOnError;
         _cboFailureJob.SelectedIndex = _job.OnFailureJobId is Guid fid ? _otherJobs.FindIndex(j => j.Id == fid) + 1 : 0;
         _cboNotify.SelectedIndex = Array.IndexOf(NotifyModes, _job.NotifyMode);
+        _chkTestCase.Checked = _job.IsTestCase;
+        _chkCleanup.Checked = _job.CleanupTestData;
         foreach (var v in _job.Variables) _gridVars.Rows.Add(v.Name, v.Value);
         RefreshTriggers();
         _designer.SetSteps(_job.Steps);
@@ -575,6 +592,8 @@ internal sealed class JobEditorForm : BaseForm
         job.StopOnError = _chkStopOnError.Checked;
         job.OnFailureJobId = _cboFailureJob.SelectedIndex > 0 ? _otherJobs[_cboFailureJob.SelectedIndex - 1].Id : null;
         job.NotifyMode = NotifyModes[Math.Max(0, _cboNotify.SelectedIndex)];
+        job.IsTestCase = _chkTestCase.Checked;
+        job.CleanupTestData = _chkCleanup.Checked;
         job.Variables = ReadVariables();
         if (!ReferenceEquals(job, _job)) job.Triggers = _job.Triggers.ToList();
     }
@@ -672,8 +691,10 @@ internal sealed class JobEditorForm : BaseForm
         names.AddRange(ReadVariables().Select(v => v.Name));
         foreach (var s in _job.Steps)
         {
-            if (s.Type is StepType.SetVariable or StepType.RunCommand or StepType.Browser or StepType.HttpRequest or StepType.AskAi
+            if (s.Type is StepType.SetVariable or StepType.RunCommand or StepType.Browser or StepType.HttpRequest or StepType.AskAi or StepType.Dynamics
                 && s.Variable.Trim().Length > 0) names.Add(s.Variable.Trim());
+            if (s.Type == StepType.Dynamics) names.AddRange(["d365.lastId", "d365.created"]);
+            if (s.Type == StepType.Dynamics && s.D365Action == D365Action.WebApi) names.AddRange(["http.status", "http.body"]);
             if (s.Type == StepType.Loop && s.LoopKind is LoopKind.Rows or LoopKind.Lines or LoopKind.Files) names.Add(s.LoopVar);
             if (s.Type == StepType.Loop && s.LoopKind == LoopKind.Rows) names.Add(s.LoopVar + ".rowNumber");
             if (s.Type == StepType.HttpRequest) names.AddRange(["http.status", "http.body"]);

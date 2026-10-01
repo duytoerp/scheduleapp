@@ -1,6 +1,8 @@
+using ScheduleApp.Automation;
 using ScheduleApp.Models;
 using ScheduleApp.Native;
 using ScheduleApp.Services.Engine;
+using ScheduleApp.Services.Testing;
 
 namespace ScheduleApp.Services;
 
@@ -34,6 +36,9 @@ public sealed class FlowRunner
         _findJob = findJob;
     }
 
+    /// <summary>Số lần người dùng bấm dừng tất cả — bộ kiểm thử dùng để biết cần ngừng chạy các kịch bản còn lại.</summary>
+    public int StopCount { get; private set; }
+
     public bool IsBusy
     {
         get { lock (_sync) return _pending.Count > 0; }
@@ -63,7 +68,29 @@ public sealed class FlowRunner
             started = DateTime.Now;
             RunningChanged?.Invoke(true);
 
-            var result = await Task.Run(() => RunFlowAsync(job, trigger, options ?? RunOptions.Default, stopToken));
+            // Kịch bản kiểm thử chạy riêng lẻ (theo lịch, thủ công…) cũng có báo cáo của nó; chạy theo bộ thì bộ tự ghi báo cáo chung.
+            options ??= RunOptions.Default;
+            string? reportFolder = null;
+            if (job.IsTestCase && options.Recorder == null)
+            {
+                reportFolder = TestReport.NewFolder(job.Name);
+                options = options.With(new TestRecorder(Path.Combine(reportFolder, "shots")));
+            }
+
+            var result = await Task.Run(() => RunFlowAsync(job, trigger, options, stopToken));
+            string? report = null;
+            if (reportFolder != null)
+            {
+                try
+                {
+                    report = TestReport.Write(reportFolder, job.Name, [TestCaseResult.Create(job, started, DateTime.Now, result, options.Recorder!)]);
+                    Log.Info($"   📄 Báo cáo kiểm thử: {report}");
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    Log.Warn("   Không ghi được báo cáo kiểm thử: " + ex.Message);
+                }
+            }
             var record = new RunRecord
             {
                 JobId = job.Id,
@@ -74,12 +101,13 @@ public sealed class FlowRunner
                 Ok = result.Ok,
                 Message = result.Message,
                 FailedStep = Math.Max(0, result.FailedStep),
-                Screenshot = result.Screenshot
+                Screenshot = result.Screenshot,
+                Report = report
             };
             RunHistory.Add(record);
             JobFinished?.Invoke(job.Id, started, result.Ok, result.Message);
             if (!result.Ok) _ui.Notify($"Flow \"{job.Name}\" không hoàn thành", result.Message, true);
-            if (options?.IsTest != true) _ = NotificationService.SendForRunAsync(job, record);
+            if (!options.IsTest) _ = NotificationService.SendForRunAsync(job, record);
             return result;
         }
         catch (OperationCanceledException)
@@ -106,6 +134,7 @@ public sealed class FlowRunner
         lock (_sync)
         {
             if (_pending.Count == 0) return;
+            StopCount++;
             _stopAll.Cancel();
             _stopAll = new CancellationTokenSource();
         }
@@ -122,6 +151,7 @@ public sealed class FlowRunner
             StepMode = options.StepMode,
             UseBreakpoints = options.UseBreakpoints,
             Variables = options.Variables,
+            Recorder = options.Recorder,
             StepStarted = i =>
             {
                 StatusChanged?.Invoke($"Đang chạy \"{job.Name}\" — bước {i + 1}/{total}: {job.Steps[i].Describe()}");
@@ -159,6 +189,7 @@ public sealed class FlowRunner
                 var r = await FlowEngine.RunAsync(cleanup, ctx, 0, isRoot: false);
                 if (!r.Ok) Log.Error($"   Công việc xử lý lỗi cũng thất bại: {r.Message}");
             }
+            await CleanupTestDataAsync(job, ctx);
 
             if (result.Ok) Log.Info($"✔ Hoàn thành \"{job.Name}\".");
             else Log.Warn($"◼ \"{job.Name}\": {result.Message}");
@@ -172,12 +203,28 @@ public sealed class FlowRunner
         catch (Exception ex)
         {
             Log.Error($"✖ \"{job.Name}\" lỗi: {ex.Message}");
+            await CleanupTestDataAsync(job, ctx);
             return new FlowResult(false, ex.Message, -1, ctx.LastScreenshot);
         }
         finally
         {
             awake?.Dispose();
             screen?.Dispose();
+        }
+    }
+
+    /// <summary>"Tự xóa dữ liệu test": xóa các bản ghi Dynamics 365 flow đã tạo — chạy cả khi flow thất bại (không chạy khi người dùng dừng).</summary>
+    private static async Task CleanupTestDataAsync(Job job, FlowContext ctx)
+    {
+        if (!job.CleanupTestData || string.IsNullOrWhiteSpace(ctx.Vars.GetValueOrDefault(D365Client.CreatedVar)) || ctx.Ct.IsCancellationRequested) return;
+        Log.Info("   🧹 Dọn dữ liệu test đã tạo…");
+        try
+        {
+            await D365Client.CleanupAsync(ctx, "", ctx.Ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Log.Warn("   Không dọn hết dữ liệu test: " + ex.Message);
         }
     }
 

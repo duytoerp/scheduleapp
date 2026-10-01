@@ -18,6 +18,9 @@ public sealed class RunRecord
     public int FailedStep { get; set; }
     public string? Screenshot { get; set; }
 
+    /// <summary>Báo cáo kiểm thử (index.html) của lần chạy — chỉ có với kịch bản kiểm thử.</summary>
+    public string? Report { get; set; }
+
     [System.Text.Json.Serialization.JsonIgnore] public TimeSpan Duration => End - Start;
 }
 

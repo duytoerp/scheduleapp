@@ -53,7 +53,11 @@ public enum StepType
     WriteData,
     HttpRequest,
     AskAi,
-    Notify
+    Notify,
+
+    // Kiểm thử & Dynamics 365 (model-driven app)
+    Dynamics,
+    Assert
 }
 
 public enum MouseButtonKind
@@ -82,7 +86,18 @@ public enum ConditionKind
     ImageOnScreen,
     TextOnScreen,
     ElementExists,
-    LastStepFailed
+    LastStepFailed,
+
+    /// <summary>Phần tử có trên trang web (CSS selector, qua cổng điều khiển trình duyệt).</summary>
+    BrowserElement,
+    /// <summary>Giá trị field trên form Dynamics 365 đang mở.</summary>
+    D365FieldValue,
+    /// <summary>Trạng thái field: bắt buộc / khóa / hiển thị / có thay đổi.</summary>
+    D365FieldState,
+    /// <summary>Form Dynamics 365 đang hiện thông báo / lỗi (có chứa chữ).</summary>
+    D365Notification,
+    /// <summary>Số bản ghi trả về từ truy vấn Web API (dùng phiên đăng nhập của trình duyệt).</summary>
+    D365RecordCount
 }
 
 public enum CompareOp
@@ -151,6 +166,27 @@ public enum BrowserAction
     SetValue,
     ReadText,
     WaitFor,
+    RunScript
+}
+
+/// <summary>Hành động của bước "Dynamics 365" — chạy Client API (Xrm) trong tab model-driven app.</summary>
+public enum D365Action
+{
+    OpenForm,
+    OpenView,
+    WaitForm,
+    SetField,
+    GetField,
+    Save,
+    Command,
+    SelectTab,
+    BpfNext,
+    BpfPrevious,
+    ConfirmDialog,
+    GetRecordId,
+    GetNotifications,
+    WebApi,
+    Cleanup,
     RunScript
 }
 
@@ -245,6 +281,11 @@ public sealed class ActionStep
 
     public BrowserAction BrowserAction { get; set; } = BrowserAction.Navigate;
 
+    public D365Action D365Action { get; set; } = D365Action.SetField;
+
+    /// <summary>Kiểm tra (Assert): mô tả hiện trong báo cáo kiểm thử (trống = tự mô tả theo điều kiện).</summary>
+    public string Message { get; set; } = "";
+
     // ── Xử lý lỗi ──
 
     /// <summary>Số lần thử lại khi bước lỗi.</summary>
@@ -312,7 +353,9 @@ public sealed class ActionStep
         [StepType.WriteData] = "Ghi Excel / CSV",
         [StepType.HttpRequest] = "Gọi API (HTTP / REST)",
         [StepType.AskAi] = "Hỏi AI (Claude)",
-        [StepType.Notify] = "Gửi thông báo"
+        [StepType.Notify] = "Gửi thông báo",
+        [StepType.Dynamics] = "Dynamics 365 (model-driven)",
+        [StepType.Assert] = "Kiểm tra (Assert)"
     };
 
     public static readonly Dictionary<ConditionKind, string> ConditionNames = new()
@@ -324,7 +367,23 @@ public sealed class ActionStep
         [ConditionKind.ImageOnScreen] = "Hình ảnh có trên màn hình",
         [ConditionKind.TextOnScreen] = "Chữ có trên màn hình (OCR)",
         [ConditionKind.ElementExists] = "Phần tử UI tồn tại",
-        [ConditionKind.LastStepFailed] = "Bước trước bị lỗi"
+        [ConditionKind.LastStepFailed] = "Bước trước bị lỗi",
+        [ConditionKind.BrowserElement] = "Phần tử có trên trang web (CSS)",
+        [ConditionKind.D365FieldValue] = "D365: giá trị field",
+        [ConditionKind.D365FieldState] = "D365: trạng thái field (bắt buộc / khóa / hiện)",
+        [ConditionKind.D365Notification] = "D365: form có thông báo / lỗi",
+        [ConditionKind.D365RecordCount] = "D365: số bản ghi (truy vấn Web API)"
+    };
+
+    /// <summary>Trạng thái field cho điều kiện <see cref="ConditionKind.D365FieldState"/> (lưu trong <see cref="Arguments"/>).</summary>
+    public static readonly Dictionary<string, string> D365FieldStates = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["required"] = "bắt buộc nhập",
+        ["recommended"] = "nên nhập",
+        ["disabled"] = "bị khóa (chỉ đọc)",
+        ["visible"] = "đang hiện",
+        ["dirty"] = "đã sửa chưa lưu",
+        ["empty"] = "đang trống"
     };
 
     public static readonly Dictionary<CompareOp, string> CompareNames = new()
@@ -386,6 +445,26 @@ public sealed class ActionStep
         [BrowserAction.RunScript] = "Chạy JavaScript"
     };
 
+    public static readonly Dictionary<D365Action, string> D365ActionNames = new()
+    {
+        [D365Action.OpenForm] = "Mở form bản ghi (mới / có sẵn)",
+        [D365Action.OpenView] = "Mở danh sách (view)",
+        [D365Action.WaitForm] = "Chờ form tải xong",
+        [D365Action.SetField] = "Nhập giá trị field",
+        [D365Action.GetField] = "Đọc giá trị field vào biến",
+        [D365Action.Save] = "Lưu bản ghi",
+        [D365Action.Command] = "Bấm nút trên thanh lệnh (ribbon)",
+        [D365Action.SelectTab] = "Chuyển tab của form",
+        [D365Action.BpfNext] = "Quy trình (BPF): sang giai đoạn kế",
+        [D365Action.BpfPrevious] = "Quy trình (BPF): về giai đoạn trước",
+        [D365Action.ConfirmDialog] = "Bấm nút trên hộp thoại",
+        [D365Action.GetRecordId] = "Lấy Id bản ghi vào biến",
+        [D365Action.GetNotifications] = "Đọc thông báo / lỗi trên form vào biến",
+        [D365Action.WebApi] = "Gọi Web API (phiên đăng nhập trình duyệt)",
+        [D365Action.Cleanup] = "Xóa dữ liệu test đã tạo",
+        [D365Action.RunScript] = "Chạy JavaScript với formContext / Xrm"
+    };
+
     public static readonly Dictionary<ErrorAction, string> ErrorActionNames = new()
     {
         [ErrorAction.Default] = "Theo cài đặt của công việc",
@@ -407,6 +486,8 @@ public sealed class ActionStep
             StepType.WaitForImage or StepType.WaitForText => 30_000,
             StepType.ClickElement or StepType.SetElementText => 10_000,
             StepType.WaitForElement or StepType.Browser => 15_000,
+            StepType.Dynamics => 30_000,
+            StepType.Assert => 5_000,
             StepType.SetVariable => 30_000,
             StepType.HttpRequest => 60_000,
             StepType.AskAi => 120_000,
@@ -416,7 +497,7 @@ public sealed class ActionStep
         WaitForUser = type == StepType.Reminder,
         Count = type switch { StepType.Loop => 3, StepType.MouseScroll => -3, _ => 1 },
         DelayAfterMs = IsControlType(type) || type is StepType.SetVariable or StepType.LogMessage or StepType.WriteData
-            or StepType.HttpRequest or StepType.AskAi or StepType.Notify ? 0 : 500
+            or StepType.HttpRequest or StepType.AskAi or StepType.Notify or StepType.Assert ? 0 : 500
     };
 
     /// <summary>Bản sao nông (dùng khi thay biến trước lúc chạy — không sao chép lại dữ liệu hình mẫu).</summary>
@@ -440,7 +521,7 @@ public sealed class ActionStep
     /// <summary>Bước này chụp màn hình để nhận dạng.</summary>
     [JsonIgnore]
     public bool UsesScreen => Type is StepType.ClickImage or StepType.WaitForImage or StepType.ClickText or StepType.WaitForText
-        || (Type is StepType.If or StepType.Loop && Condition is ConditionKind.ImageOnScreen or ConditionKind.TextOnScreen)
+        || (Type is StepType.If or StepType.Loop or StepType.Assert && Condition is ConditionKind.ImageOnScreen or ConditionKind.TextOnScreen)
         || (Type == StepType.SetVariable && VarSource == VarSource.ScreenText)
         || (Type is StepType.AskAi or StepType.Notify && Force);
 
@@ -451,7 +532,7 @@ public sealed class ActionStep
     [JsonIgnore] public bool IsTextStep => Type is StepType.ClickText or StepType.WaitForText;
 
     /// <summary>Bước điều kiện có dùng các trường điều kiện không.</summary>
-    [JsonIgnore] public bool HasCondition => Type == StepType.If || (Type == StepType.Loop && LoopKind == LoopKind.While);
+    [JsonIgnore] public bool HasCondition => Type is StepType.If or StepType.Assert || (Type == StepType.Loop && LoopKind == LoopKind.While);
 
     public string Describe() => Type switch
     {
@@ -532,6 +613,27 @@ public sealed class ActionStep
                                 (string.IsNullOrWhiteSpace(Arguments) ? "" : $" → {Short(Arguments)}") + IntoVar(),
         StepType.AskAi => $"AI: \"{Short(Text)}\"" + (Force ? " + ảnh màn hình" + SearchArea() : "") + IntoVar(),
         StepType.Notify => $"Gửi: {Short(Text)}" + (Force ? " + ảnh màn hình" : ""),
+        StepType.Dynamics => "D365: " + D365Action switch
+        {
+            D365Action.OpenForm => $"mở form {Short(Text)}" + (string.IsNullOrWhiteSpace(Arguments) ? " (mới)" : $" [{Short(Arguments)}]"),
+            D365Action.OpenView => $"mở danh sách {Short(Text)}" + (string.IsNullOrWhiteSpace(Arguments) ? "" : $" [view {Short(Arguments)}]"),
+            D365Action.WaitForm => $"chờ form tải xong (tối đa {FormatMs(DelayMs)})",
+            D365Action.SetField => $"{Short(Text)} = \"{Short(Arguments)}\"",
+            D365Action.GetField => $"đọc {Short(Text)}" + IntoVar(),
+            D365Action.Save => "lưu bản ghi" + IntoVar(),
+            D365Action.Command => $"bấm \"{Short(Text)}\"",
+            D365Action.SelectTab => $"chuyển tab \"{Short(Text)}\"",
+            D365Action.BpfNext => "BPF sang giai đoạn kế",
+            D365Action.BpfPrevious => "BPF về giai đoạn trước",
+            D365Action.ConfirmDialog => $"hộp thoại → bấm \"{(string.IsNullOrWhiteSpace(Text) ? "nút chính" : Short(Text))}\"",
+            D365Action.GetRecordId => "lấy Id bản ghi" + IntoVar(),
+            D365Action.GetNotifications => "đọc thông báo trên form" + IntoVar(),
+            D365Action.WebApi => $"{(string.IsNullOrWhiteSpace(Method) ? "GET" : Method.ToUpperInvariant())} {Short(Arguments)}" + IntoVar(),
+            D365Action.Cleanup => "xóa dữ liệu test đã tạo ({{d365.created}})",
+            D365Action.RunScript => $"JS: {Short(Text)}" + IntoVar(),
+            _ => ""
+        } + InTab(),
+        StepType.Assert => "Kiểm tra: " + (string.IsNullOrWhiteSpace(Message) ? DescribeCondition() : Short(Message)),
         _ => Type.ToString()
     };
 
@@ -556,6 +658,13 @@ public sealed class ActionStep
             ConditionKind.TextOnScreen => $"thấy chữ \"{Short(Text)}\"" + SearchArea(),
             ConditionKind.ElementExists => $"có phần tử [{Short(Text)}]" + SearchArea(),
             ConditionKind.LastStepFailed => "bước trước bị lỗi",
+            ConditionKind.BrowserElement => $"trang web có \"{Short(Text)}\"" + InTab(),
+            ConditionKind.D365FieldValue => CompareOp is CompareOp.IsEmpty or CompareOp.IsNotEmpty
+                ? $"field {Short(Text)} {CompareNames[CompareOp]}"
+                : $"field {Short(Text)} {CompareNames[CompareOp]} \"{Short(Arguments)}\"",
+            ConditionKind.D365FieldState => $"field {Short(Text)} " + (D365FieldStates.TryGetValue(Arguments.Trim(), out var st) ? st : Short(Arguments)),
+            ConditionKind.D365Notification => string.IsNullOrWhiteSpace(Text) ? "form có thông báo / lỗi" : $"form có thông báo chứa \"{Short(Text)}\"",
+            ConditionKind.D365RecordCount => $"số bản ghi của {Short(Text)} {CompareNames[CompareOp]} {Short(Arguments)}",
             _ => ""
         };
     }

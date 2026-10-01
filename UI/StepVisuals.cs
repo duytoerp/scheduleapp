@@ -23,6 +23,7 @@ internal static class StepVisuals
         ("Nhận dạng màn hình", [StepType.ClickImage, StepType.WaitForImage, StepType.ClickText, StepType.WaitForText]),
         ("Biến & dữ liệu", [StepType.SetVariable, StepType.WriteData, StepType.LogMessage]),
         ("Tích hợp", [StepType.HttpRequest, StepType.AskAi, StepType.Notify]),
+        ("Kiểm thử & Dynamics 365", [StepType.Dynamics, StepType.Assert]),
         ("Điều kiện & lặp", [StepType.If, StepType.Else, StepType.Loop, StepType.BreakLoop, StepType.ContinueLoop, StepType.Label, StepType.Goto]),
         ("Điều khiển luồng", [StepType.Wait, StepType.Reminder, StepType.CallJob, StepType.StopFlow])
     ];
@@ -38,6 +39,8 @@ internal static class StepVisuals
         StepType.Browser => Color.FromArgb(0, 90, 158),
         StepType.SetVariable or StepType.LogMessage or StepType.WriteData => Color.FromArgb(92, 92, 190),
         StepType.HttpRequest or StepType.AskAi or StepType.Notify => Color.FromArgb(0, 128, 96),
+        StepType.Dynamics => Color.FromArgb(116, 39, 116),
+        StepType.Assert => Color.FromArgb(0, 118, 140),
         _ => Color.FromArgb(16, 124, 16)
     };
 
@@ -83,6 +86,8 @@ internal static class StepVisuals
         StepType.HttpRequest => "\uE71B",
         StepType.AskAi => "\uE82F",
         StepType.Notify => "\uE715",
+        StepType.Dynamics => "\uE8A5",
+        StepType.Assert => "\uE9D5",
         _ => ""
     };
 

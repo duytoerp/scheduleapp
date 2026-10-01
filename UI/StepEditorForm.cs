@@ -31,6 +31,7 @@ internal sealed class StepEditorForm : BaseForm
     private static readonly BrowserAction[] BrowserActions = Enum.GetValues<BrowserAction>();
     private static readonly ErrorAction[] ErrorActions = Enum.GetValues<ErrorAction>();
     private static readonly DataAction[] DataActions = Enum.GetValues<DataAction>();
+    private static readonly D365Action[] D365Actions = Enum.GetValues<D365Action>();
 
     private readonly ActionStep _step;
     private readonly StepEditorContext _ctx;
@@ -69,6 +70,10 @@ internal sealed class StepEditorForm : BaseForm
     private readonly ComboBox _cboConnection = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 300 };
     private readonly Label _lblHeaders = Caption("Header thêm\n(mỗi dòng Tên: giá trị):");
     private readonly TextBox _txtHeaders = new() { Dock = DockStyle.Fill, Multiline = true, Height = 54, ScrollBars = ScrollBars.Vertical, AcceptsReturn = true };
+
+    // Kiểm tra (Assert)
+    private readonly Label _lblMessage = Caption("Mô tả kiểm tra\n(hiện trong báo cáo):");
+    private readonly TextBox _txtMessage = new() { Dock = DockStyle.Fill };
 
     // Ghi Excel / CSV
     private readonly Label _lblRowRef = Caption("Dòng cần sửa:");
@@ -205,6 +210,7 @@ internal sealed class StepEditorForm : BaseForm
         AddRow(_lblHttp, _pnlHttp, span: true);
         _pnlCondition.Controls.AddRange([_cboCondition, _chkNegate]);
         AddRow(_lblCondition, _pnlCondition, span: true);
+        AddRow(_lblMessage, _txtMessage);
         AddRow(_lblTarget, _cboTarget, _btnTargetAction);
         AddRow(_lblCompare, _cboCompare);
         AddRow(_lblRowRef, _cboRowRef);
@@ -292,6 +298,7 @@ internal sealed class StepEditorForm : BaseForm
     private VarSource CurrentSource => VarSources[Math.Clamp(_cboSub.SelectedIndex, 0, VarSources.Length - 1)];
     private BrowserAction CurrentBrowser => BrowserActions[Math.Clamp(_cboSub.SelectedIndex, 0, BrowserActions.Length - 1)];
     private DataAction CurrentData => DataActions[Math.Clamp(_cboSub.SelectedIndex, 0, DataActions.Length - 1)];
+    private D365Action CurrentD365 => D365Actions[Math.Clamp(_cboSub.SelectedIndex, 0, D365Actions.Length - 1)];
     private ConditionKind CurrentCondition => Conditions[Math.Max(0, _cboCondition.SelectedIndex)];
     private CompareOp CurrentCompare => CompareOps[Math.Max(0, _cboCompare.SelectedIndex)];
     private ErrorAction CurrentOnError => ErrorActions[Math.Max(0, _cboOnError.SelectedIndex)];
@@ -299,8 +306,8 @@ internal sealed class StepEditorForm : BaseForm
     /// <summary>Bước hiện tại đọc/ghi bảng Excel / CSV (có ô chọn sheet).</summary>
     private bool UsesTable => (CurrentType == StepType.Loop && CurrentLoop == LoopKind.Rows) || CurrentType == StepType.WriteData;
 
-    /// <summary>Bước hiện tại dùng điều kiện (Nếu, hoặc Lặp khi).</summary>
-    private bool UsesCondition => CurrentType == StepType.If || (CurrentType == StepType.Loop && CurrentLoop == LoopKind.While);
+    /// <summary>Bước hiện tại dùng điều kiện (Nếu, Kiểm tra, hoặc Lặp khi).</summary>
+    private bool UsesCondition => CurrentType is StepType.If or StepType.Assert || (CurrentType == StepType.Loop && CurrentLoop == LoopKind.While);
 
     // ───────────────────────────── Nạp / lưu ─────────────────────────────
 
@@ -315,8 +322,10 @@ internal sealed class StepEditorForm : BaseForm
             StepType.SetVariable => Array.IndexOf(VarSources, _step.VarSource),
             StepType.Browser => Array.IndexOf(BrowserActions, _step.BrowserAction),
             StepType.WriteData => Array.IndexOf(DataActions, _step.DataAction),
+            StepType.Dynamics => Array.IndexOf(D365Actions, _step.D365Action),
             _ => -1
         };
+        _txtMessage.Text = _step.Message;
         _cboMethod.Text = string.IsNullOrWhiteSpace(_step.Method) ? "GET" : _step.Method.ToUpperInvariant();
         _cboConnection.SelectedIndex = Math.Max(0, _cboConnection.Items.IndexOf(_step.Connection.Trim()));
         if (_step.Connection.Trim().Length > 0 && _cboConnection.SelectedIndex == 0)
@@ -387,8 +396,12 @@ internal sealed class StepEditorForm : BaseForm
         s.VarSource = type == StepType.SetVariable ? CurrentSource : VarSource.Value;
         s.BrowserAction = type == StepType.Browser ? CurrentBrowser : BrowserAction.Navigate;
         s.DataAction = type == StepType.WriteData ? CurrentData : DataAction.AppendRow;
+        s.D365Action = type == StepType.Dynamics ? CurrentD365 : D365Action.SetField;
+        s.Message = type == StepType.Assert ? _txtMessage.Text.Trim() : "";
         s.RowRef = type == StepType.WriteData && CurrentData == DataAction.UpdateRow ? _cboRowRef.Text.Trim() : "";
-        s.Method = type == StepType.HttpRequest ? (_cboMethod.Text.Trim().Length == 0 ? "GET" : _cboMethod.Text.Trim().ToUpperInvariant()) : "GET";
+        s.Method = type == StepType.HttpRequest || (type == StepType.Dynamics && CurrentD365 == D365Action.WebApi)
+            ? (_cboMethod.Text.Trim().Length == 0 ? "GET" : _cboMethod.Text.Trim().ToUpperInvariant())
+            : "GET";
         s.Connection = type == StepType.HttpRequest && _cboConnection.SelectedIndex > 0 ? (string)_cboConnection.SelectedItem! : "";
         s.Headers = type == StepType.HttpRequest ? _txtHeaders.Text.Replace("\r\n", "\n").Trim() : "";
         s.Condition = UsesCondition ? CurrentCondition : ConditionKind.Compare;
@@ -510,6 +523,27 @@ internal sealed class StepEditorForm : BaseForm
                 if (s.BrowserAction == BrowserAction.RunScript && s.Text.Trim().Length == 0) return ("Hãy nhập JavaScript.", _txtText);
                 if (s.BrowserAction == BrowserAction.ReadText && s.Variable.Length == 0) return ("Hãy nhập tên biến nhận giá trị.", _cboVariable);
                 break;
+            case StepType.Dynamics:
+                switch (s.D365Action)
+                {
+                    case D365Action.OpenForm or D365Action.OpenView when s.Text.Trim().Length == 0:
+                        return ("Hãy nhập tên bảng (logical name), vd account, contact, opportunity.", _txtText);
+                    case D365Action.SetField or D365Action.GetField when s.Text.Trim().Length == 0:
+                        return ("Hãy nhập tên field (logical name), vd name, telephone1, parentcustomerid.", _txtText);
+                    case D365Action.Command when s.Text.Trim().Length == 0:
+                        return ("Hãy nhập nhãn nút (vd Lưu & đóng, Deactivate) hoặc command id.", _txtText);
+                    case D365Action.SelectTab when s.Text.Trim().Length == 0:
+                        return ("Hãy nhập tên hoặc nhãn tab.", _txtText);
+                    case D365Action.RunScript when s.Text.Trim().Length == 0:
+                        return ("Hãy nhập JavaScript.", _txtText);
+                    case D365Action.WebApi:
+                        if (s.Arguments.Trim().Length == 0) return ("Hãy nhập đường dẫn Web API, vd accounts?$select=name&$top=5.", _cboArgs);
+                        if (!System.Text.RegularExpressions.Regex.IsMatch(s.Method, "^[A-Z]+$")) return ("Phương thức HTTP không hợp lệ (GET, POST, PATCH…).", _cboMethod);
+                        break;
+                    case D365Action.GetField or D365Action.GetRecordId or D365Action.GetNotifications when s.Variable.Length == 0:
+                        return ("Hãy nhập tên biến nhận giá trị.", _cboVariable);
+                }
+                break;
         }
 
         if (UsesCondition)
@@ -522,6 +556,14 @@ internal sealed class StepEditorForm : BaseForm
                     return ("Hãy nhập chữ cần kiểm tra.", _txtText);
                 case ConditionKind.ElementExists:
                     return SelectorError(s.Text);
+                case ConditionKind.BrowserElement when s.Text.Trim().Length == 0:
+                    return ("Hãy nhập bộ chọn phần tử (CSS selector).", _txtText);
+                case ConditionKind.D365FieldValue or ConditionKind.D365FieldState when s.Text.Trim().Length == 0:
+                    return ("Hãy nhập tên field (logical name).", _txtText);
+                case ConditionKind.D365FieldState when !ActionStep.D365FieldStates.ContainsKey(s.Arguments.Trim()):
+                    return ("Hãy chọn trạng thái: " + string.Join(", ", ActionStep.D365FieldStates.Keys) + ".", _cboArgs);
+                case ConditionKind.D365RecordCount when s.Text.Trim().Length == 0:
+                    return ("Hãy nhập truy vấn Web API, vd accounts?$filter=name eq 'ABC'.", _txtText);
                 case ConditionKind.Compare when s.CompareOp == CompareOp.Regex:
                     if (!s.Arguments.Contains("{{"))
                     {
@@ -567,6 +609,9 @@ internal sealed class StepEditorForm : BaseForm
             case StepType.WriteData:
                 foreach (var d in DataActions) _cboSub.Items.Add(ActionStep.DataActionNames[d]);
                 break;
+            case StepType.Dynamics:
+                foreach (var d in D365Actions) _cboSub.Items.Add(ActionStep.D365ActionNames[d]);
+                break;
         }
         _cboSub.EndUpdate();
     }
@@ -582,10 +627,10 @@ internal sealed class StepEditorForm : BaseForm
             if (_cboSub.Items.Count > 0) _cboSub.SelectedIndex = 0;
             if (_cboCondition.SelectedIndex < 0) _cboCondition.SelectedIndex = 0;
             _loading = wasLoading;
-            var d = ActionStep.CreateDefault(t);
-            _numDelay.Value = d.DelayMs;
-            _numAfter.Value = d.DelayAfterMs;
-            if (t is StepType.Loop or StepType.MouseScroll) _numCount.Value = d.Count;
+            var defaults = ActionStep.CreateDefault(t);
+            _numDelay.Value = defaults.DelayMs;
+            _numAfter.Value = defaults.DelayAfterMs;
+            if (t is StepType.Loop or StepType.MouseScroll) _numCount.Value = defaults.Count;
         }
 
         bool cond = UsesCondition;
@@ -594,7 +639,14 @@ internal sealed class StepEditorForm : BaseForm
         var src = CurrentSource;
         var br = CurrentBrowser;
         var data = CurrentData;
+        var d = CurrentD365;
+        bool dyn = t == StepType.Dynamics;
         bool http = t == StepType.HttpRequest;
+        bool dynApi = dyn && d == D365Action.WebApi;
+        // Điều kiện đọc trang web / form Dynamics 365 qua trình duyệt điều khiển
+        bool webCond = cond && ck is ConditionKind.BrowserElement or ConditionKind.D365FieldValue or ConditionKind.D365FieldState
+            or ConditionKind.D365Notification or ConditionKind.D365RecordCount;
+        bool compareCond = cond && ck is ConditionKind.Compare or ConditionKind.D365FieldValue or ConditionKind.D365RecordCount;
 
         bool image = t is StepType.ClickImage or StepType.WaitForImage || (cond && ck == ConditionKind.ImageOnScreen);
         bool text = t is StepType.ClickText or StepType.WaitForText || (cond && ck == ConditionKind.TextOnScreen);
@@ -608,7 +660,7 @@ internal sealed class StepEditorForm : BaseForm
         SuspendLayout();
 
         // Kiểu con (kiểu lặp / nguồn giá trị / hành động trình duyệt)
-        SetVisible(t is StepType.Loop or StepType.SetVariable or StepType.Browser or StepType.WriteData, _lblSub, _cboSub);
+        SetVisible(t is StepType.Loop or StepType.SetVariable or StepType.Browser or StepType.WriteData or StepType.Dynamics, _lblSub, _cboSub);
         _lblSub.Text = t switch
         {
             StepType.Loop => "Kiểu lặp:",
@@ -617,7 +669,9 @@ internal sealed class StepEditorForm : BaseForm
             _ => "Hành động:"
         };
         SetVisible(cond, _lblCondition, _pnlCondition);
-        SetVisible(http, _lblHttp, _pnlHttp, _lblHeaders, _txtHeaders);
+        SetVisible(t == StepType.Assert, _lblMessage, _txtMessage);
+        SetVisible(http || dynApi, _lblHttp, _pnlHttp);
+        SetVisible(http, _lblHeaders, _txtHeaders, _pnlHttp.Controls[1], _cboConnection);
         SetVisible(t == StepType.WriteData && data == DataAction.UpdateRow, _lblRowRef, _cboRowRef);
         if (_cboRowRef.Items.Count == 0) _cboRowRef.Items.AddRange(["{{row.rowNumber}}", "MaKH={{row.MaKH}}", "{{lastRow}}"]);
 
@@ -629,7 +683,7 @@ internal sealed class StepEditorForm : BaseForm
             StepType.SetVariable => src is not (VarSource.Value or VarSource.Calc or VarSource.Clipboard or VarSource.ListAdd
                 or VarSource.Split or VarSource.JsonPath),
             StepType.Loop => loop != LoopKind.Count,
-            StepType.If => ck != ConditionKind.LastStepFailed,
+            StepType.If or StepType.Assert => ck != ConditionKind.LastStepFailed,
             _ => true
         };
         if (t == StepType.Loop && loop == LoopKind.While) showTarget = ck != ConditionKind.LastStepFailed;
@@ -645,6 +699,7 @@ internal sealed class StepEditorForm : BaseForm
             StepType.Label => "Tên nhãn:",
             StepType.Goto => "Nhảy tới nhãn:",
             StepType.Browser => br == BrowserAction.Launch ? "Trình duyệt:" : "Tab (một phần URL/tiêu đề,\ntrống = tab đầu tiên):",
+            StepType.Dynamics => D365TabCaption,
             StepType.SetVariable => src switch
             {
                 VarSource.Command => "Lệnh:",
@@ -665,6 +720,9 @@ internal sealed class StepEditorForm : BaseForm
                 ConditionKind.WindowExists => "Cửa sổ (tiêu đề/tiến trình):",
                 ConditionKind.ProcessRunning => "Tên tiến trình:",
                 ConditionKind.FileExists => "Đường dẫn file/thư mục:",
+                ConditionKind.BrowserElement => "Tab (một phần URL/tiêu đề,\ntrống = tab đầu tiên):",
+                ConditionKind.D365FieldValue or ConditionKind.D365FieldState or ConditionKind.D365Notification
+                    or ConditionKind.D365RecordCount => D365TabCaption,
                 _ => "Chỉ tìm trong cửa sổ\n(trống = cả màn hình):"
             },
             _ when vision || element => "Chỉ tìm trong cửa sổ\n(trống = cả màn hình):",
@@ -682,14 +740,15 @@ internal sealed class StepEditorForm : BaseForm
         FillTargetList();
 
         // So sánh / tham số
-        SetVisible(cond && ck == ConditionKind.Compare, _lblCompare, _cboCompare);
+        SetVisible(compareCond, _lblCompare, _cboCompare);
         bool args = t switch
         {
             StepType.LaunchApp or StepType.SetElementText or StepType.WriteData or StepType.HttpRequest => true,
             StepType.SetVariable => src is not (VarSource.Value or VarSource.Calc or VarSource.ListAdd),
             StepType.Loop => loop is LoopKind.Rows or LoopKind.Files,
             StepType.Browser => br is BrowserAction.SetValue or BrowserAction.Launch,
-            _ => cond && ck == ConditionKind.Compare && CurrentCompare is not (CompareOp.IsEmpty or CompareOp.IsNotEmpty)
+            StepType.Dynamics => d is D365Action.OpenForm or D365Action.OpenView or D365Action.WaitForm or D365Action.SetField or D365Action.WebApi,
+            _ => (compareCond && CurrentCompare is not (CompareOp.IsEmpty or CompareOp.IsNotEmpty)) || (cond && ck == ConditionKind.D365FieldState)
         };
         SetVisible(args, _lblArgs, _cboArgs);
         SetVisible(t == StepType.Browser && br == BrowserAction.Launch, _btnArgsAction);
@@ -708,9 +767,25 @@ internal sealed class StepEditorForm : BaseForm
                 _ => "Trích bằng regex\n(tùy chọn):"
             },
             StepType.Loop => loop == LoopKind.Rows ? "Sheet (trống = sheet đầu):" : "Mẫu tên file (vd *.pdf;*.xlsx):",
+            StepType.Dynamics => d switch
+            {
+                D365Action.OpenForm => "Id bản ghi\n(trống = tạo mới):",
+                D365Action.OpenView => "Id view (tùy chọn):",
+                D365Action.WaitForm => "Id bản ghi (tùy chọn):",
+                D365Action.WebApi => "Đường dẫn Web API\n(vd accounts?$top=5):",
+                _ => "Giá trị:"
+            },
+            _ when cond => ck switch
+            {
+                ConditionKind.D365FieldState => "Trạng thái:",
+                ConditionKind.D365FieldValue => "Giá trị mong đợi:",
+                ConditionKind.D365RecordCount => "Số bản ghi:",
+                _ => "So với:"
+            },
             _ => "So với:"
         };
         if (!((t == StepType.Loop && loop == LoopKind.Rows) || t == StepType.WriteData)) _cboArgs.Items.Clear();
+        if (cond && ck == ConditionKind.D365FieldState) _cboArgs.Items.AddRange([.. ActionStep.D365FieldStates.Keys]);
         if (t == StepType.Browser && br == BrowserAction.Launch) FillProfileList();
 
         // Ô văn bản
@@ -721,7 +796,9 @@ internal sealed class StepEditorForm : BaseForm
             StepType.SetVariable => src is VarSource.Value or VarSource.Calc or VarSource.Element or VarSource.AskUser
                 or VarSource.ListAdd or VarSource.Split or VarSource.JsonPath,
             StepType.Browser => true,
-            _ => text || element
+            StepType.Dynamics => d is not (D365Action.Save or D365Action.BpfNext or D365Action.BpfPrevious or D365Action.GetRecordId
+                or D365Action.GetNotifications or D365Action.Cleanup),
+            _ => text || element || webCond
         };
         SetVisible(showText, _lblText, _txtText);
         _lblText.Text = t switch
@@ -750,13 +827,29 @@ internal sealed class StepEditorForm : BaseForm
                 BrowserAction.RunScript => "JavaScript:",
                 _ => "Bộ chọn phần tử:"
             },
+            StepType.Dynamics => d switch
+            {
+                D365Action.OpenForm or D365Action.OpenView => "Bảng (logical name,\nvd account, contact):",
+                D365Action.WaitForm => "Bảng (tùy chọn):",
+                D365Action.Command => "Nhãn nút hoặc\ncommand id:",
+                D365Action.SelectTab => "Tab (tên hoặc nhãn):",
+                D365Action.ConfirmDialog => "Nút cần bấm\n(trống = nút chính):",
+                D365Action.WebApi => "Nội dung gửi (JSON)\n— POST/PATCH:",
+                D365Action.RunScript => "JavaScript\n(formContext, Xrm):",
+                _ => "Field (logical name):"
+            },
+            _ when cond && ck == ConditionKind.BrowserElement => "Bộ chọn phần tử\n(CSS / xpath: / text:):",
+            _ when cond && ck is ConditionKind.D365FieldValue or ConditionKind.D365FieldState => "Field (logical name):",
+            _ when cond && ck == ConditionKind.D365Notification => "Thông báo có chứa\n(trống = có bất kỳ):",
+            _ when cond && ck == ConditionKind.D365RecordCount => "Truy vấn Web API\n(vd accounts?$filter=…):",
             _ when element => "Bộ chọn phần tử:",
             _ when text => "Chữ cần tìm:",
             _ => "Văn bản:"
         };
         bool singleLine = t is StepType.KeyPress or StepType.StopFlow || text || element
                           || (t == StepType.SetVariable && src is VarSource.Calc or VarSource.ListAdd)
-                          || (t == StepType.Browser && br != BrowserAction.RunScript);
+                          || (t == StepType.Browser && br != BrowserAction.RunScript)
+                          || (dyn && d is not (D365Action.WebApi or D365Action.RunScript)) || webCond;
         _txtText.Multiline = !singleLine;
         _txtText.Height = singleLine ? _cboArgs.Height : LogicalToDeviceUnits(90);
         _btnTextAction.Visible = showText && element;
@@ -767,6 +860,8 @@ internal sealed class StepEditorForm : BaseForm
             StepType.SetVariable or StepType.RunCommand or StepType.HttpRequest or StepType.AskAi => true,
             StepType.Loop => loop is LoopKind.Rows or LoopKind.Lines or LoopKind.Files,
             StepType.Browser => br is BrowserAction.ReadText or BrowserAction.RunScript,
+            StepType.Dynamics => d is D365Action.GetField or D365Action.Save or D365Action.ConfirmDialog or D365Action.GetRecordId
+                or D365Action.GetNotifications or D365Action.WebApi or D365Action.RunScript,
             _ => false
         };
         SetVisible(variable, _lblVariable, _cboVariable);
@@ -777,6 +872,14 @@ internal sealed class StepEditorForm : BaseForm
             StepType.RunCommand => "Lưu output vào biến\n(tùy chọn):",
             StepType.HttpRequest => "Lưu kết quả vào biến\n(tùy chọn):",
             StepType.AskAi => "Lưu câu trả lời vào biến:",
+            StepType.Dynamics => d switch
+            {
+                D365Action.Save => "Lưu Id bản ghi vào biến\n(tùy chọn):",
+                D365Action.ConfirmDialog => "Lưu nội dung hộp thoại\nvào biến (tùy chọn):",
+                D365Action.WebApi => "Lưu kết quả vào biến\n(POST: Id bản ghi mới):",
+                D365Action.RunScript => "Lưu kết quả vào biến\n(tùy chọn):",
+                _ => "Lưu vào biến:"
+            },
             _ => "Lưu vào biến:"
         };
 
@@ -811,7 +914,7 @@ internal sealed class StepEditorForm : BaseForm
         }
 
         bool delay = vision || element || t is StepType.Wait or StepType.WaitForWindow or StepType.FocusWindow or StepType.RunCommand or StepType.Browser
-                         or StepType.HttpRequest or StepType.AskAi
+                         or StepType.HttpRequest or StepType.AskAi or StepType.Dynamics
                      || (t == StepType.SetVariable && src is VarSource.Command or VarSource.Element)
                      || (cond && ck is not (ConditionKind.Compare or ConditionKind.LastStepFailed));
         SetVisible(delay, _lblDelay, _numDelay);
@@ -821,13 +924,15 @@ internal sealed class StepEditorForm : BaseForm
 
         SetVisible(t == StepType.Reminder, _chkWaitUser);
         bool force = t is StepType.CloseApp or StepType.StopFlow or StepType.HttpRequest or StepType.AskAi or StepType.Notify
-                     || (t == StepType.SetVariable && src == VarSource.AskUser);
+                     || (t == StepType.SetVariable && src == VarSource.AskUser) || (dyn && d is D365Action.SetField or D365Action.WebApi);
         SetVisible(force, _chkForce);
         _chkForce.Text = t switch
         {
             StepType.CloseApp => "Buộc đóng (kill tiến trình, không hỏi lưu)",
             StepType.StopFlow => "Tính là thất bại (gửi thông báo lỗi, chạy công việc xử lý lỗi)",
             StepType.HttpRequest => "Không báo lỗi khi API trả mã lỗi (≥ 400) — tự kiểm tra {{http.status}}",
+            StepType.Dynamics when d == D365Action.WebApi => "Không báo lỗi khi API trả mã lỗi (≥ 400) — tự kiểm tra {{http.status}}",
+            StepType.Dynamics => "Cho phép nhập cả khi field bị khóa / ẩn (người dùng thật không nhập được)",
             StepType.AskAi => "Gửi kèm ảnh chụp màn hình (cửa sổ ở trên hoặc cả màn hình) cho AI đọc",
             StepType.Notify => "Gửi kèm ảnh chụp màn hình hiện tại",
             _ => "Ẩn ký tự khi nhập (mật khẩu) — không ghi giá trị vào log"
@@ -835,6 +940,14 @@ internal sealed class StepEditorForm : BaseForm
 
         bool errorPanel = !ActionStep.IsControlType(t) || t is StepType.If or StepType.Loop;
         SetVisible(errorPanel, _lblError, _pnlError);
+        // Kiểm tra (Assert) mặc định là kiểm tra mềm — xem FlowEngine.HandleFailure.
+        var defaultError = t == StepType.Assert ? "Ghi là không đạt, chạy tiếp" : ActionStep.ErrorActionNames[ErrorAction.Default];
+        if ((string)_cboOnError.Items[0]! != defaultError)
+        {
+            int selected = _cboOnError.SelectedIndex;
+            _cboOnError.Items[0] = defaultError;
+            _cboOnError.SelectedIndex = selected;
+        }
         _cboErrorLabel.Visible = errorPanel && CurrentOnError == ErrorAction.GotoLabel;
         SetVisible(!marker, _lblAfter, _numAfter, _chkBreakpoint);
 
@@ -846,7 +959,7 @@ internal sealed class StepEditorForm : BaseForm
         // Đọc Visible của control con khi panel cha đang ẩn luôn trả về false → dùng biến tạm.
         SetVisible(testFind || testStep, _lblTest, _pnlTest);
 
-        _lblHint.Text = "Gợi ý: " + Hint(t, src, loop, br, ck) +
+        _lblHint.Text = "Gợi ý: " + Hint(t, src, loop, br, ck, d) +
                         (ActionStep.IsControlType(t) && t is not (StepType.If or StepType.Loop) ? "" :
                             "\nMọi ô chữ dùng được {{biến}}: {{today}}, {{now:HH:mm}}, {{today-1:dd/MM/yyyy}}, {{clipboard}}, {{secret:Tên}}, {{env:USERNAME}}…");
 
@@ -855,10 +968,17 @@ internal sealed class StepEditorForm : BaseForm
 
     private static bool TestableType(StepType t) => t is StepType.SetVariable or StepType.ClickElement or StepType.SetElementText
         or StepType.WaitForElement or StepType.Browser or StepType.RunCommand or StepType.LogMessage or StepType.Loop
-        or StepType.WriteData or StepType.HttpRequest or StepType.AskAi or StepType.Notify;
+        or StepType.WriteData or StepType.HttpRequest or StepType.AskAi or StepType.Notify or StepType.Dynamics or StepType.Assert;
 
-    private static string Hint(StepType t, VarSource src, LoopKind loop, BrowserAction br, ConditionKind ck) => t switch
+    private const string D365TabCaption = "Tab Dynamics 365\n(trống = tab D365 đầu tiên):";
+
+    private static string Hint(StepType t, VarSource src, LoopKind loop, BrowserAction br, ConditionKind ck, D365Action d) => t switch
     {
+        StepType.Dynamics => D365Hint(d),
+        StepType.Assert =>
+            "Kiểm tra một điều kiện và ghi kết quả ĐẠT / KHÔNG ĐẠT vào báo cáo kiểm thử. \"Chờ tối đa\" > 0 thì kiểm tra lại tới khi đạt " +
+            "(form đang tính toán, plugin chạy chậm…). Mặc định sai thì ghi \"không đạt\" và chạy tiếp để thấy hết chỗ sai; chọn \"Khi bước lỗi → Dừng flow\" " +
+            "nếu các bước sau phụ thuộc vào điều kiện này." + ConditionHint(ck),
         StepType.LaunchApp => "Nhập đường dẫn .exe, file tài liệu hoặc URL (vd: notepad.exe, C:\\Tools\\app.exe, https://google.com). " +
                               "Nên thêm bước \"Chờ cửa sổ xuất hiện\" ngay sau bước này.",
         StepType.Reminder => "Hiện cửa sổ nhắc nhở ở góc phải màn hình kèm âm báo. Bật \"Tạm dừng flow\" để flow chờ bạn xác nhận rồi mới chạy tiếp.",
@@ -957,6 +1077,54 @@ internal sealed class StepEditorForm : BaseForm
         ConditionKind.ImageOnScreen or ConditionKind.TextOnScreen or ConditionKind.ElementExists or ConditionKind.WindowExists =>
             " \"Chờ tối đa\" > 0 sẽ đợi tới khi thấy (hữu ích khi trang tải chậm).",
         ConditionKind.LastStepFailed => " Dùng với \"Khi bước lỗi → Bỏ qua\" ở bước trước. Thông báo lỗi có trong {{lastError}}.",
+        ConditionKind.BrowserElement => " Kiểm tra trên tab của trình duyệt điều khiển (mở bằng bước Trình duyệt).",
+        ConditionKind.D365FieldValue =>
+            " Field theo tên logic (name, statuscode, parentcustomerid). So với giá trị hiển thị: lookup = tên bản ghi, option set = nhãn, " +
+            "ngày = dd/MM/yyyy, Có/Không = true/false. Thêm :raw để lấy giá trị gốc (Id lookup, số option set), vd statuscode:raw.",
+        ConditionKind.D365FieldState => " Trạng thái: required (bắt buộc), recommended, disabled (khóa), visible (hiện), dirty (đã sửa chưa lưu), empty (trống). " +
+                                        "Tick \"Đảo ngược\" để kiểm tra ngược lại, vd KHÔNG disabled.",
+        ConditionKind.D365Notification => " Đọc thanh thông báo của form, lỗi dưới field và hộp thoại lỗi (vd lỗi plugin khi lưu).",
+        ConditionKind.D365RecordCount =>
+            " Truy vấn Web API bằng phiên đăng nhập của trình duyệt, vd contacts?$filter=emailaddress1 eq '{{email}}'&$select=contactid. " +
+            "Dùng để kiểm tra dữ liệu thật đã được tạo / cập nhật (plugin, flow Power Automate…).",
+        _ => ""
+    };
+
+    private static string D365Hint(D365Action d) => d switch
+    {
+        D365Action.OpenForm =>
+            "Mở form bằng Xrm.Navigation.openForm rồi chờ form tải xong. Trống Id = form tạo mới. Trước đó cần một bước \"Trình duyệt → Mở trình duyệt " +
+            "ở chế độ điều khiển\" mở URL app (vd https://org.crm5.dynamics.com/main.aspx?appid=…) với hồ sơ đã đăng nhập.",
+        D365Action.OpenView => "Mở danh sách bản ghi của bảng; Id view (savedquery) tùy chọn, trống = view mặc định.",
+        D365Action.WaitForm => "Chờ tới khi trang có form Dynamics 365 sẵn sàng (sau khi bấm nút chuyển trang, tạo bản ghi liên quan…). " +
+                               "Nhập bảng / Id để chờ đúng form đó.",
+        D365Action.SetField =>
+            "Nhập giá trị qua Client API rồi chạy OnChange (business rule, script của form chạy như người dùng nhập). Theo kiểu field: " +
+            "lookup = tên bản ghi hoặc tenbang:guid (vd account:Contoso, account:{{accountId}}) · option set = nhãn hoặc số · " +
+            "nhiều lựa chọn = nhãn cách nhau dấu ; · ngày = dd/MM/yyyy hoặc dd/MM/yyyy HH:mm · Có/Không = có/không, true/false · trống = xóa giá trị. " +
+            "Field bị khóa / ẩn sẽ báo lỗi như người dùng thật.",
+        D365Action.GetField => "Đọc giá trị hiển thị (lookup = tên, option set = nhãn). Thêm :raw để lấy giá trị gốc, vd parentcustomerid:raw = Id.",
+        D365Action.Save =>
+            "Lưu bản ghi (formContext.data.save). Lỗi validate, field bắt buộc, lỗi plugin → bước lỗi kèm thông báo. Id lưu trong {{d365.lastId}}; " +
+            "bản ghi mới được ghi vào {{d365.created}} để \"Xóa dữ liệu test đã tạo\".",
+        D365Action.Command => "Bấm nút trên thanh lệnh theo nhãn hiển thị (vd Lưu & đóng, Deactivate, Qualify) hoặc một phần command id " +
+                              "(vd Mscrm.Form.account.Deactivate). Nút nằm trong \"Thêm lệnh\" (…) được tự mở ra.",
+        D365Action.SelectTab => "Chuyển tới tab của form theo tên (name) hoặc nhãn hiển thị.",
+        D365Action.BpfNext or D365Action.BpfPrevious => "Chuyển giai đoạn của quy trình nghiệp vụ (Business Process Flow). Thiếu field bắt buộc " +
+                                                         "của giai đoạn hoặc form chưa lưu → bước lỗi kèm lý do.",
+        D365Action.ConfirmDialog => "Chờ hộp thoại (xác nhận, cảnh báo, lỗi) rồi bấm nút theo nhãn; trống = nút chính (OK / Xác nhận). " +
+                                    "Nội dung hộp thoại lưu được vào biến để kiểm tra.",
+        D365Action.GetRecordId => "Lấy Id của bản ghi đang mở (trống nếu chưa lưu).",
+        D365Action.GetNotifications => "Đọc các thông báo đang hiện trên form (thanh thông báo, lỗi dưới field, hộp thoại lỗi), mỗi thông báo một dòng.",
+        D365Action.WebApi =>
+            "Gọi Dynamics 365 Web API bằng phiên đăng nhập của trình duyệt — không cần đăng ký ứng dụng Entra ID. Kết quả trong {{http.body}}, mã trong " +
+            "{{http.status}}. POST tạo bản ghi: Id mới trong {{d365.lastId}} và được ghi vào {{d365.created}} để dọn sau khi test. " +
+            "Vd POST accounts với body {\"name\":\"Test {{now:HHmmss}}\"}.",
+        D365Action.Cleanup =>
+            "Xóa mọi bản ghi trong {{d365.created}} (tạo bằng bước Lưu / Web API POST), bản tạo sau xóa trước. Hoặc bật \"Tự xóa dữ liệu test\" " +
+            "ở tab Lỗi · thông báo · kiểm thử của công việc để luôn dọn kể cả khi test thất bại.",
+        D365Action.RunScript => "JavaScript chạy trong trang với formContext và Xrm có sẵn, dùng await được; giá trị return lưu vào biến. " +
+                                "Vd: return formContext.getAttribute('revenue').getValue() * 2",
         _ => ""
     };
 
@@ -1261,7 +1429,13 @@ internal sealed class StepEditorForm : BaseForm
                 {
                     var expanded = ctx.ExpandStep(step);
                     if (step.Type == StepType.If || (step.Type == StepType.Loop && step.LoopKind == LoopKind.While))
-                        return $"Điều kiện → {(await ConditionEvaluator.EvaluateAsync(expanded, ctx) ? "ĐÚNG" : "SAI")}";
+                        return $"Điều kiện → {(await ConditionEvaluator.EvaluateAsync(expanded, ctx) ? "ĐÚNG" : "SAI")}" +
+                               (ctx.ConditionDetail.Length > 0 ? " — " + ctx.ConditionDetail : "");
+                    if (step.Type == StepType.Assert)
+                    {
+                        await ConditionEvaluator.AssertAsync(expanded, ctx);
+                        return "Đạt" + (ctx.ConditionDetail.Length > 0 ? " — " + ctx.ConditionDetail : "");
+                    }
                     if (step.Type == StepType.Loop)
                     {
                         var frame = LoopFrame.Create(expanded, 0, 1);

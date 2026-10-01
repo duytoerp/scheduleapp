@@ -49,6 +49,15 @@ $env:SCHEDULEAPP_DATA_DIR = "$env:TEMP\ScheduleAppManual"; .\publish\ScheduleApp
 - [ ] Kết nối *Microsoft Entra ID* tới Dynamics 365 → *Thử kết nối* trả `200`; bước *Gọi API* `WhoAmI` → biến `UserId` có giá trị.
 - [ ] Nhập khóa Claude → *Thử* trả "OK"; bước *Hỏi AI* kèm ảnh màn hình đọc đúng một con số đang hiển thị.
 
+## 7b. Kiểm thử Dynamics 365 (cần môi trường D365 test)
+
+- [ ] Nhập 4 mẫu "Kiểm thử Dynamics 365", sửa `d365Url` của C1 → chạy C1, đăng nhập tay lần đầu trong cửa sổ Edge → chạy lại C1 thì không phải đăng nhập.
+- [ ] Chuột phải C2 → *Chạy kiểm thử & xem báo cáo* → báo cáo ĐẠT, có 4 kiểm tra; bản ghi "Test KH …" đã bị xóa khỏi D365 (dọn dữ liệu).
+- [ ] Sửa Assert "Tên đã lưu đúng" của C2 thành giá trị sai → báo cáo KHÔNG ĐẠT, dòng kiểm tra có giá trị thực tế và ảnh chụp trang D365; bản ghi test vẫn được xóa.
+- [ ] C3 (lưu thiếu tên) ĐẠT với form tiếng Việt và tiếng Anh (nút lưu tìm theo command id).
+- [ ] Nhập lookup theo tên trùng nhau (2 bản ghi cùng tên) → bước lỗi gợi ý nhập Id.
+- [ ] `Start-Process ScheduleApp.exe -ArgumentList '--test','"Mẫu kiểm thử Dynamics 365"' -Wait -PassThru` khi ScheduleApp đang mở ở khay → chạy được, `ExitCode` 0/1 đúng, có `junit.xml`; nạp `junit.xml` vào Azure DevOps *Publish Test Results* hiển thị đúng.
+
 ## 8. Lịch, ngủ máy, cập nhật
 
 - [ ] Đặt lịch chạy sau 3 phút, bật *Đánh thức máy* → cho máy Sleep → máy tự thức và chạy (cần *Allow wake timers*).

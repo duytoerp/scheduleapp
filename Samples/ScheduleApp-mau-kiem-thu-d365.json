@@ -1,0 +1,111 @@
+[
+  {
+    "Id": "5d6e0b51-0d5f-4c4e-9c43-1d365a000001",
+    "Name": "C1 · Mở Dynamics 365 (dùng chung cho các kịch bản)",
+    "Group": "Mẫu kiểm thử Dynamics 365",
+    "Enabled": true,
+    "Schedule": { "Type": "Manual" },
+    "StopOnError": true,
+    "Variables": [
+      { "Name": "d365Url", "Value": "https://tenorg.crm5.dynamics.com/main.aspx?appid=00000000-0000-0000-0000-000000000000" }
+    ],
+    "Steps": [
+      {
+        "Type": "Browser", "BrowserAction": "Launch", "Target": "Edge", "Arguments": "D365 Test", "Text": "{{d365Url}}",
+        "DelayMs": 15000, "DelayAfterMs": 500
+      },
+      {
+        "Type": "Dynamics", "D365Action": "OpenView", "Text": "account",
+        "DelayMs": 60000, "DelayAfterMs": 0, "Retries": 10, "RetryDelayMs": 3000
+      }
+    ]
+  },
+  {
+    "Id": "5d6e0b51-0d5f-4c4e-9c43-1d365a000002",
+    "Name": "C2 · Tạo khách hàng (account) và kiểm tra dữ liệu đã lưu",
+    "Group": "Mẫu kiểm thử Dynamics 365",
+    "Enabled": true,
+    "Schedule": { "Type": "Manual" },
+    "StopOnError": true,
+    "IsTestCase": true,
+    "CleanupTestData": true,
+    "Steps": [
+      { "Type": "CallJob", "JobRef": "5d6e0b51-0d5f-4c4e-9c43-1d365a000001", "Target": "C1 · Mở Dynamics 365 (dùng chung cho các kịch bản)", "DelayAfterMs": 0 },
+      { "Type": "Dynamics", "D365Action": "OpenForm", "Text": "account", "DelayMs": 30000, "DelayAfterMs": 0 },
+      {
+        "Type": "Assert", "Condition": "D365FieldState", "Text": "name", "Arguments": "required",
+        "Message": "Tên khách hàng là field bắt buộc", "DelayMs": 5000, "DelayAfterMs": 0
+      },
+      { "Type": "Dynamics", "D365Action": "SetField", "Text": "name", "Arguments": "Test KH {{now:yyyyMMdd-HHmmss}}", "DelayMs": 30000, "DelayAfterMs": 0 },
+      { "Type": "Dynamics", "D365Action": "SetField", "Text": "telephone1", "Arguments": "0901 234 567", "DelayMs": 30000, "DelayAfterMs": 0 },
+      { "Type": "Dynamics", "D365Action": "Save", "Variable": "accountId", "DelayMs": 60000, "DelayAfterMs": 0 },
+      {
+        "Type": "Assert", "Condition": "D365Notification", "Negate": true,
+        "Message": "Lưu xong form không báo lỗi", "DelayMs": 0, "DelayAfterMs": 0
+      },
+      {
+        "Type": "Assert", "Condition": "D365FieldValue", "Text": "name", "CompareOp": "StartsWith", "Arguments": "Test KH",
+        "Message": "Tên đã lưu đúng", "DelayMs": 5000, "DelayAfterMs": 0
+      },
+      {
+        "Type": "Assert", "Condition": "D365RecordCount", "Text": "accounts?$select=name&$filter=accountid eq {{accountId}}",
+        "CompareOp": "Equals", "Arguments": "1", "Message": "Bản ghi đã có trong hệ thống (Web API)", "DelayMs": 10000, "DelayAfterMs": 0
+      }
+    ]
+  },
+  {
+    "Id": "5d6e0b51-0d5f-4c4e-9c43-1d365a000003",
+    "Name": "C3 · Lưu khi thiếu tên phải bị chặn",
+    "Group": "Mẫu kiểm thử Dynamics 365",
+    "Enabled": true,
+    "Schedule": { "Type": "Manual" },
+    "StopOnError": true,
+    "IsTestCase": true,
+    "Steps": [
+      { "Type": "CallJob", "JobRef": "5d6e0b51-0d5f-4c4e-9c43-1d365a000001", "Target": "C1 · Mở Dynamics 365 (dùng chung cho các kịch bản)", "DelayAfterMs": 0 },
+      { "Type": "Dynamics", "D365Action": "OpenForm", "Text": "account", "DelayMs": 30000, "DelayAfterMs": 0 },
+      { "Type": "Dynamics", "D365Action": "SetField", "Text": "telephone1", "Arguments": "0281234567", "DelayMs": 30000, "DelayAfterMs": 0 },
+      { "Type": "Dynamics", "D365Action": "Command", "Text": "Mscrm.Form.account.Save", "DelayMs": 15000, "DelayAfterMs": 1000 },
+      {
+        "Type": "Assert", "Condition": "D365Notification",
+        "Message": "Form báo thiếu field bắt buộc", "DelayMs": 10000, "DelayAfterMs": 0
+      },
+      {
+        "Type": "Dynamics", "D365Action": "GetRecordId", "Variable": "idSauKhiLuu", "DelayMs": 30000, "DelayAfterMs": 0
+      },
+      {
+        "Type": "Assert", "Condition": "Compare", "Target": "{{idSauKhiLuu}}", "CompareOp": "IsEmpty",
+        "Message": "Bản ghi không được tạo", "DelayMs": 0, "DelayAfterMs": 0
+      }
+    ]
+  },
+  {
+    "Id": "5d6e0b51-0d5f-4c4e-9c43-1d365a000004",
+    "Name": "C4 · Chuẩn bị dữ liệu qua Web API, sửa trên form, tự dọn",
+    "Group": "Mẫu kiểm thử Dynamics 365",
+    "Enabled": true,
+    "Schedule": { "Type": "Manual" },
+    "StopOnError": true,
+    "IsTestCase": true,
+    "CleanupTestData": true,
+    "Steps": [
+      { "Type": "CallJob", "JobRef": "5d6e0b51-0d5f-4c4e-9c43-1d365a000001", "Target": "C1 · Mở Dynamics 365 (dùng chung cho các kịch bản)", "DelayAfterMs": 0 },
+      {
+        "Type": "Dynamics", "D365Action": "WebApi", "Method": "POST", "Arguments": "accounts",
+        "Text": "{\"name\": \"API Test {{now:HHmmss}}\", \"telephone1\": \"0281234567\"}",
+        "Variable": "accountId", "DelayMs": 30000, "DelayAfterMs": 0
+      },
+      { "Type": "Dynamics", "D365Action": "OpenForm", "Text": "account", "Arguments": "{{accountId}}", "DelayMs": 30000, "DelayAfterMs": 0 },
+      {
+        "Type": "Assert", "Condition": "D365FieldValue", "Text": "telephone1", "CompareOp": "Equals", "Arguments": "0281234567",
+        "Message": "Form hiện đúng dữ liệu tạo qua API", "DelayMs": 5000, "DelayAfterMs": 0
+      },
+      { "Type": "Dynamics", "D365Action": "SetField", "Text": "telephone1", "Arguments": "", "DelayMs": 30000, "DelayAfterMs": 0 },
+      { "Type": "Dynamics", "D365Action": "Save", "DelayMs": 60000, "DelayAfterMs": 0 },
+      {
+        "Type": "Assert", "Condition": "D365RecordCount", "Text": "accounts?$select=name&$filter=accountid eq {{accountId}} and telephone1 eq null",
+        "CompareOp": "Equals", "Arguments": "1", "Message": "Đã xóa số điện thoại trong hệ thống", "DelayMs": 10000, "DelayAfterMs": 0
+      }
+    ]
+  }
+]

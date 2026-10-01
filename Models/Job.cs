@@ -63,6 +63,12 @@ public sealed class Job
     /// <summary>Công việc chạy dọn dẹp khi flow thất bại (vd đóng ứng dụng, gửi báo cáo).</summary>
     public Guid? OnFailureJobId { get; set; }
 
+    /// <summary>Kịch bản kiểm thử: mỗi lần chạy ghi lại kết quả từng bước / từng kiểm tra và xuất báo cáo (HTML + JUnit XML).</summary>
+    public bool IsTestCase { get; set; }
+
+    /// <summary>Sau khi chạy, xóa các bản ghi Dynamics 365 mà flow đã tạo (danh sách trong {{d365.created}}).</summary>
+    public bool CleanupTestData { get; set; }
+
     public DateTime? LastRun { get; set; }
     public string? LastResult { get; set; }
 

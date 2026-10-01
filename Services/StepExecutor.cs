@@ -142,6 +142,14 @@ public static class StepExecutor
                 }, ct);
                 break;
 
+            case StepType.Dynamics:
+                await D365Client.ExecuteAsync(s, ctx);
+                break;
+
+            case StepType.Assert:
+                await ConditionEvaluator.AssertAsync(s, ctx);
+                break;
+
             case StepType.WriteData:
                 WriteData(s, ctx);
                 break;
