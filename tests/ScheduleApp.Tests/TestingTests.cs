@@ -195,6 +195,41 @@ public class TestingTests
     }
 
     [Fact]
+    public void RecordedEventsBecomeSteps()
+    {
+        D365Client.RecordedEvent E(string k, long t, string entity = "", string id = "", bool isNew = false, string field = "", string value = "", string label = "") =>
+            new(k, entity, id, isNew, field, value, label, t);
+        var steps = D365Client.ToSteps(
+        [
+            E("open", 0, "account", "", isNew: true),
+            E("open", 10, "account", "", isNew: true),        // ghi lại từ đầu → bỏ
+            E("set", 100, field: "name", value: "C"),
+            E("set", 200, field: "name", value: "Contoso"),   // gộp
+            E("save", 300), E("save", 310),                   // OnSave 2 lần → 1 bước
+            E("command", 400, label: "+ Mới"),
+            E("open", 1500, "contact", "", isNew: true),       // mở ngay sau khi bấm nút → chờ form
+            E("tab", 1600, label: "Chi tiết"),
+            E("dialog", 1700, label: "OK"),
+            E("bpfPrev", 1800),
+            E("open", 9000, "account", "a1", isNew: false)
+        ]);
+        Assert.Equal(
+        [
+            "D365: mở form account (mới)",
+            "D365: name = \"Contoso\"",
+            "D365: lưu bản ghi",
+            "D365: bấm \"+ Mới\"",
+            "D365: chờ form tải xong (tối đa 30 giây)",
+            "D365: chuyển tab \"Chi tiết\"",
+            "D365: hộp thoại → bấm \"OK\"",
+            "D365: BPF về giai đoạn trước",
+            "D365: mở form account [a1]"
+        ], steps.Select(s => s.Describe()));
+        Assert.Equal("contact", steps[4].Text);
+        Assert.All(steps, s => Assert.Equal(ActionStep.CreateDefault(StepType.Dynamics).DelayAfterMs, s.DelayAfterMs));
+    }
+
+    [Fact]
     public void DescribeNewSteps()
     {
         var set = S(StepType.Dynamics, s => { s.D365Action = D365Action.SetField; s.Text = "name"; s.Arguments = "Contoso"; });

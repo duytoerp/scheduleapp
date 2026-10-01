@@ -7,7 +7,7 @@ using ScheduleApp.Services.Testing;
 
 namespace ScheduleApp.UI;
 
-internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHost
+internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHost, ITestHost
 {
     private const int StopHotkeyId = 0x5AFE;
     private const int MaxLogChars = 200_000;
@@ -28,9 +28,25 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         CheckBoxes = true,
         HideSelection = false,
         MultiSelect = false,
-        GridLines = true,
-        ShowGroups = true
+        ShowGroups = true,
+        BorderStyle = BorderStyle.None,
+        SmallImageList = new ImageList { ImageSize = new Size(1, 28) } // dòng cao, dễ bấm
     };
+
+    private readonly Label _emptyJobs = new()
+    {
+        Text = "Chưa có công việc nào.\n\nBấm \"＋ Thêm công việc\" để tự dựng, hoặc \"Mẫu có sẵn…\" để bắt đầu từ ví dụ.",
+        Dock = DockStyle.Fill,
+        TextAlign = ContentAlignment.MiddleCenter,
+        ForeColor = Theme.Muted,
+        BackColor = Theme.Surface,
+        Visible = false
+    };
+
+    private readonly Panel _jobsPage = new() { Dock = DockStyle.Fill, BackColor = Theme.Background };
+    private TestDashboard _testsPage = null!;
+    private readonly NavButton _navJobs = new("", "Công việc");
+    private readonly NavButton _navTests = new("", "Kiểm thử");
 
     private readonly TextBox _log = new()
     {
@@ -52,7 +68,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
 
     private readonly ToolStripTextBox _search = new() { AutoSize = false, Width = 180, ToolTipText = "Tìm theo tên / nhóm công việc" };
     private readonly ToolStripStatusLabel _status = new() { Spring = true, TextAlign = ContentAlignment.MiddleLeft, Text = "Sẵn sàng" };
-    private readonly ToolStripButton _btnStop = new("■ Dừng flow") { Enabled = false, ToolTipText = "Dừng flow đang chạy (Ctrl+Shift+Q)" };
+    private readonly ToolStripButton _btnStop = new("■ Dừng") { Enabled = false, ToolTipText = "Dừng flow đang chạy (Ctrl+Shift+Q)" };
     private readonly NotifyIcon _tray = new();
     private readonly System.Windows.Forms.Timer _uiTimer = new() { Interval = 1000 };
     private readonly string? _startupCommand;
@@ -87,6 +103,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         _triggers.Reload();
         _bot.Restart();
         RefreshList();
+        RefreshTests();
         Log.Info($"ScheduleApp {UpdateService.Current} khởi động — {_jobs.Count} công việc. Dữ liệu: {JobStore.DataDir}");
         _ = Task.Run(ErrorScreenshots.Cleanup);
         _ = Task.Run(UpdateService.CleanupOldVersion);
@@ -123,68 +140,41 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
 
     private void BuildUi()
     {
-        var toolbar = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden, Padding = new Padding(6, 2, 6, 2), ImageScalingSize = new Size(16, 16) };
-        toolbar.Items.Add(Button("＋ Thêm công việc", (_, _) => AddJob()));
-        toolbar.Items.Add(Button("Mẫu có sẵn…", (_, _) => AddFromTemplate()));
-        toolbar.Items.Add(Button("Sửa", (_, _) => EditSelected()));
-        toolbar.Items.Add(Button("Nhân bản", (_, _) => DuplicateSelected()));
-        toolbar.Items.Add(Button("Xóa", (_, _) => DeleteSelected()));
-        toolbar.Items.Add(new ToolStripSeparator());
-        toolbar.Items.Add(Button("▶ Chạy ngay", (_, _) => RunSelected()));
+        BackColor = Theme.Background;
+
+        // ── Trang "Công việc" ──
+        var bar = Theme.CommandBar();
+        bar.Items.Add(Theme.CommandButton("＋ Thêm công việc", (_, _) => AddJob(), primary: true));
+        bar.Items.Add(Theme.CommandButton("Mẫu có sẵn…", (_, _) => AddFromTemplate(), tip: "Thêm từ kho mẫu (Notepad, Excel, Dynamics 365, kiểm thử…)"));
+        bar.Items.Add(new ToolStripSeparator());
+        bar.Items.Add(Theme.CommandButton("▶ Chạy", (_, _) => RunSelected(), tip: "Chạy công việc đang chọn (F5)"));
         _btnStop.Click += (_, _) => _runner.StopAll();
-        toolbar.Items.Add(_btnStop);
-        toolbar.Items.Add(new ToolStripSeparator());
-        toolbar.Items.Add(Button("📋 Lịch sử", (_, _) => ShowHistory(null)));
-        toolbar.Items.Add(Button("🔑 Bí mật", (_, _) => { using var f = new SecretsForm(); f.ShowDialog(this); }));
-        toolbar.Items.Add(Button("⚙ Cài đặt", (_, _) => ShowSettings()));
-        toolbar.Items.Add(new ToolStripSeparator());
-        var more = new ToolStripDropDownButton("Thêm") { DisplayStyle = ToolStripItemDisplayStyle.Text };
+        _btnStop.Padding = new Padding(8, 3, 8, 3);
+        bar.Items.Add(_btnStop);
+        bar.Items.Add(new ToolStripSeparator());
+        bar.Items.Add(Theme.CommandButton("Sửa", (_, _) => EditSelected(), tip: "Sửa công việc đang chọn (Enter / nhấp đúp)"));
+        bar.Items.Add(Theme.CommandButton("Nhân bản", (_, _) => DuplicateSelected()));
+        bar.Items.Add(Theme.CommandButton("Xóa", (_, _) => DeleteSelected(), tip: "Xóa công việc đang chọn (Delete)"));
+        var more = new ToolStripDropDownButton("⋯ Thêm") { DisplayStyle = ToolStripItemDisplayStyle.Text, Padding = new Padding(8, 3, 8, 3), ShowDropDownArrow = false };
         more.DropDownItems.Add("Nhập công việc…", null, (_, _) => ImportJobs());
         more.DropDownItems.Add("Xuất công việc…", null, (_, _) => ExportJobs());
         more.DropDownItems.Add(new ToolStripSeparator());
         more.DropDownItems.Add("Mở thư mục log", null, (_, _) => OpenFolder(Log.LogDir));
         more.DropDownItems.Add("Mở thư mục ảnh lỗi", null, (_, _) => OpenFolder(ErrorScreenshots.Dir));
         more.DropDownItems.Add("Mở thư mục báo cáo kiểm thử", null, (_, _) => OpenFolder(TestReport.RootDir));
-        more.DropDownItems.Add("🧪 Chạy mọi kịch bản kiểm thử", null, async (_, _) =>
-        {
-            var tests = TestSuite.Select(_jobs, "*");
-            if (tests.Count == 0)
-            {
-                MessageBox.Show(this, "Chưa có kịch bản kiểm thử nào. Mở công việc → tab \"Lỗi · thông báo · kiểm thử\" → tick \"Đây là kịch bản kiểm thử\".",
-                    Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-            await RunTestsAsync(tests, "Tất cả kịch bản kiểm thử");
-        });
         more.DropDownItems.Add("Mở thư mục dữ liệu", null, (_, _) => OpenFolder(JobStore.DataDir));
         more.DropDownItems.Add(new ToolStripSeparator());
         more.DropDownItems.Add("Kiểm tra cập nhật…", null, async (_, _) => await CheckUpdateAsync());
         more.DropDownItems.Add($"Giới thiệu (phiên bản {UpdateService.Current})", null, (_, _) =>
             MessageBox.Show(this, $"ScheduleApp {UpdateService.Current}\nĐặt lịch, nhắc nhở & tự động thao tác trên Windows.\n\nDữ liệu: {JobStore.DataDir}",
                 Text, MessageBoxButtons.OK, MessageBoxIcon.Information));
-        toolbar.Items.Add(more);
-
-        var startup = new ToolStripButton("Khởi động cùng Windows")
-        {
-            CheckOnClick = true,
-            Checked = StartupManager.IsEnabled,
-            Alignment = ToolStripItemAlignment.Right,
-            ToolTipText = "Tự chạy ScheduleApp (thu nhỏ ở khay hệ thống) khi đăng nhập Windows"
-        };
-        startup.CheckedChanged += (_, _) =>
-        {
-            try
-            {
-                StartupManager.Set(startup.Checked);
-                Log.Info(startup.Checked ? "Đã bật khởi động cùng Windows." : "Đã tắt khởi động cùng Windows.");
-            }
-            catch (Exception ex) { ShowError("Không thay đổi được cài đặt khởi động: " + ex.Message); }
-        };
-        toolbar.Items.Add(startup);
+        bar.Items.Add(more);
         _search.Alignment = ToolStripItemAlignment.Right;
+        _search.BorderStyle = BorderStyle.FixedSingle;
+        _search.Margin = new Padding(0, 1, 0, 1);
         _search.TextChanged += (_, _) => RefreshList();
-        toolbar.Items.Add(_search);
-        toolbar.Items.Add(new ToolStripLabel("🔍") { Alignment = ToolStripItemAlignment.Right });
+        bar.Items.Add(_search);
+        bar.Items.Add(new ToolStripLabel("🔍 Tìm") { Alignment = ToolStripItemAlignment.Right, ForeColor = Theme.Muted });
 
         _list.Columns.Add("Công việc");
         _list.Columns.Add("Lịch / kích hoạt");
@@ -212,6 +202,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
             runGroup.Text = g.Length > 0 ? $"🧪 Chạy nhóm \"{g}\" như bộ kiểm thử" : "🧪 Chạy cả nhóm như bộ kiểm thử";
             runGroup.Enabled = g.Length > 0;
         };
+        listMenu.Items.Add(new ToolStripSeparator());
         listMenu.Items.Add("Sửa…", null, (_, _) => EditSelected());
         listMenu.Items.Add("Nhân bản", null, (_, _) => DuplicateSelected());
         listMenu.Items.Add("Lịch sử chạy…", null, (_, _) => { if (SelectedJob() is { } j) ShowHistory(j.Id); });
@@ -220,28 +211,128 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         listMenu.Items.Add("Xóa", null, (_, _) => DeleteSelected());
         _list.ContextMenuStrip = listMenu;
 
-        var logHeader = new Label
+        var listCard = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Surface, Padding = new Padding(1) };
+        listCard.Paint += (_, e) =>
         {
-            Text = "Nhật ký hoạt động",
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            Padding = new Padding(2, 6, 0, 4),
-            Font = new Font(Font, FontStyle.Bold)
+            using var pen = new Pen(Theme.Border);
+            e.Graphics.DrawRectangle(pen, 0, 0, listCard.Width - 1, listCard.Height - 1);
         };
-        var logPanel = new Panel { Dock = DockStyle.Fill };
-        logPanel.Controls.Add(_log);
+        listCard.Controls.Add(_list);
+        listCard.Controls.Add(_emptyJobs);
+        _emptyJobs.BringToFront();
+
+        var logHeader = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, BackColor = Theme.Surface, Padding = new Padding(6, 4, 6, 2), WrapContents = false };
+        logHeader.Controls.Add(new Label { Text = "Nhật ký hoạt động", AutoSize = true, Font = Theme.BoldFont, Margin = new Padding(3, 5, 12, 3) });
+        var clearLog = new LinkLabel { Text = "Xóa", AutoSize = true, Margin = new Padding(3, 5, 8, 3), LinkColor = Theme.Accent };
+        clearLog.LinkClicked += (_, _) => _log.Clear();
+        var hideLog = new LinkLabel { Text = "Ẩn", AutoSize = true, Margin = new Padding(3, 5, 8, 3), LinkColor = Theme.Accent };
+        hideLog.LinkClicked += (_, _) => ToggleLog(false);
+        logHeader.Controls.AddRange([clearLog, hideLog]);
+        _log.BorderStyle = BorderStyle.None;
+        _log.BackColor = Theme.Surface;
+        var logPanel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Surface, Padding = new Padding(1) };
+        logPanel.Paint += (_, e) =>
+        {
+            using var pen = new Pen(Theme.Border);
+            e.Graphics.DrawRectangle(pen, 0, 0, logPanel.Width - 1, logPanel.Height - 1);
+        };
+        var logInner = new Panel { Dock = DockStyle.Fill, Padding = new Padding(8, 0, 4, 4), BackColor = Theme.Surface };
+        logInner.Controls.Add(_log);
+        logPanel.Controls.Add(logInner);
         logPanel.Controls.Add(logHeader);
 
-        _split.Panel1.Controls.Add(_list);
+        _split.BackColor = Theme.Background;
+        _split.Padding = Padding.Empty;
+        _split.SplitterWidth = 10;
+        _split.Panel1.Controls.Add(listCard);
         _split.Panel2.Controls.Add(logPanel);
+        var splitHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(18, 0, 18, 12), BackColor = Theme.Background };
+        splitHost.Controls.Add(_split);
 
-        var statusBar = new StatusStrip();
+        _jobsPage.Controls.Add(splitHost);
+        _jobsPage.Controls.Add(bar);
+        _jobsPage.Controls.Add(Theme.PageHeader("Công việc", "Đặt lịch & tự động thao tác — tick để bật/tắt, nhấp đúp để sửa, chuột phải để xem thêm"));
+
+        // ── Thanh điều hướng ──
+        var nav = new Panel { Dock = DockStyle.Left, Width = LogicalToDeviceUnits(206), BackColor = Theme.NavBackground, Padding = new Padding(0, 6, 0, 8) };
+        nav.Paint += (_, e) =>
+        {
+            using var pen = new Pen(Theme.Border);
+            e.Graphics.DrawLine(pen, nav.Width - 1, 0, nav.Width - 1, nav.Height);
+        };
+        var brand = new Panel { Dock = DockStyle.Top, Height = LogicalToDeviceUnits(50), BackColor = Theme.NavBackground };
+        var brandFont = new Font("Segoe UI Semibold", 12.5F);
+        var brandIcon = AppIcon.Get().ToBitmap();
+        brand.Paint += (_, e) =>
+        {
+            int size = LogicalToDeviceUnits(24), x = LogicalToDeviceUnits(16);
+            e.Graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            e.Graphics.DrawImage(brandIcon, x, (brand.Height - size) / 2, size, size);
+            TextRenderer.DrawText(e.Graphics, "ScheduleApp", brandFont, new Rectangle(x + size + LogicalToDeviceUnits(10), 0, brand.Width, brand.Height),
+                Theme.Text, TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        };
+        _navJobs.Click += (_, _) => ShowPage(_jobsPage);
+        _navTests.Click += (_, _) => ShowPage(_testsPage);
+        var navHistory = new NavButton("", "Lịch sử chạy");
+        navHistory.Click += (_, _) => ShowHistory(null);
+        var navSecrets = new NavButton("", "Bí mật");
+        navSecrets.Click += (_, _) => { using var f = new SecretsForm(); f.ShowDialog(this); };
+        var navSettings = new NavButton("", "Cài đặt");
+        navSettings.Click += (_, _) => ShowSettings();
+        var spacer = new Label { Dock = DockStyle.Top, Height = LogicalToDeviceUnits(14) };
+        var section = new Label { Text = "      CÔNG CỤ", Dock = DockStyle.Top, Height = LogicalToDeviceUnits(26), ForeColor = Theme.Muted, Font = new Font(Font.FontFamily, 7.5F, FontStyle.Bold), TextAlign = ContentAlignment.BottomLeft };
+
+        var startup = new CheckBox
+        {
+            Text = "Khởi động cùng Windows",
+            Checked = StartupManager.IsEnabled,
+            Dock = DockStyle.Bottom,
+            Height = LogicalToDeviceUnits(30),
+            Padding = new Padding(16, 0, 0, 0),
+            ForeColor = Theme.Text
+        };
+        new ToolTip().SetToolTip(startup, "Tự chạy ScheduleApp (thu nhỏ ở khay hệ thống) khi đăng nhập Windows");
+        startup.CheckedChanged += (_, _) =>
+        {
+            try
+            {
+                StartupManager.Set(startup.Checked);
+                Log.Info(startup.Checked ? "Đã bật khởi động cùng Windows." : "Đã tắt khởi động cùng Windows.");
+            }
+            catch (Exception ex) { ShowError("Không thay đổi được cài đặt khởi động: " + ex.Message); }
+        };
+        var version = new Label
+        {
+            Text = $"Phiên bản {UpdateService.Current}",
+            Dock = DockStyle.Bottom,
+            Height = LogicalToDeviceUnits(22),
+            ForeColor = Theme.Muted,
+            Padding = new Padding(18, 0, 0, 0),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        // Dock = Top xếp theo thứ tự ngược (control thêm sau nằm trên).
+        nav.Controls.AddRange([navSettings, navSecrets, navHistory, section, spacer, _navTests, _navJobs, brand, startup, version]);
+
+        _testsPage = new TestDashboard(this) { Visible = false };
+        var content = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Background };
+        content.Controls.Add(_jobsPage);
+        content.Controls.Add(_testsPage);
+
+        var statusBar = new StatusStrip { BackColor = Theme.Surface, SizingGrip = false };
         statusBar.Items.Add(_status);
-        statusBar.Items.Add(new ToolStripStatusLabel("Dừng khẩn cấp: Ctrl+Shift+Q") { ForeColor = UiText.Muted });
+        var logToggle = new ToolStripStatusLabel("📜 Nhật ký") { IsLink = true, LinkColor = Theme.Accent, ToolTipText = "Hiện / ẩn nhật ký hoạt động" };
+        logToggle.Click += (_, _) => ToggleLog(_split.Panel2Collapsed);
+        statusBar.Items.Add(logToggle);
+        statusBar.Items.Add(new ToolStripStatusLabel("Dừng khẩn cấp: Ctrl+Shift+Q") { ForeColor = Theme.Muted });
 
-        Controls.Add(_split);
-        Controls.Add(toolbar);
+        Controls.Add(content);
+        Controls.Add(nav);
         Controls.Add(statusBar);
+        ShowPage(_jobsPage);
+        Shown += (_, _) =>
+        {
+            try { _split.SplitterDistance = Math.Max(150, _split.Height - LogicalToDeviceUnits(190)); } catch (InvalidOperationException) { }
+        };
 
         // Khay hệ thống
         var trayMenu = new ContextMenuStrip();
@@ -274,11 +365,32 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         };
     }
 
-    private static ToolStripButton Button(string text, EventHandler onClick)
+    private void ShowPage(Control page)
     {
-        var b = new ToolStripButton(text) { DisplayStyle = ToolStripItemDisplayStyle.Text, Padding = new Padding(4, 0, 4, 0) };
-        b.Click += onClick;
-        return b;
+        SuspendLayout();
+        _jobsPage.Visible = page == _jobsPage;
+        _testsPage.Visible = page == _testsPage;
+        _navJobs.Selected = page == _jobsPage;
+        _navTests.Selected = page == _testsPage;
+        if (page == _testsPage) _testsPage.RefreshData();
+        ResumeLayout(true);
+    }
+
+    private void ToggleLog(bool show)
+    {
+        _split.Panel2Collapsed = !show;
+        if (show)
+        {
+            try { _split.SplitterDistance = Math.Max(150, _split.Height - LogicalToDeviceUnits(190)); } catch (InvalidOperationException) { }
+        }
+    }
+
+    /// <summary>Làm mới trang Kiểm thử (nếu đang mở) và số kịch bản không đạt trên thanh điều hướng.</summary>
+    private void RefreshTests()
+    {
+        if (_testsPage.Visible || _navTests.Badge.Length > 0 || _jobs.Any(j => j.IsTestCase)) _testsPage.RefreshData();
+        _navTests.Badge = _testsPage.FailedCount > 0 ? _testsPage.FailedCount.ToString() : "";
+        _navTests.Invalidate();
     }
 
     private void FitColumns()
@@ -320,6 +432,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
                 job.LastResult = (ok ? "✔ " : "✖ ") + message;
                 SaveJobs();
                 RefreshList();
+                RefreshTests();
             }));
         };
 
@@ -432,6 +545,10 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
             foreach (var g in groups.Values.OrderBy(g => g.Header.StartsWith('(')).ThenBy(g => g.Header, StringComparer.CurrentCultureIgnoreCase))
                 _list.Groups.Add(g);
             _list.ShowGroups = groups.Count > 1;
+            _emptyJobs.Text = _jobs.Count == 0
+                ? "Chưa có công việc nào.\n\nBấm \"＋ Thêm công việc\" để tự dựng, hoặc \"Mẫu có sẵn…\" để bắt đầu từ ví dụ."
+                : $"Không có công việc nào khớp \"{filter}\".";
+            _emptyJobs.Visible = _list.Items.Count == 0;
         }
         finally
         {
@@ -451,7 +568,11 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         item.SubItems[3].Text = Countdown(job);
         item.SubItems[4].Text = job.LastRun?.ToString("HH:mm:ss  dd/MM/yyyy") ?? "—";
         item.SubItems[5].Text = job.LastResult ?? "";
-        item.ForeColor = job.Enabled ? SystemColors.WindowText : SystemColors.GrayText;
+        item.UseItemStyleForSubItems = false;
+        var color = job.Enabled ? Theme.Text : Theme.Muted;
+        for (int i = 0; i < item.SubItems.Count; i++) item.SubItems[i].ForeColor = color;
+        if (job.Enabled && job.LastResult is { Length: > 0 } r) item.SubItems[5].ForeColor = r.StartsWith('✔') ? Theme.Success : Theme.Danger;
+        if (job.IsTestCase) item.SubItems[1].Text = "Kịch bản kiểm thử · " + item.SubItems[1].Text;
     }
 
     private static string Countdown(Job job)
@@ -479,15 +600,16 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         _triggers.Reload();
         SaveJobs();
         RefreshList();
+        RefreshTests();
     }
 
     // ───────────────────────────── Thao tác ─────────────────────────────
 
     private void AddJob() => AddJob(new Job(), isNew: true);
 
-    private void AddJob(Job job, bool isNew)
+    private void AddJob(Job job, bool isNew, bool recordD365 = false)
     {
-        using var editor = new JobEditorForm(job, _runner, _jobs, this, isNew);
+        using var editor = new JobEditorForm(job, _runner, _jobs, this, isNew) { StartD365RecordingOnShow = recordD365 };
         if (editor.ShowDialog(this) != DialogResult.OK) return;
         var added = editor.Job;
         _jobs.Add(added);
@@ -512,8 +634,43 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
 
     private void EditSelected()
     {
-        var job = SelectedJob();
-        if (job == null) return;
+        if (SelectedJob() is { } job) EditJob(job);
+    }
+
+    // ───────────────────────────── Trang Kiểm thử (ITestHost) ─────────────────────────────
+
+    IReadOnlyList<Job> ITestHost.AllJobs => _jobs;
+
+    Task ITestHost.RunTestsAsync(IReadOnlyList<Job> jobs, string name) => RunTestsAsync(jobs, name);
+
+    /// <summary>
+    /// Kịch bản kiểm thử mới: bật sẵn "kịch bản kiểm thử" + "tự xóa dữ liệu test"; nếu đã có công việc mở Dynamics 365 dùng chung
+    /// (có bước mở trình duyệt, không phải kịch bản) thì bước đầu gọi công việc đó.
+    /// </summary>
+    public void NewTestCase(bool recordD365)
+    {
+        var job = new Job
+        {
+            Name = recordD365 ? $"Kịch bản ghi {DateTime.Now:dd/MM HH:mm}" : "Kịch bản kiểm thử mới",
+            Group = _jobs.Where(j => j.IsTestCase && j.Group.Length > 0).GroupBy(j => j.Group).OrderByDescending(g => g.Count()).FirstOrDefault()?.Key ?? "Kiểm thử",
+            IsTestCase = true,
+            CleanupTestData = true
+        };
+        var opener = _jobs.FirstOrDefault(j => !j.IsTestCase && j.Steps.Any(s => s.Type == StepType.Browser && s.BrowserAction == BrowserAction.Launch)
+                                               && j.Steps.Any(s => s.Type == StepType.Dynamics));
+        if (opener != null)
+        {
+            var call = ActionStep.CreateDefault(StepType.CallJob);
+            call.JobRef = opener.Id;
+            call.Target = opener.Name;
+            call.DelayAfterMs = 0;
+            job.Steps.Add(call);
+        }
+        AddJob(job, isNew: true, recordD365);
+    }
+
+    public void EditJob(Job job)
+    {
         using var editor = new JobEditorForm(job.Clone(), _runner, _jobs, this, isNew: false);
         if (editor.ShowDialog(this) != DialogResult.OK) return;
         int index = _jobs.FindIndex(j => j.Id == job.Id);
@@ -780,6 +937,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         try
         {
             var result = await TestSuite.RunAsync(_runner, runnable, name);
+            RefreshTests();
             Notify(result.Ok ? "🧪 Kiểm thử ĐẠT" : "🧪 Kiểm thử KHÔNG ĐẠT", TestReport.Summary(result.Cases), !result.Ok);
             Process.Start(new ProcessStartInfo(result.ReportPath) { UseShellExecute = true });
         }

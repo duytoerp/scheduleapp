@@ -12,6 +12,12 @@ internal class BaseForm : Form
         AutoScaleMode = AutoScaleMode.Dpi;
         Icon = AppIcon.Get();
     }
+
+    protected override void OnLoad(EventArgs e)
+    {
+        Theme.Apply(this);
+        base.OnLoad(e);
+    }
 }
 
 /// <summary>Icon đồng hồ vẽ bằng code (không cần file .ico).</summary>

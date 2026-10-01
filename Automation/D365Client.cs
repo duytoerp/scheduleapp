@@ -315,6 +315,224 @@ internal static class D365Client
         return 1; // truy vấn một bản ghi theo Id
     }
 
+    // ───────────────────────────── Đọc cấu trúc form (cho ô "Chọn từ form") ─────────────────────────────
+
+    /// <summary>Một field trên form đang mở.</summary>
+    public sealed record FieldInfo(string Name, string Label, string Type, string Required, bool Disabled, bool Visible, string Value,
+        IReadOnlyList<string> Options);
+
+    /// <summary>Form đang mở: bảng, Id, field, tab và các nút đang hiện trên thanh lệnh.</summary>
+    public sealed record FormInfo(string Entity, string Id, bool IsNew, IReadOnlyList<FieldInfo> Fields,
+        IReadOnlyList<(string Name, string Label)> Tabs, IReadOnlyList<string> Commands);
+
+    /// <summary>Đọc form Dynamics 365 đang mở trong trình duyệt điều khiển.</summary>
+    public static async Task<FormInfo> DescribeFormAsync(string target, CancellationToken ct)
+    {
+        var tab = await TabAsync(target, ct);
+        var json = await EvalAsync(tab, Script("""
+            const fc = __need();
+            const fields = fc.getAttribute().map(a => {
+              const ctrls = a.controls ? a.controls.get() : [];
+              const labelled = ctrls.find(c => c.getLabel && c.getLabel());
+              let options = [];
+              if (a.getOptions) { try { options = (a.getOptions() || []).map(o => o.text); } catch (e) { } }
+              let value = '';
+              try { value = __display(a, false); } catch (e) { }
+              return {
+                name: a.getName(), label: labelled ? labelled.getLabel() : '', type: a.getAttributeType(),
+                required: a.getRequiredLevel ? a.getRequiredLevel() : 'none',
+                disabled: ctrls.length > 0 && ctrls.every(c => c.getDisabled && c.getDisabled()),
+                visible: ctrls.some(c => !c.getVisible || c.getVisible()),
+                value, options
+              };
+            });
+            const tabs = fc.ui.tabs.get().map(t => ({ name: t.getName(), label: t.getLabel() }));
+            const commands = [];
+            document.querySelectorAll('[data-id*="CommandBar" i] button, [data-lp-id*="commandbar" i] button, [role=menubar] button').forEach(b => {
+              if (!__visible(b) || /overflowbutton|morecommands/i.test(b.getAttribute('data-id') || '')) return;
+              const t = (b.getAttribute('aria-label') || b.innerText || '').replace(/\s+/g, ' ').trim();
+              if (t && !commands.includes(t)) commands.push(t);
+            });
+            return JSON.stringify({ entity: fc.data.entity.getEntityName(), id: __id(fc.data.entity.getId()), isNew: fc.ui.getFormType() === 1, fields, tabs, commands });
+            """), ct);
+        using var doc = JsonDocument.Parse(json);
+        var r = doc.RootElement;
+        var fields = r.GetProperty("fields").EnumerateArray().Select(f => new FieldInfo(
+            f.GetProperty("name").GetString() ?? "",
+            f.GetProperty("label").GetString() ?? "",
+            f.GetProperty("type").GetString() ?? "",
+            f.GetProperty("required").GetString() ?? "none",
+            f.GetProperty("disabled").GetBoolean(),
+            f.GetProperty("visible").GetBoolean(),
+            f.GetProperty("value").GetString() ?? "",
+            f.GetProperty("options").EnumerateArray().Select(o => o.GetString() ?? "").ToList()))
+            .OrderBy(f => f.Label.Length == 0).ThenBy(f => f.Label.Length > 0 ? f.Label : f.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        var tabs = r.GetProperty("tabs").EnumerateArray()
+            .Select(t => (t.GetProperty("name").GetString() ?? "", t.GetProperty("label").GetString() ?? "")).ToList();
+        var commands = r.GetProperty("commands").EnumerateArray().Select(c => c.GetString() ?? "").ToList();
+        return new FormInfo(r.GetProperty("entity").GetString() ?? "", r.GetProperty("id").GetString() ?? "", r.GetProperty("isNew").GetBoolean(),
+            fields, tabs, commands);
+    }
+
+    // ───────────────────────────── Ghi thao tác trên Dynamics 365 ─────────────────────────────
+
+    /// <summary>Một thao tác người dùng làm trên D365 lúc ghi (k = open / set / save / command / tab / dialog / bpfNext / bpfPrev).</summary>
+    public sealed record RecordedEvent(string Kind, string Entity = "", string Id = "", bool IsNew = false, string Field = "", string Value = "",
+        string Label = "", long Time = 0);
+
+    /// <summary>
+    /// Bắt đầu ghi trong tab D365: gắn OnChange vào mọi field, OnSave, đổi tab, đổi giai đoạn BPF của từng form được mở,
+    /// và bắt click nút trên thanh lệnh / hộp thoại. Gọi lại an toàn (trang tải lại thì cài lại).
+    /// </summary>
+    public static async Task StartRecordingAsync(string target, CancellationToken ct)
+    {
+        var tab = await TabAsync(target, ct);
+        await EvalAsync(tab, Script(RecorderScript), ct);
+    }
+
+    /// <summary>Lấy các thao tác ghi được từ lần đọc trước; null nếu trình ghi không còn trong trang (trang vừa tải lại).</summary>
+    public static async Task<List<RecordedEvent>?> DrainRecordingAsync(string target, CancellationToken ct)
+    {
+        var tab = await TabAsync(target, ct);
+        var json = await EvalAsync(tab, "JSON.stringify(window.__saRecOn ? (window.__saRec || []).splice(0) : null)", ct);
+        if (json is "" or "null") return null;
+        using var doc = JsonDocument.Parse(json);
+        return doc.RootElement.EnumerateArray().Select(e =>
+        {
+            string S(string p) => e.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+            return new RecordedEvent(S("k"), S("entity"), S("id"), e.TryGetProperty("isNew", out var n) && n.ValueKind == JsonValueKind.True,
+                S("field"), S("value"), S("label"), e.TryGetProperty("t", out var t) && t.TryGetInt64(out var ms) ? ms : 0);
+        }).ToList();
+    }
+
+    public static async Task StopRecordingAsync(string target, CancellationToken ct)
+    {
+        var tab = await TabAsync(target, ct);
+        await EvalAsync(tab, "(() => { window.__saRecOn = false; clearInterval(window.__saRecTimer); return 'ok'; })()", ct);
+    }
+
+    /// <summary>
+    /// Đổi thao tác ghi được thành các bước: gộp nhiều lần sửa liên tiếp một field thành một bước, form mở ra ngay sau khi
+    /// bấm nút (vd "+ Mới") thành "Chờ form tải xong" thay vì mở lại form.
+    /// </summary>
+    public static List<ActionStep> ToSteps(IEnumerable<RecordedEvent> events)
+    {
+        var steps = new List<ActionStep>();
+        RecordedEvent? previous = null;
+        foreach (var e in events)
+        {
+            ActionStep? step = null;
+            switch (e.Kind)
+            {
+                case "open":
+                {
+                    if (previous is { Kind: "open" } && previous.Entity == e.Entity && previous.Id == e.Id) continue; // ghi lại từ đầu trên cùng form
+                    bool afterClick = previous is { Kind: "command" or "dialog" } && e.Time - previous.Time is >= 0 and < 5000;
+                    step = Step(afterClick ? D365Action.WaitForm : D365Action.OpenForm, e.Entity, afterClick || e.IsNew ? "" : e.Id);
+                    break;
+                }
+                case "set":
+                    if (steps.Count > 0 && steps[^1] is { Type: StepType.Dynamics, D365Action: D365Action.SetField } last
+                        && last.Text.Equals(e.Field, StringComparison.OrdinalIgnoreCase))
+                    {
+                        last.Arguments = e.Value;
+                        previous = e;
+                        continue;
+                    }
+                    step = Step(D365Action.SetField, e.Field, e.Value);
+                    break;
+                case "save":
+                    if (steps.Count > 0 && steps[^1] is { Type: StepType.Dynamics, D365Action: D365Action.Save }) { previous = e; continue; }
+                    step = Step(D365Action.Save);
+                    break;
+                case "command":
+                    step = Step(D365Action.Command, e.Label);
+                    break;
+                case "tab":
+                    step = Step(D365Action.SelectTab, e.Label);
+                    break;
+                case "dialog":
+                    step = Step(D365Action.ConfirmDialog, e.Label);
+                    break;
+                case "bpfNext":
+                    step = Step(D365Action.BpfNext);
+                    break;
+                case "bpfPrev":
+                    step = Step(D365Action.BpfPrevious);
+                    break;
+            }
+            if (step != null) steps.Add(step);
+            previous = e;
+        }
+        return steps;
+
+        static ActionStep Step(D365Action action, string text = "", string args = "")
+        {
+            var s = ActionStep.CreateDefault(StepType.Dynamics);
+            s.D365Action = action;
+            s.Text = text;
+            s.Arguments = args;
+            return s;
+        }
+    }
+
+    /// <summary>Bước "Kiểm tra" giá trị hiện tại của field (dùng khi tạo kiểm tra từ form đang mở).</summary>
+    public static ActionStep AssertFieldStep(FieldInfo f)
+    {
+        var s = ActionStep.CreateDefault(StepType.Assert);
+        s.Condition = ConditionKind.D365FieldValue;
+        s.Text = f.Name;
+        s.CompareOp = f.Value.Length == 0 ? CompareOp.IsEmpty : CompareOp.Equals;
+        s.Arguments = f.Value;
+        s.Message = (f.Label.Length > 0 ? f.Label : f.Name) + (f.Value.Length == 0 ? " để trống" : $" = {f.Value}");
+        return s;
+    }
+
+    private const string RecorderScript = """
+        window.__saRec = window.__saRec || [];
+        window.__saSeen = window.__saSeen || new WeakSet();
+        const push = e => { if (window.__saRecOn) { e.t = Date.now(); window.__saRec.push(e); } };
+        let current = null;
+        const attach = () => {
+          const fc = __fc();
+          if (!fc || fc.data.entity === current) return;
+          current = fc.data.entity;
+          push({ k: 'open', entity: current.getEntityName(), id: __id(current.getId()), isNew: fc.ui.getFormType() === 1 });
+          if (window.__saSeen.has(current)) return;
+          window.__saSeen.add(current);
+          fc.getAttribute().forEach(a => a.addOnChange(() => push({ k: 'set', field: a.getName(), value: __display(a, false) })));
+          if (current.addOnSave) current.addOnSave(() => push({ k: 'save' }));
+          fc.ui.tabs.get().forEach(t => t.addTabStateChange && t.addTabStateChange(() => {
+            if (!t.getDisplayState || t.getDisplayState() === 'expanded') push({ k: 'tab', label: t.getLabel() });
+          }));
+          const p = fc.data.process;
+          if (p && p.addOnStageChange) p.addOnStageChange(ctx => {
+            const args = ctx && ctx.getEventArgs ? ctx.getEventArgs() : null;
+            push({ k: args && args.getDirection && args.getDirection() === 'Previous' ? 'bpfPrev' : 'bpfNext' });
+          });
+        };
+        if (!window.__saClickHooked) {
+          window.__saClickHooked = true;
+          document.addEventListener('click', ev => {
+            const b = ev.target && ev.target.closest ? ev.target.closest('button,[role=menuitem],[role=button]') : null;
+            if (!b) return;
+            const label = (b.getAttribute('aria-label') || b.innerText || '').replace(/\s+/g, ' ').trim();
+            const dataId = b.getAttribute('data-id') || '';
+            if (b.closest('[role=dialog],[role=alertdialog]')) { push({ k: 'dialog', label }); return; }
+            if (!b.closest('[data-id*="CommandBar" i],[data-lp-id*="commandbar" i],[role=menubar],[role=menu]')) return;
+            if (/overflowbutton|morecommands/i.test(dataId)) return;
+            if (/save(primary)?$|saveandclose$/i.test(dataId)) return; // ghi bằng sự kiện OnSave
+            push({ k: 'command', label: label || dataId });
+          }, true);
+        }
+        window.__saRecOn = true;
+        clearInterval(window.__saRecTimer);
+        window.__saRecTimer = setInterval(() => { try { attach(); } catch (e) { } }, 400);
+        attach();
+        return 'ok';
+        """;
+
     // ───────────────────────────── Web API & dọn dữ liệu ─────────────────────────────
 
     private sealed record FetchResult(int Status, string Body, string EntityId);

@@ -78,6 +78,7 @@ internal sealed class JobEditorForm : BaseForm
     };
 
     private readonly FlowDesigner _designer = new() { Dock = DockStyle.Fill };
+    private readonly ToolTip _tips = new();
     private readonly StepToolbox _toolbox = new() { Dock = DockStyle.Fill };
     private readonly Label _lblStepCount = new() { AutoSize = true, ForeColor = UiText.Muted, Margin = new Padding(3, 6, 3, 0) };
     private readonly Label _lblStructure = new() { AutoSize = true, ForeColor = Color.FromArgb(200, 40, 30), Margin = new Padding(0, 2, 0, 0) };
@@ -171,6 +172,15 @@ internal sealed class JobEditorForm : BaseForm
         btnRecord.ForeColor = Color.FromArgb(196, 43, 28);
         btnRecord.Margin = new Padding(3, 2, 3, 12);
         buttons.Controls.Add(btnRecord);
+        var btnRecordD365 = SideButton("⏺ Ghi thao tác D365…", async (_, _) => await RecordD365Async());
+        btnRecordD365.ForeColor = Color.FromArgb(116, 39, 116);
+        btnRecordD365.Margin = new Padding(3, 0, 3, 2);
+        _tips.SetToolTip(btnRecordD365, "Thao tác trên form Dynamics 365 trong trình duyệt — các bước được tạo tự động");
+        buttons.Controls.Add(btnRecordD365);
+        var btnAssert = SideButton("✓ Kiểm tra từ form D365…", async (_, _) => await AddD365AssertsAsync());
+        btnAssert.Margin = new Padding(3, 0, 3, 12);
+        _tips.SetToolTip(btnAssert, "Chọn các field trên form đang mở → tạo bước Kiểm tra với giá trị hiện tại");
+        buttons.Controls.Add(btnAssert);
         buttons.Controls.Add(SideButton("Sửa bước…", (_, _) => EditStep(_designer.SelectedIndex)));
         buttons.Controls.Add(SideButton("Nhân bản", (_, _) => _designer.DuplicateSelected()));
         buttons.Controls.Add(SideButton("Bật / Tắt", (_, _) => _designer.ToggleSelected()));
@@ -180,7 +190,7 @@ internal sealed class JobEditorForm : BaseForm
         _btnUndo.Click += (_, _) => Undo();
         _btnRedo.Click += (_, _) => Redo();
         _btnTest.Margin = new Padding(3, 18, 3, 3);
-        foreach (var b in new[] { _btnTest, _btnRunFrom, _btnStepMode }) b.MinimumSize = new Size(150, 0);
+        foreach (var b in new[] { _btnTest, _btnRunFrom, _btnStepMode }) b.MinimumSize = new Size(LogicalToDeviceUnits(190), 0);
         _btnTest.Click += async (_, _) => await TestRunAsync(new RunOptions { UseBreakpoints = _chkBreakpoints.Checked });
         _btnRunFrom.Click += async (_, _) => await RunFromAsync(_designer.SelectedIndex);
         _btnStepMode.Click += async (_, _) => await TestRunAsync(new RunOptions { StepMode = true, UseBreakpoints = true });
@@ -429,7 +439,7 @@ internal sealed class JobEditorForm : BaseForm
 
     private static Button SideButton(string text, EventHandler onClick)
     {
-        var b = new Button { Text = text, AutoSize = true, MinimumSize = new Size(150, 0), Margin = new Padding(3, 2, 3, 2) };
+        var b = new Button { Text = text, AutoSize = true, MinimumSize = new Size(190, 0), Margin = new Padding(3, 2, 3, 2) };
         b.Click += onClick;
         return b;
     }
@@ -736,6 +746,57 @@ internal sealed class JobEditorForm : BaseForm
         if (editor.ShowDialog(this) != DialogResult.OK) return;
         _designer.ReplaceStep(index, editor.Step);
         _designer.Focus();
+    }
+
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        if (StartD365RecordingOnShow) BeginInvoke(new MethodInvoker(async () => await RecordD365Async()));
+    }
+
+    /// <summary>Mở trình soạn và bắt đầu ghi thao tác Dynamics 365 ngay (nút "Ghi kịch bản D365" ở trang Kiểm thử).</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public bool StartD365RecordingOnShow { get; init; }
+
+    /// <summary>Ghi thao tác trên form Dynamics 365 rồi chèn các bước vào sau bước đang chọn.</summary>
+    private async Task RecordD365Async()
+    {
+        List<ActionStep> steps;
+        using (var recorder = new D365RecorderForm())
+        {
+            WindowState = FormWindowState.Minimized;
+            var result = recorder.ShowDialog();
+            WindowState = FormWindowState.Normal;
+            Activate();
+            if (result != DialogResult.OK) return;
+            steps = recorder.Steps;
+        }
+        await Task.Yield();
+        if (steps.Count == 0)
+        {
+            MessageBox.Show(this, "Chưa ghi được thao tác nào trên Dynamics 365.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        int index = _designer.SelectedIndex >= 0 ? _designer.SelectedIndex + 1 : _designer.StepCount;
+        foreach (var step in steps) _designer.InsertStep(index++, step);
+        _designer.Focus();
+        int asserts = steps.Count(s => s.Type == StepType.Assert);
+        MessageBox.Show(this,
+            $"Đã thêm {steps.Count} bước ({asserts} bước Kiểm tra).\n\n" +
+            "Xem lại các giá trị đã nhập (vd đổi tên cố định thành \"Test {{now:HHmmss}}\" để mỗi lần chạy tạo bản ghi mới), " +
+            "rồi bấm \"▶ Chạy thử flow\"." + (asserts == 0 ? "\n\nMẹo: dùng \"✓ Kiểm tra từ form D365…\" để thêm bước kiểm tra kết quả." : ""),
+            Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    /// <summary>Tạo bước Kiểm tra từ giá trị hiện tại của các field được chọn trên form D365 đang mở.</summary>
+    private Task AddD365AssertsAsync()
+    {
+        using var picker = new D365PickerForm(D365PickKind.Fields);
+        if (picker.ShowDialog(this) != DialogResult.OK) return Task.CompletedTask;
+        int index = _designer.SelectedIndex >= 0 ? _designer.SelectedIndex + 1 : _designer.StepCount;
+        foreach (var f in picker.CheckedFields) _designer.InsertStep(index++, Automation.D365Client.AssertFieldStep(f));
+        _designer.Focus();
+        return Task.CompletedTask;
     }
 
     /// <summary>

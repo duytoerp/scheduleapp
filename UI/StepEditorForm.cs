@@ -71,6 +71,12 @@ internal sealed class StepEditorForm : BaseForm
     private readonly Label _lblHeaders = Caption("Header thêm\n(mỗi dòng Tên: giá trị):");
     private readonly TextBox _txtHeaders = new() { Dock = DockStyle.Fill, Multiline = true, Height = 54, ScrollBars = ScrollBars.Vertical, AcceptsReturn = true };
 
+    // Tùy chọn nâng cao (thu gọn mặc định — nhớ trạng thái giữa các lần mở)
+    private static bool _advancedOpen;
+    private readonly LinkLabel _lnkAdvanced = new() { AutoSize = true, LinkColor = Theme.Accent, Margin = new Padding(3, 8, 3, 2) };
+    private bool _errorApplies;
+    private bool _markerType;
+
     // Kiểm tra (Assert)
     private readonly Label _lblMessage = Caption("Mô tả kiểm tra\n(hiện trong báo cáo):");
     private readonly TextBox _txtMessage = new() { Dock = DockStyle.Fill };
@@ -246,6 +252,12 @@ internal sealed class StepEditorForm : BaseForm
 
         _pnlError.Controls.AddRange([Small("Thử lại"), _numRetries, Small("lần, cách (ms)"), _numRetryDelay, Small("rồi"), _cboOnError, _cboErrorLabel]);
         ((Label)_pnlError.Controls[0]).Margin = new Padding(0, 6, 2, 0);
+        _lnkAdvanced.LinkClicked += (_, _) =>
+        {
+            _advancedOpen = !_advancedOpen;
+            OnTypeChanged(resetSub: false);
+        };
+        AddRow(null, _lnkAdvanced, span: true);
         AddRow(_lblError, _pnlError, span: true);
         AddRow(_lblAfter, _numAfter);
         _pnlFlags.Controls.AddRange([_chkEnabled, _chkBreakpoint]);
@@ -275,7 +287,7 @@ internal sealed class StepEditorForm : BaseForm
         _cboCompare.SelectedIndexChanged += (_, _) => { if (!_loading) OnTypeChanged(resetSub: false); };
         _cboOnError.SelectedIndexChanged += (_, _) => _cboErrorLabel.Visible = CurrentOnError == ErrorAction.GotoLabel;
         _btnTargetAction.Click += (_, _) => OnTargetAction();
-        _btnTextAction.Click += async (_, _) => await CaptureElementAsync();
+        _btnTextAction.Click += async (_, _) => { if (D365PickContext != null) await PickFromD365Async(); else await CaptureElementAsync(); };
         _btnArgsAction.Click += (_, _) => ShowRealProfiles();
         _cboTarget.TextChanged += (_, _) => { if (!_loading && IsBrowserLaunch) FillProfileList(); };
         _cboTarget.SelectionChangeCommitted += (_, _) =>
@@ -371,6 +383,9 @@ internal sealed class StepEditorForm : BaseForm
         _cboOnError.SelectedIndex = Array.IndexOf(ErrorActions, _step.OnError);
         _cboErrorLabel.Text = _step.ErrorLabel;
         _cboErrorLabel.Visible = _step.OnError == ErrorAction.GotoLabel;
+        if (_step.Retries > 0 || _step.OnError != ErrorAction.Default || !_step.Enabled || _step.Breakpoint
+            || _step.DelayAfterMs != ActionStep.CreateDefault(_step.Type).DelayAfterMs)
+            _advancedOpen = true;
         _loading = false;
         OnTypeChanged(resetSub: false);
         if ((_step.Type == StepType.Loop && _step.LoopKind == LoopKind.Rows) || _step.Type == StepType.WriteData) LoadSheetNames();
@@ -425,10 +440,10 @@ internal sealed class StepEditorForm : BaseForm
         s.Force = _chkForce.Visible && _chkForce.Checked;
         s.DelayAfterMs = (int)_numAfter.Value;
         s.Enabled = _chkEnabled.Checked;
-        s.Breakpoint = _chkBreakpoint.Visible && _chkBreakpoint.Checked;
-        s.Retries = _pnlError.Visible ? (int)_numRetries.Value : 0;
+        s.Breakpoint = !_markerType && _chkBreakpoint.Checked;
+        s.Retries = _errorApplies ? (int)_numRetries.Value : 0;
         s.RetryDelayMs = (int)_numRetryDelay.Value;
-        s.OnError = _pnlError.Visible ? CurrentOnError : ErrorAction.Default;
+        s.OnError = _errorApplies ? CurrentOnError : ErrorAction.Default;
         s.ErrorLabel = s.OnError == ErrorAction.GotoLabel ? _cboErrorLabel.Text.Trim() : "";
         return s;
     }
@@ -852,7 +867,16 @@ internal sealed class StepEditorForm : BaseForm
                           || (dyn && d is not (D365Action.WebApi or D365Action.RunScript)) || webCond;
         _txtText.Multiline = !singleLine;
         _txtText.Height = singleLine ? _cboArgs.Height : LogicalToDeviceUnits(90);
-        _btnTextAction.Visible = showText && element;
+        var pick = D365PickContext;
+        _btnTextAction.Visible = showText && (element || pick != null);
+        _btnTextAction.Text = pick switch
+        {
+            null => "◎ Bắt phần tử (3 giây)",
+            D365PickKind.Tab => "Chọn tab từ form…",
+            D365PickKind.Command => "Chọn nút từ form…",
+            D365PickKind.Fields => "Lấy từ form đang mở",
+            _ => "Chọn field từ form…"
+        };
 
         // Biến nhận kết quả
         bool variable = t switch
@@ -950,6 +974,13 @@ internal sealed class StepEditorForm : BaseForm
         }
         _cboErrorLabel.Visible = errorPanel && CurrentOnError == ErrorAction.GotoLabel;
         SetVisible(!marker, _lblAfter, _numAfter, _chkBreakpoint);
+        _errorApplies = errorPanel;
+        _markerType = marker;
+        // Tùy chọn ít dùng gom vào "Nâng cao" (tự mở khi bước đã có giá trị khác mặc định).
+        _lnkAdvanced.Visible = errorPanel || !marker;
+        _lnkAdvanced.Text = _advancedOpen ? "▾ Ẩn tùy chọn nâng cao" : "▸ Nâng cao: thử lại khi lỗi, xử lý lỗi, nghỉ sau bước, bật/tắt, điểm dừng";
+        if (!_advancedOpen) SetVisible(false, _lblError, _pnlError, _lblAfter, _numAfter, _pnlFlags);
+        else _pnlFlags.Visible = true;
 
         SetVisible(pointer || vision || element || TestableType(t), _lblCaptureInfo);
         bool testFind = vision && !cond;
@@ -1283,6 +1314,73 @@ internal sealed class StepEditorForm : BaseForm
     private static string Shorten(string s) => s.Length > 40 ? s[..40] + "…" : s;
 
     // ───────────────────────────── Phần tử UI ─────────────────────────────
+
+    /// <summary>Ô chữ hiện tại chọn được từ form D365 đang mở (null = không): field, tab, nút, hoặc lấy bảng/Id của form.</summary>
+    private D365PickKind? D365PickContext
+    {
+        get
+        {
+            var t = CurrentType;
+            if (t == StepType.Dynamics)
+                return CurrentD365 switch
+                {
+                    D365Action.SetField or D365Action.GetField => D365PickKind.Field,
+                    D365Action.SelectTab => D365PickKind.Tab,
+                    D365Action.Command => D365PickKind.Command,
+                    D365Action.OpenForm or D365Action.WaitForm => D365PickKind.Fields, // dùng làm "lấy bảng / Id của form đang mở"
+                    _ => null
+                };
+            if (UsesCondition && CurrentCondition is ConditionKind.D365FieldValue or ConditionKind.D365FieldState) return D365PickKind.Field;
+            return null;
+        }
+    }
+
+    /// <summary>Điền ô từ form Dynamics 365 đang mở trong trình duyệt điều khiển.</summary>
+    private async Task PickFromD365Async()
+    {
+        var kind = D365PickContext!.Value;
+        var tab = _cboTarget.Text.Trim();
+        if (kind == D365PickKind.Fields)
+        {
+            // Mở form: lấy bảng và Id của form đang mở, không cần hộp thoại.
+            _btnTextAction.Enabled = false;
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                var form = await Task.Run(() => Automation.D365Client.DescribeFormAsync(tab, cts.Token));
+                _txtText.Text = form.Entity;
+                _cboArgs.Text = form.IsNew ? "" : form.Id;
+                ShowInfo($"✔ Form đang mở: {form.Entity}{(form.IsNew ? " (tạo mới)" : " · " + form.Id)}", true);
+            }
+            catch (Exception ex)
+            {
+                ShowInfo("✖ " + ex.Message + " — mở trình duyệt điều khiển và một form Dynamics 365 trước.", false);
+            }
+            finally
+            {
+                _btnTextAction.Enabled = true;
+            }
+            return;
+        }
+
+        using var picker = new D365PickerForm(kind, tab);
+        if (picker.ShowDialog(this) != DialogResult.OK) return;
+        _txtText.Text = picker.SelectedText;
+        if (picker.SelectedField is not { } f) return;
+
+        // Gợi ý giá trị: các lựa chọn của option set / Có-Không, giá trị hiện tại cho bước kiểm tra.
+        var args = _cboArgs.Text;
+        _cboArgs.Items.Clear();
+        if (UsesCondition && CurrentCondition == ConditionKind.D365FieldState)
+            _cboArgs.Items.AddRange([.. ActionStep.D365FieldStates.Keys]);
+        else if (f.Options.Count > 0)
+            _cboArgs.Items.AddRange([.. f.Options]);
+        else if (f.Type == "boolean")
+            _cboArgs.Items.AddRange(["có", "không"]);
+        _cboArgs.Text = args.Length == 0 && UsesCondition && CurrentCondition == ConditionKind.D365FieldValue ? f.Value : args;
+        ShowInfo($"✔ {(f.Label.Length > 0 ? f.Label : f.Name)} · {f.Type}" + (f.Value.Length > 0 ? $" · hiện tại: \"{f.Value}\"" : " · đang trống") +
+                 (f.Required == "required" ? " · bắt buộc" : "") + (f.Disabled ? " · bị khóa" : ""), true);
+    }
 
     private async Task CaptureElementAsync()
     {

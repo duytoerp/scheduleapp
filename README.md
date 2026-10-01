@@ -36,6 +36,8 @@ Chuột phải một công việc → **Tạo shortcut trên Desktop** để ch�
 
 ## Cách dùng
 
+Màn hình chính có thanh điều hướng bên trái: **Công việc** (danh sách công việc theo nhóm, nhật ký hoạt động thu gọn được ở dưới — bấm *📜 Nhật ký* trên thanh trạng thái để ẩn/hiện), **Kiểm thử** (kịch bản kiểm thử và báo cáo), cùng **Lịch sử chạy**, **Bí mật**, **Cài đặt**.
+
 1. **＋ Thêm công việc** (hoặc **Mẫu có sẵn…**) → đặt tên, nhóm, kiểu lịch / trình kích hoạt.
 2. Dựng flow bằng **kéo thả** (xem bên dưới).
 3. Bấm **▶ Chạy thử flow** (`F5`) để kiểm tra ngay, rồi **Lưu**.
@@ -90,7 +92,7 @@ Nút **Mẫu có sẵn…** mở kho mẫu nhúng trong ứng dụng; ba file tr
 
 ## Thiết kế flow bằng kéo thả
 
-Trình soạn công việc có 3 vùng: **Hộp công cụ** (trái) · **Khung luồng** Bắt đầu → các bước → Kết thúc (giữa) · nút lệnh (phải). Phía trên là các tab **Lịch chạy · Kích hoạt khác · Biến · Lỗi & thông báo**.
+Trình soạn công việc có 3 vùng: **Hộp công cụ** (trái) · **Khung luồng** Bắt đầu → các bước → Kết thúc (giữa) · nút lệnh (phải). Phía trên là các tab **Lịch chạy · Kích hoạt khác · Biến · Lỗi · thông báo · kiểm thử**. Trong form soạn bước, các tùy chọn ít dùng (thử lại khi lỗi, xử lý lỗi, nghỉ sau bước, bật/tắt, điểm dừng) nằm trong mục **▸ Nâng cao** — tự mở khi bước đã có giá trị khác mặc định.
 
 | Thao tác | Cách làm |
 |---|---|
@@ -234,6 +236,12 @@ Mẹo: chuột phải phần tử trên trang → *Inspect* → chuột phải d
 
 Dựng kịch bản kiểm thử cho Dynamics 365 CE / Power Apps model-driven bằng kéo thả, không cần viết code. Bước **Dynamics 365** gọi **Client API (`Xrm`)** ngay trong tab trình duyệt điều khiển, thay vì click theo CSS selector. Vì vậy kịch bản không vỡ khi Microsoft đổi giao diện Unified Interface. Bước này dùng luôn phiên đăng nhập của trình duyệt (MFA, SSO), kể cả khi gọi Web API, nên không cần đăng ký ứng dụng Entra ID.
 
+**Cách nhanh nhất — ghi thao tác:** vào trang **Kiểm thử** ở thanh bên trái → **⏺ Ghi kịch bản D365**. Nếu chưa có trình duyệt điều khiển, nhập URL app để mở. Sau đó thao tác bình thường trên form Dynamics 365: mở bản ghi, nhập field, Lưu, bấm nút ribbon, chuyển tab, BPF, hộp thoại. Mỗi thao tác hiện thành một bước trong cửa sổ ghi nổi bên cạnh. Bấm **✓ Thêm kiểm tra…** rồi tick các field cần kiểm tra để chụp giá trị hiện tại thành bước *Kiểm tra*. Bấm **■ Dừng & thêm vào flow** để chèn các bước vào kịch bản. Trong trình soạn công việc cũng có các nút **⏺ Ghi thao tác D365…** và **✓ Kiểm tra từ form D365…**.
+
+**Không cần nhớ tên logic:** trong form soạn bước D365 / Kiểm tra, nút **Chọn field từ form…** (hoặc *Chọn tab / Chọn nút / Lấy từ form đang mở*) đọc form đang mở trong trình duyệt. Danh sách hiện nhãn tiếng Việt, tên logic, kiểu field, giá trị hiện tại và trạng thái (bắt buộc / khóa / ẩn), có ô tìm không dấu. Chọn một field thì các lựa chọn của option set cũng được gợi ý sẵn ở ô giá trị.
+
+**Trang Kiểm thử:** thẻ số liệu (tổng kịch bản, đạt / không đạt / chưa chạy ở lần chạy cuối), danh sách kịch bản kèm kết quả và lỗi lần chạy gần nhất, và danh sách báo cáo gần đây. Từ đây chạy được kịch bản đã tick, chạy tất cả, hoặc **chạy lại các kịch bản lỗi**. Số kịch bản đang không đạt hiện thành huy hiệu đỏ trên thanh điều hướng.
+
 **1. Chuẩn bị:** một công việc dùng chung (như mẫu C1) gồm bước *Trình duyệt → Mở trình duyệt ở chế độ điều khiển* (Edge, hồ sơ riêng, ví dụ "D365 Test") mở URL app `https://<org>.crm5.dynamics.com/main.aspx?appid=…`. Lần đầu bạn đăng nhập tay; các lần sau hồ sơ đã nhớ đăng nhập. Các kịch bản gọi công việc này bằng *Chạy công việc khác*.
 
 **2. Bước Dynamics 365.** Ô *Tab* để trống thì dùng tab đầu tiên có `main.aspx` / `dynamics.com`.
@@ -267,7 +275,7 @@ Dựng kịch bản kiểm thử cho Dynamics 365 CE / Power Apps model-driven b
 
 **4. Kịch bản & báo cáo.** Tick **Đây là kịch bản kiểm thử** (tab *Lỗi · thông báo · kiểm thử*). Từ đó mỗi lần chạy, kể cả chạy theo lịch, sẽ ghi lại từng bước (thời gian, kết quả, giá trị thực tế) và xuất `index.html` + `junit.xml` vào `test-reports\` (Lịch sử → *Mở báo cáo kiểm thử*). Bước lỗi có **ảnh chụp nội dung tab trình duyệt** qua DevTools, chụp được cả khi cửa sổ bị che hoặc chạy headless. Tick **Tự xóa dữ liệu Dynamics 365 do flow tạo ra** để luôn dọn `{{d365.created}}` sau khi chạy, kể cả khi test thất bại.
 
-Chạy bộ kiểm thử từ giao diện: chuột phải công việc → **🧪 Chạy kiểm thử & xem báo cáo** / **🧪 Chạy nhóm "…" như bộ kiểm thử**, hoặc **Thêm → 🧪 Chạy mọi kịch bản kiểm thử**. Các kịch bản chạy lần lượt và cuối cùng mở một báo cáo chung.
+Chạy bộ kiểm thử từ giao diện: trang **Kiểm thử**, hoặc chuột phải công việc → **🧪 Chạy kiểm thử & xem báo cáo** / **🧪 Chạy nhóm "…" như bộ kiểm thử**. Các kịch bản chạy lần lượt và cuối cùng mở một báo cáo chung.
 
 **5. Chạy trong CI / theo lịch đêm** (Azure DevOps self-hosted agent, Jenkins, Task Scheduler). Máy chạy cần đăng nhập Windows và đã đăng nhập D365 một lần trong hồ sơ trình duyệt:
 
@@ -419,7 +427,8 @@ Native/      Win32 P/Invoke, InputSimulator (SendInput: click, phím, cuộn, k�
              PowerHelper (giữ máy thức, hẹn giờ đánh thức, thời gian rảnh, DPI), UserInputGuard (chế độ an toàn)
 Vision/      ScreenCapture, ImageMatcher (NCC + màu), ScreenOcr (Windows OCR), ScreenLocator (co giãn theo DPI)
 Recording/   MacroRecorder (hook chuột/bàn phím toàn hệ thống)
-UI/          MainForm, JobEditorForm, StepEditorForm, FlowDesigner, StepToolbox, StepVisuals, TriggerEditorForm,
+UI/          MainForm (thanh điều hướng + trang Công việc), TestDashboard (trang Kiểm thử), Theme (màu, nút phẳng, renderer, NavButton, StatCard),
+             D365Forms (chọn field từ form D365, cửa sổ ghi thao tác D365), JobEditorForm, StepEditorForm, FlowDesigner, StepToolbox, StepVisuals, TriggerEditorForm,
              HistoryForm (+ thống kê), SettingsForm, ApiConnectionForm, SecretsForm, TemplatePickerForm, VersionPickerForm,
              UpdateForm, PromptForms (nhập liệu, xác nhận, thanh gỡ lỗi), ReminderForm, VisionForms, UiCommon
 Samples/     Mẫu công việc (nhúng vào ứng dụng cho mục "Mẫu có sẵn…")

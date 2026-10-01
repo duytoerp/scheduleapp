@@ -31,7 +31,77 @@ public static class TestReport
         File.WriteAllText(Path.Combine(folder, "junit.xml"), JUnit(suiteName, cases), new UTF8Encoding(false));
         var html = Path.Combine(folder, "index.html");
         File.WriteAllText(html, Html(suiteName, cases, folder), new UTF8Encoding(false));
+        RememberLatest(cases.Select(c => c.JobId), html);
         return html;
+    }
+
+    // ───────────────────────────── Báo cáo gần đây ─────────────────────────────
+
+    private static readonly object LatestSync = new();
+    private static string LatestFile => Path.Combine(RootDir, "latest.json");
+
+    /// <summary>Báo cáo mới nhất có kịch bản <paramref name="jobId"/> (null nếu chưa có hoặc đã bị xóa).</summary>
+    public static string? LatestFor(Guid jobId)
+    {
+        lock (LatestSync)
+        {
+            var map = ReadLatest();
+            return map.TryGetValue(jobId.ToString(), out var path) && File.Exists(path) ? path : null;
+        }
+    }
+
+    private static void RememberLatest(IEnumerable<Guid> jobIds, string report)
+    {
+        lock (LatestSync)
+        {
+            try
+            {
+                var map = ReadLatest();
+                foreach (var id in jobIds.Where(id => id != Guid.Empty)) map[id.ToString()] = report;
+                Directory.CreateDirectory(RootDir);
+                File.WriteAllText(LatestFile, System.Text.Json.JsonSerializer.Serialize(map));
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    private static Dictionary<string, string> ReadLatest()
+    {
+        try
+        {
+            if (File.Exists(LatestFile))
+                return System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(LatestFile)) ?? [];
+        }
+        catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException or UnauthorizedAccessException) { }
+        return [];
+    }
+
+    /// <summary>Một báo cáo đã xuất: thời điểm, tên bộ, số kịch bản / số không đạt.</summary>
+    public sealed record ReportInfo(string Path, DateTime Time, string Name, int Tests, int Failures);
+
+    /// <summary>Các báo cáo gần đây nhất (đọc từ junit.xml của từng thư mục).</summary>
+    public static List<ReportInfo> Recent(int max = 30)
+    {
+        var list = new List<ReportInfo>();
+        if (!Directory.Exists(RootDir)) return list;
+        foreach (var dir in Directory.GetDirectories(RootDir).OrderByDescending(d => System.IO.Path.GetFileName(d), StringComparer.Ordinal).Take(max))
+        {
+            var junit = System.IO.Path.Combine(dir, "junit.xml");
+            var html = System.IO.Path.Combine(dir, "index.html");
+            if (!File.Exists(junit) || !File.Exists(html)) continue;
+            try
+            {
+                var root = XDocument.Load(junit).Root!;
+                int Attr(string n) => int.TryParse(root.Attribute(n)?.Value, out var v) ? v : 0;
+                var name = System.IO.Path.GetFileName(dir);
+                var time = DateTime.TryParseExact(name.Length >= 17 ? name[..17] : "", "yyyy-MM-dd_HHmmss", CultureInfo.InvariantCulture,
+                    DateTimeStyles.None, out var t) ? t : Directory.GetCreationTime(dir);
+                list.Add(new ReportInfo(html, time, root.Attribute("name")?.Value ?? name, Attr("tests"), Attr("failures")));
+            }
+            catch (Exception ex) when (ex is IOException or System.Xml.XmlException or UnauthorizedAccessException) { }
+        }
+        return list;
     }
 
     /// <summary>Một dòng tóm tắt, vd "3/4 kịch bản đạt · 12/13 kiểm tra đạt · 1 phút 05 giây".</summary>

@@ -19,6 +19,103 @@ public sealed class D365LiveTests
 {
     private const int BrowserPort = 9335;
 
+    [LiveFact]
+    public async Task DescribeFormAndRecordUserActions()
+    {
+        var edge = new[]
+        {
+            Environment.ExpandEnvironmentVariables(@"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+            Environment.ExpandEnvironmentVariables(@"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe")
+        }.FirstOrDefault(File.Exists);
+        Assert.True(edge != null, "Máy không có Microsoft Edge.");
+
+        using var server = new FakeD365Server();
+        SettingsStore.Current.BrowserPort = BrowserPort + 1;
+        var profile = Path.Combine(TestSupport.NewDir(), "edge-d365-rec");
+        var proc = Process.Start(new ProcessStartInfo(edge!,
+            $"--headless=new --remote-debugging-port={BrowserPort + 1} --user-data-dir=\"{profile}\" --no-first-run \"{server.BaseUrl}main.aspx?appid=test\"")
+            { UseShellExecute = false });
+        try
+        {
+            using var http = new HttpClient();
+            for (int i = 0; i < 50; i++)
+            {
+                try { if ((await http.GetAsync($"http://127.0.0.1:{BrowserPort + 1}/json/version")).IsSuccessStatusCode) break; } catch (HttpRequestException) { }
+                await Task.Delay(200);
+            }
+            await Task.Delay(1000);
+            var ct = CancellationToken.None;
+            Task<string> Js(string code) => BrowserClient.EvalAsync("main.aspx", code, ct);
+
+            await Js("Xrm.Navigation.openForm({ entityName: 'account' }); 1");
+            await Task.Delay(600);
+
+            // Đọc form: nhãn, kiểu, lựa chọn, tab, nút thanh lệnh
+            var form = await D365Client.DescribeFormAsync("", ct);
+            Assert.Equal("account", form.Entity);
+            Assert.True(form.IsNew);
+            var name = form.Fields.Single(f => f.Name == "name");
+            Assert.Equal("Tên tài khoản", name.Label);
+            Assert.Equal("required", name.Required);
+            Assert.Equal(["Bán lẻ", "Sản xuất"], form.Fields.Single(f => f.Name == "industrycode").Options);
+            Assert.True(form.Fields.Single(f => f.Name == "accountnumber").Disabled);
+            Assert.Equal(form.Fields[0], name); // field có nhãn xếp trước
+            Assert.Equal(2, form.Tabs.Count);
+            Assert.Contains("Lưu", form.Commands);
+
+            // Ghi: người dùng nhập, bấm nút, chuyển tab, BPF, lưu, mở bản ghi khác
+            await D365Client.StartRecordingAsync("", ct);
+            await D365Client.StartRecordingAsync("", ct); // gọi lại không bị ghi đôi
+            await Js("""
+                const fc = Xrm.Page;
+                const set = (n, v) => { const a = fc.getAttribute(n); a.setValue(v); a.fireOnChange(); };
+                set('name', 'Con'); set('name', 'Contoso');
+                set('industrycode', 2);
+                set('telephone1', '0901');
+                document.querySelector('[data-id=OverflowButton]').click();
+                document.querySelector('[aria-label=Deactivate]').click();
+                document.getElementById('dlgOk').click();
+                fc.ui.tabs.get('DETAILS_TAB').setFocus();
+                1
+                """);
+            await Js("new Promise(r => Xrm.Page.data.process.moveNext(r))");
+            await Js("Xrm.Page.data.save().then(() => 1)");
+            await Js("Xrm.Navigation.openForm({ entityName: 'account', entityId: '" + FakeD365Server.ExistingAccount + "' }); 1");
+            await Task.Delay(1000);
+            await Js("{ const a = Xrm.Page.getAttribute('telephone1'); a.setValue('028'); a.fireOnChange(); } 1");
+
+            var events = await D365Client.DrainRecordingAsync("", ct);
+            Assert.NotNull(events);
+            Assert.Empty((await D365Client.DrainRecordingAsync("", ct))!); // đã lấy hết
+            var steps = D365Client.ToSteps(events!);
+            Assert.Equal(
+            [
+                "D365: mở form account (mới)",
+                "D365: name = \"Contoso\"",
+                "D365: industrycode = \"Sản xuất\"",
+                "D365: telephone1 = \"0901\"",
+                "D365: bấm \"Deactivate\"",
+                "D365: hộp thoại → bấm \"Xác nhận\"",
+                "D365: chuyển tab \"Chi tiết\"",
+                "D365: BPF sang giai đoạn kế",
+                "D365: lưu bản ghi",
+                $"D365: mở form account [{FakeD365Server.ExistingAccount}]",
+                "D365: telephone1 = \"028\""
+            ], steps.Select(s => s.Describe()));
+
+            await D365Client.StopRecordingAsync("", ct);
+            await Js("{ const a = Xrm.Page.getAttribute('telephone1'); a.setValue('1'); a.fireOnChange(); } 1");
+            Assert.Null(await D365Client.DrainRecordingAsync("", ct));
+
+            var assert = D365Client.AssertFieldStep(name with { Value = "Contoso" });
+            Assert.Equal("Kiểm tra: Tên tài khoản = Contoso", assert.Describe());
+        }
+        finally
+        {
+            try { proc?.Kill(true); } catch (InvalidOperationException) { }
+        }
+    }
+
     private static ActionStep Step(StepType t, Action<ActionStep> cfg)
     {
         var s = ActionStep.CreateDefault(t);
@@ -318,19 +415,19 @@ internal sealed class FakeD365Server : IDisposable
           o = o || {};
           const a = { _v: null, _dirty: false, _req: o.required || 'none',
             getName: () => name, getAttributeType: () => type, getValue: () => a._v,
-            setValue: v => { a._v = v; a._dirty = true; }, fireOnChange: () => (o.onchange || []).forEach(f => f()),
+            setValue: v => { a._v = v; a._dirty = true; }, _handlers: [], addOnChange: h => a._handlers.push(h), fireOnChange: () => { (o.onchange || []).forEach(f => f()); a._handlers.forEach(h => h({})); },
             getRequiredLevel: () => a._req, getIsDirty: () => a._dirty, getFormat: () => o.format || null };
           if (o.options) {
             a.getOptions = () => o.options;
             a.getText = () => (o.options.find(x => x.value === a._v) || {}).text || null;
           }
-          const ctrl = { getDisabled: () => !!o.disabled, getVisible: () => o.visible !== false, getEntityTypes: () => o.targets || [] };
+          const ctrl = { getDisabled: () => !!o.disabled, getVisible: () => o.visible !== false, getEntityTypes: () => o.targets || [], getLabel: () => o.label || '' };
           a.controls = { get: () => [ctrl] };
           return a;
         }
         function makeForm(entity, id) {
           const attrs = {};
-          attrs.name = attr('name', 'string', { required: 'required' });
+          attrs.name = attr('name', 'string', { required: 'required', label: 'Tên tài khoản' });
           attrs.telephone1 = attr('telephone1', 'string');
           attrs.industrycode = attr('industrycode', 'optionset', { options: [{ text: 'Bán lẻ', value: 1 }, { text: 'Sản xuất', value: 2 }],
             onchange: [() => { attrs.telephone1._req = attrs.industrycode._v === 2 ? 'required' : 'none'; }] });
@@ -341,14 +438,17 @@ internal sealed class FakeD365Server : IDisposable
           attrs.accountnumber = attr('accountnumber', 'string', { disabled: true });
           let curId = id || '';
           const tabs = [['SUMMARY_TAB', 'Tóm tắt'], ['DETAILS_TAB', 'Chi tiết']]
-            .map(t => ({ getName: () => t[0], getLabel: () => t[1], setFocus: () => { window.__focusedTab = t[0]; } }));
+            .map(t => ({ getName: () => t[0], getLabel: () => t[1], _h: [], addTabStateChange(h) { this._h.push(h); }, getDisplayState: () => window.__focusedTab === t[0] ? 'expanded' : 'collapsed',
+              setFocus() { window.__focusedTab = t[0]; this._h.forEach(h => h({})); } }));
+          const saveHandlers = [], stageHandlers = [];
           const stages = ['Qualify', 'Develop', 'Propose'];
           let stage = 0;
           const fc = {
-            getAttribute: n => attrs[n] || null,
+            getAttribute: n => n === undefined ? Object.values(attrs) : (attrs[n] || null),
             data: {
-              entity: { getEntityName: () => entity, getId: () => curId ? '{' + curId.toUpperCase() + '}' : '' },
+              entity: { addOnSave: h => saveHandlers.push(h), getEntityName: () => entity, getId: () => curId ? '{' + curId.toUpperCase() + '}' : '' },
               save: () => new Promise((res, rej) => setTimeout(() => {
+                saveHandlers.forEach(h => h({}));
                 const missing = Object.values(attrs).filter(a => a._req === 'required' && (a._v === null || a._v === ''));
                 if (missing.length) { showNote('Thiếu field bắt buộc: ' + missing.map(a => a.getName()).join(', ')); return rej({ errorCode: 1, message: 'Required fields must be filled in.' }); }
                 if (String(attrs.name._v).includes('LOI')) { showDialog('Lỗi plugin: tên không hợp lệ'); return rej({ errorCode: 2, message: 'Plugin: tên không hợp lệ' }); }
@@ -360,8 +460,9 @@ internal sealed class FakeD365Server : IDisposable
               process: {
                 getActiveProcess: () => ({}),
                 getActiveStage: () => ({ getName: () => stages[stage] }),
-                moveNext: cb => setTimeout(() => { if (stage >= stages.length - 1) return cb('end'); stage++; cb('success'); }, 50),
-                movePrevious: cb => setTimeout(() => { if (stage === 0) return cb('beginning'); stage--; cb('success'); }, 50)
+                moveNext: cb => setTimeout(() => { if (stage >= stages.length - 1) return cb('end'); stage++; cb('success'); stageHandlers.forEach(h => h({ getEventArgs: () => ({ getDirection: () => 'Next' }) })); }, 50),
+                movePrevious: cb => setTimeout(() => { if (stage === 0) return cb('beginning'); stage--; cb('success'); stageHandlers.forEach(h => h({ getEventArgs: () => ({ getDirection: () => 'Previous' }) })); }, 50),
+                addOnStageChange: h => stageHandlers.push(h)
               }
             },
             ui: { _type: id ? 2 : 1, getFormType: () => fc.ui._type, tabs: { get: n => n === undefined ? tabs : (tabs.find(t => t.getName() === n) || null) } }

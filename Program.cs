@@ -41,6 +41,7 @@ internal static class Program
         if (stop) return; // không có flow nào đang chạy
 
         ApplicationConfiguration.Initialize();
+        Theme.Install();
 
         var form = new MainForm(startHidden, runJob != null ? "run " + runJob : null);
         using var cts = new CancellationTokenSource();
