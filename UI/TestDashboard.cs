@@ -82,7 +82,6 @@ internal sealed class TestDashboard : UserControl
         }));
         var help = Theme.CommandButton("? Hướng dẫn", (_, _) => _host.OpenHelp("d365-overview"), tip: "Cách ghi, kiểm tra và chạy kịch bản kiểm thử Dynamics 365 (F1)");
         help.Alignment = ToolStripItemAlignment.Right;
-        bar.Items.Add(help);
 
         // Thanh lọc: môi trường, tag, thư mục kịch bản (git)
         var filter = Theme.CommandBar();
@@ -101,6 +100,8 @@ internal sealed class TestDashboard : UserControl
             if (Directory.Exists(dir)) Process.Start(new ProcessStartInfo(dir) { UseShellExecute = true });
             else MessageBox.Show(this, "Chưa xuất / nhập thư mục kịch bản nào.", "Kiểm thử", MessageBoxButtons.OK, MessageBoxIcon.Information);
         });
+        // Nút Hướng dẫn ở thanh lọc (thanh lệnh phía trên đã kín ở kích thước cửa sổ mặc định). Mục căn phải thêm trước nằm ngoài cùng.
+        filter.Items.Add(help);
         filter.Items.Add(folder);
         _cboEnv.SelectedIndexChanged += (_, _) =>
         {

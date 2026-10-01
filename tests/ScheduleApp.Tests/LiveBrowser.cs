@@ -20,14 +20,16 @@ internal sealed class LiveBrowser : IAsyncDisposable
         Environment.ExpandEnvironmentVariables(@"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe")
     }.FirstOrDefault(File.Exists);
 
-    public static async Task<LiveBrowser> StartAsync(int port, string url)
+    /// <param name="profileDir">Thư mục hồ sơ Edge (null = hồ sơ mới trong thư mục tạm).</param>
+    /// <param name="headless">Chạy ẩn (mặc định); false = hiện cửa sổ (vd để đăng nhập tay / quan sát).</param>
+    public static async Task<LiveBrowser> StartAsync(int port, string url, string? profileDir = null, bool headless = true)
     {
         var edge = EdgePath;
         Assert.True(edge != null, "Máy không có Microsoft Edge.");
         SettingsStore.Current.BrowserPort = port;
-        var profile = Path.Combine(TestSupport.NewDir(), "edge-" + port);
+        var profile = profileDir ?? Path.Combine(TestSupport.NewDir(), "edge-" + port);
         var proc = Process.Start(new ProcessStartInfo(edge!,
-            $"--headless=new --remote-debugging-port={port} --user-data-dir=\"{profile}\" --no-first-run --disable-extensions \"{url}\"") { UseShellExecute = false })!;
+            $"{(headless ? "--headless=new --window-size=1920,1080 " : "")}--remote-debugging-port={port} --user-data-dir=\"{profile}\" --no-first-run --disable-extensions \"{url}\"") { UseShellExecute = false })!;
         using var http = new HttpClient();
         for (int i = 0; i < 50; i++)
         {

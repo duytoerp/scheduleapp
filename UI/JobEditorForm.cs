@@ -67,7 +67,7 @@ internal sealed class JobEditorForm : BaseForm
     private readonly ComboBox _cboNotify = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
     private readonly CheckBox _chkTestCase = new()
     {
-        Text = "🧪 Đây là kịch bản kiểm thử — mỗi lần chạy ghi kết quả từng bước / từng Kiểm tra và xuất báo cáo (HTML + JUnit XML)",
+        Text = "Đây là kịch bản kiểm thử — mỗi lần chạy ghi kết quả từng bước / từng Kiểm tra và xuất báo cáo (HTML + JUnit XML)",
         AutoSize = true,
         Margin = new Padding(3, 14, 3, 3)
     };
@@ -154,6 +154,7 @@ internal sealed class JobEditorForm : BaseForm
         tabs.TabPages.Add(BuildTriggersTab());
         tabs.TabPages.Add(BuildVariablesTab());
         tabs.TabPages.Add(BuildErrorTab());
+        tabs.TabPages.Add(BuildTestTab());
         root.Controls.Add(tabs);
 
         // Bước: hộp công cụ | khung thiết kế flow | nút lệnh
@@ -403,7 +404,7 @@ internal sealed class JobEditorForm : BaseForm
 
     private TabPage BuildErrorTab()
     {
-        var page = new TabPage("Lỗi · thông báo · kiểm thử") { Padding = new Padding(6), UseVisualStyleBackColor = true };
+        var page = new TabPage("Lỗi · thông báo") { Padding = new Padding(6), UseVisualStyleBackColor = true };
         var grid = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 2 };
         grid.Controls.Add(_chkStopOnError, 0, 0);
         grid.SetColumnSpan(_chkStopOnError, 2);
@@ -422,31 +423,6 @@ internal sealed class JobEditorForm : BaseForm
             });
         grid.Controls.Add(Caption("Gửi thông báo (Telegram/email/webhook):"), 0, 2);
         grid.Controls.Add(_cboNotify, 1, 2);
-        grid.Controls.Add(_chkTestCase, 0, 3);
-        grid.SetColumnSpan(_chkTestCase, 2);
-        grid.Controls.Add(_chkCleanup, 0, 4);
-        grid.SetColumnSpan(_chkCleanup, 2);
-
-        grid.Controls.Add(Caption("Tag (chọn bộ chạy, --tag):"), 0, 5);
-        grid.Controls.Add(_txtTags, 1, 5);
-        grid.Controls.Add(Caption("Mã test case (Azure DevOps…):"), 0, 6);
-        grid.Controls.Add(_txtTestCaseId, 1, 6);
-        var dataRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
-        var browseData = new Button { Text = "Duyệt…", AutoSize = true, Margin = new Padding(6, 2, 3, 2) };
-        browseData.Click += (_, _) =>
-        {
-            using var dlg = new OpenFileDialog { Filter = "Excel / CSV (*.xlsx;*.xlsm;*.csv)|*.xlsx;*.xlsm;*.csv|Mọi file (*.*)|*.*", Title = "File dữ liệu kiểm thử" };
-            if (dlg.ShowDialog(this) != DialogResult.OK) return;
-            _txtDataFile.Text = dlg.FileName;
-            LoadDataSheets();
-        };
-        _txtDataFile.Leave += (_, _) => LoadDataSheets();
-        dataRow.Controls.AddRange([_txtDataFile, browseData, new Label { Text = "Sheet:", AutoSize = true, Margin = new Padding(10, 7, 3, 3) }, _cboDataSheet]);
-        grid.Controls.Add(Caption("Dữ liệu kiểm thử (Excel / CSV):"), 0, 7);
-        grid.Controls.Add(dataRow, 1, 7);
-        _tips.SetToolTip(_txtDataFile, "Mỗi dòng của file (dòng đầu là tiêu đề) chạy kịch bản một lần với {{row.TênCột}} và là một test case riêng trong báo cáo.\n" +
-                                       "Đường dẫn tương đối tính từ thư mục kịch bản khi chạy --test-dir.");
-        _chkTestCase.CheckedChanged += (_, _) => UpdateTestFields();
 
         var hint = new Label
         {
@@ -458,8 +434,43 @@ internal sealed class JobEditorForm : BaseForm
             ForeColor = UiText.Muted,
             Margin = new Padding(3, 10, 3, 3)
         };
-        grid.Controls.Add(hint, 0, 8);
+        grid.Controls.Add(hint, 0, 3);
         grid.SetColumnSpan(hint, 2);
+        page.Controls.Add(grid);
+        return page;
+    }
+
+    /// <summary>Tab "Kiểm thử": đánh dấu kịch bản kiểm thử, dọn dữ liệu, tag, mã test case, dữ liệu kiểm thử.</summary>
+    private TabPage BuildTestTab()
+    {
+        var page = new TabPage("Kiểm thử") { Padding = new Padding(6), UseVisualStyleBackColor = true };
+        var grid = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 2 };
+        _chkTestCase.Margin = new Padding(3, 4, 3, 3);
+        grid.Controls.Add(_chkTestCase, 0, 0);
+        grid.SetColumnSpan(_chkTestCase, 2);
+        grid.Controls.Add(_chkCleanup, 0, 1);
+        grid.SetColumnSpan(_chkCleanup, 2);
+
+        grid.Controls.Add(Caption("Tag (chọn bộ chạy, --tag):"), 0, 2);
+        var tagRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+        tagRow.Controls.AddRange([_txtTags, new Label { Text = "Mã test case (Azure DevOps…):", AutoSize = true, Margin = new Padding(16, 7, 3, 3) }, _txtTestCaseId]);
+        grid.Controls.Add(tagRow, 1, 2);
+        var dataRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+        var browseData = new Button { Text = "Duyệt…", AutoSize = true, Margin = new Padding(6, 2, 3, 2) };
+        browseData.Click += (_, _) =>
+        {
+            using var dlg = new OpenFileDialog { Filter = "Excel / CSV (*.xlsx;*.xlsm;*.csv)|*.xlsx;*.xlsm;*.csv|Mọi file (*.*)|*.*", Title = "File dữ liệu kiểm thử" };
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+            _txtDataFile.Text = dlg.FileName;
+            LoadDataSheets();
+        };
+        _txtDataFile.Leave += (_, _) => LoadDataSheets();
+        dataRow.Controls.AddRange([_txtDataFile, browseData, new Label { Text = "Sheet:", AutoSize = true, Margin = new Padding(10, 7, 3, 3) }, _cboDataSheet]);
+        grid.Controls.Add(Caption("Dữ liệu kiểm thử (Excel / CSV):"), 0, 3);
+        grid.Controls.Add(dataRow, 1, 3);
+        _tips.SetToolTip(_txtDataFile, "Mỗi dòng của file (dòng đầu là tiêu đề) chạy kịch bản một lần với {{row.TênCột}} và là một test case riêng trong báo cáo.\n" +
+                                       "Đường dẫn tương đối tính từ thư mục kịch bản khi chạy --test-dir.");
+        _chkTestCase.CheckedChanged += (_, _) => UpdateTestFields();
         page.Controls.Add(grid);
         return page;
     }

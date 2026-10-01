@@ -18,7 +18,8 @@ public class HelpTests
             Assert.All(t.Actions, a => Assert.Contains(a.Command, HelpContent.Commands));
         }
         // Chủ đề được gọi từ F1 / nút "?" ở các màn hình phải tồn tại.
-        foreach (var id in new[] { "start", "flow", "variables", "errors", "d365-overview", "d365-record", "d365-pick", "d365-steps", "assert" })
+        foreach (var id in new[] { "start", "flow", "variables", "errors", "d365-overview", "d365-record", "d365-pick", "d365-steps", "assert",
+                     "d365-grids", "d365-forms", "d365-login", "environments", "test-folder", "data-driven" })
             Assert.NotNull(HelpContent.Find(id));
         // Các nhóm liền nhau (danh sách chủ đề chia theo nhóm).
         var groups = topics.Select(t => t.Group).ToList();

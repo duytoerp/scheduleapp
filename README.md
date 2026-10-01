@@ -30,7 +30,8 @@ Bản publish mặc định cần .NET 10 Desktop Runtime (`.\build.ps1 -SelfCon
 | `ScheduleApp.exe --minimized` | Khởi động ẩn ở khay hệ thống |
 | `ScheduleApp.exe --run "Tên công việc"` | Chạy ngay một công việc (gửi tới phiên bản đang chạy nếu có; khớp đúng tên hoặc một phần tên duy nhất) |
 | `ScheduleApp.exe --stop` | Dừng flow đang chạy |
-| `ScheduleApp.exe --test "Nhóm" [--report "D:\BaoCao"]` | Chạy bộ kiểm thử không mở giao diện (tên nhóm, tên công việc hoặc `*`), xuất báo cáo; mã thoát `0` = đạt, `1` = không đạt, `2` = không tìm thấy — xem [Kiểm thử tự động Dynamics 365](#kiểm-thử-tự-động-dynamics-365-model-driven-app) |
+| `ScheduleApp.exe --test "Nhóm" [--report "D:\BaoCao"]` | Chạy bộ kiểm thử không mở giao diện (tên nhóm, tên công việc hoặc `*`), xuất báo cáo; mã thoát `0` = đạt, `1` = không đạt, `2` = không tìm thấy / tham số sai — xem [Kiểm thử tự động Dynamics 365](#kiểm-thử-tự-động-dynamics-365-model-driven-app) |
+| `… --tag smoke --env UAT --test-dir "tests\d365" --retry 1 --shard 1/3 --headless --list` | Thêm cho `--test`: lọc theo tag, chạy ở môi trường, đọc kịch bản từ thư mục trong repo, chạy lại kịch bản không đạt, chia bộ cho nhiều máy, mở trình duyệt ẩn, chỉ liệt kê kịch bản được chọn |
 
 Chuột phải một công việc → **Tạo shortcut trên Desktop** để chạy bằng một cú nhấp đúp (gán được phím tắt trong Properties của shortcut, hoặc dùng cho Stream Deck). Biến môi trường `SCHEDULEAPP_DATA_DIR` đổi thư mục dữ liệu (bản portable).
 
@@ -83,14 +84,17 @@ Nút **Mẫu có sẵn…** mở kho mẫu nhúng trong ứng dụng; ba file tr
 | B5 | Theo dõi tỷ giá USD/VND mỗi giờ | Gọi API công khai, ghi lịch sử vào CSV, cảnh báo khi vượt ngưỡng |
 | B6 | Gom danh sách file PDF rồi gửi một tin | Biến **danh sách**: *Thêm vào cuối danh sách*, `{{ds:count}}`, `{{ds:sort}}` |
 
-**Kiểm thử Dynamics 365** — [Samples/ScheduleApp-mau-kiem-thu-d365.json](Samples/ScheduleApp-mau-kiem-thu-d365.json) (đổi biến `d365Url` của C1 thành URL app của bạn, thêm cả 4 mẫu cùng lúc):
+**Kiểm thử Dynamics 365** — [Samples/ScheduleApp-mau-kiem-thu-d365.json](Samples/ScheduleApp-mau-kiem-thu-d365.json) (đổi biến `d365Url` của C1 thành URL app của bạn, thêm cả 7 mẫu cùng lúc):
 
 | # | Ví dụ | Minh họa |
 |---|---|---|
-| C1 | Mở Dynamics 365 (dùng chung) | Hồ sơ Edge riêng giữ đăng nhập, *Mở danh sách* kèm thử lại tới khi app tải xong |
+| C1 | Mở Dynamics 365 (dùng chung) | Hồ sơ Edge riêng giữ đăng nhập, bước *Đăng nhập Microsoft* (tắt sẵn — bật khi dùng tài khoản test + MFA TOTP), *Mở danh sách* kèm thử lại tới khi app tải xong |
 | C2 | Tạo khách hàng và kiểm tra dữ liệu đã lưu | *Kiểm tra* field bắt buộc, *Nhập field*, *Lưu* → `{{accountId}}`, kiểm tra form không báo lỗi, đếm bản ghi qua Web API, tự dọn dữ liệu |
 | C3 | Lưu khi thiếu tên phải bị chặn | Kịch bản âm: bấm nút ribbon theo command id, kiểm tra form hiện thông báo, bản ghi không được tạo |
 | C4 | Chuẩn bị dữ liệu qua Web API, sửa trên form | *Web API POST* tạo dữ liệu test, mở đúng bản ghi, xóa giá trị field, kiểm tra lại bằng `$filter … eq null` |
+| C5 | Tạo liên hệ từ subgrid của khách hàng | *Subgrid: + Mới* (field cha điền sẵn theo quan hệ), đếm dòng / tìm dòng của subgrid, tag `subgrid` |
+| C6 | Phân quyền: vai trò, nút trên thanh lệnh | *Đọc người dùng & vai trò*, kiểm tra vai trò, nút **bấm được** / **bị ẩn** theo command id |
+| C7 | Khách hàng mới hiện trong view mặc định | *Danh sách (view): đọc bản ghi* theo FetchXML của view + tìm theo tên, *tìm và mở bản ghi* |
 
 ## Thiết kế flow bằng kéo thả
 
@@ -262,6 +266,15 @@ Dựng kịch bản kiểm thử cho Dynamics 365 CE / Power Apps model-driven b
 | Gọi Web API | `GET/POST/PATCH/DELETE` + đường dẫn (`accounts?$select=name&$top=5`). Kết quả trong `{{http.body}}`, mã trả về trong `{{http.status}}`. POST trả Id mới và ghi bản ghi vào `{{d365.created}}` |
 | Xóa dữ liệu test đã tạo | Xóa mọi bản ghi trong `{{d365.created}}`, bản tạo sau xóa trước |
 | Chạy JavaScript | Có sẵn `formContext` và `Xrm`, dùng được `await`. Giá trị `return` lưu vào biến |
+| Mở form bản ghi → ô *Form chính* | Tên hoặc Id form chính cần mở (bảng có nhiều form); trống = form mặc định của người dùng |
+| Subgrid: mở bản ghi của một dòng · đọc giá trị một ô | Subgrid theo tên control (vd `Contacts`) hoặc nhãn; dòng = số thứ tự hoặc chữ có trong dòng (không phân biệt dấu); cột theo tên logic, trống = cột tên. Tự chờ subgrid tải xong |
+| Subgrid: tạo bản ghi liên quan mới · làm mới | Như bấm **+ Mới** trên subgrid: mở form bảng liên quan với field của bản ghi cha điền sẵn theo ánh xạ quan hệ (`createFromEntity`) · tải lại subgrid |
+| Danh sách (view): đọc các bản ghi · tìm và mở bản ghi | Chạy **FetchXML của chính view** (view hệ thống hoặc cá nhân, theo tên / Id, trống = view mặc định) qua Web API, tùy chọn lọc thêm theo cột tên. Kết quả `{{view.count}}`, `{{view.ids}}`, `{{view.names}}`; hoặc mở bản ghi đầu tiên |
+| Tạo nhanh (quick create) | Mở form tạo nhanh với giá trị điền sẵn (mỗi dòng `field=giá trị`, lookup = `bảng:guid`), bấm *Lưu và đóng*, lấy Id từ kết quả của `Xrm.Navigation.openForm` vào `{{d365.lastId}}` / `{{d365.created}}` |
+| Đăng nhập Microsoft | Tài khoản test: email → mật khẩu → mã MFA **TOTP** (tính theo RFC 6238 từ khóa bí mật Base32) → duy trì đăng nhập. Đã đăng nhập thì bỏ qua. Lưu mật khẩu / khóa trong 🔑 Bí mật. Không tự duyệt được Authenticator push |
+| Đọc người dùng & vai trò | `{{d365.user}}`, `{{d365.userId}}`, `{{d365.roles}}` (mỗi dòng một vai trò) |
+
+Khi trình duyệt bị chuyển về trang đăng nhập Microsoft (phiên hết hạn), bước D365 báo ngay *"Phiên đăng nhập Dynamics 365 đã hết"* thay vì chờ tới hết giờ.
 
 **3. Bước Kiểm tra (Assert)** kiểm tra một điều kiện và ghi kết quả **ĐẠT / KHÔNG ĐẠT** vào báo cáo, kèm giá trị thực tế khi sai. Dùng được mọi điều kiện của *Nếu*, cộng thêm các điều kiện sau (cũng dùng được trong *Nếu* / *Lặp khi*):
 
@@ -271,11 +284,15 @@ Dựng kịch bản kiểm thử cho Dynamics 365 CE / Power Apps model-driven b
 | D365: trạng thái field | `telephone1` là `required` / `recommended` / `disabled` / `visible` / `dirty` / `empty`. Tick *Đảo ngược* để kiểm tra điều ngược lại |
 | D365: form có thông báo / lỗi | Có chứa chữ `bắt buộc`. Để trống = có bất kỳ thông báo nào. Đảo ngược = form không báo lỗi |
 | D365: số bản ghi (Web API) | `contacts?$filter=emailaddress1 eq '{{email}}'` ≥ `1`: dữ liệu thật đã được plugin / Power Automate tạo |
+| D365: số dòng của subgrid · subgrid có dòng chứa chữ | `Contacts` ≥ `1` (tổng theo view của subgrid) · `Contacts` có dòng chứa `Nguyễn Văn A` |
+| D365: nút trên thanh lệnh | `Mscrm.Form.account.Delete` là `visible` / `enabled` / `disabled` (tìm cả trong menu "…"). Đảo ngược = nút bị ẩn, vd người dùng không có quyền |
+| D365: form đang mở là | `Bán hàng` (tên form chính đang mở) |
+| D365: người dùng có vai trò | `Salesperson` — chắc chắn kịch bản đang chạy bằng đúng tài khoản / vai trò cần thử |
 | Phần tử có trên trang web | CSS / `xpath:` / `text:` |
 
 Ô *Chờ tối đa* lớn hơn 0 thì kiểm tra lại cho tới khi đạt (plugin bất đồng bộ, flow chạy chậm). Mặc định, Assert sai được ghi "không đạt" rồi flow **chạy tiếp**, để một lần chạy thấy hết mọi chỗ sai. Chọn *Khi bước lỗi → Dừng flow* nếu các bước sau phụ thuộc vào điều kiện này.
 
-**4. Kịch bản & báo cáo.** Tick **Đây là kịch bản kiểm thử** (tab *Lỗi · thông báo · kiểm thử*). Từ đó mỗi lần chạy, kể cả chạy theo lịch, sẽ ghi lại từng bước (thời gian, kết quả, giá trị thực tế) và xuất `index.html` + `junit.xml` vào `test-reports\` (Lịch sử → *Mở báo cáo kiểm thử*). Bước lỗi có **ảnh chụp nội dung tab trình duyệt** qua DevTools, chụp được cả khi cửa sổ bị che hoặc chạy headless. Tick **Tự xóa dữ liệu Dynamics 365 do flow tạo ra** để luôn dọn `{{d365.created}}` sau khi chạy, kể cả khi test thất bại.
+**4. Kịch bản & báo cáo.** Tick **Đây là kịch bản kiểm thử** (tab *Kiểm thử* của công việc). Từ đó mỗi lần chạy, kể cả chạy theo lịch, sẽ ghi lại từng bước (thời gian, kết quả, giá trị thực tế) và xuất `index.html` + `junit.xml` vào `test-reports\` (Lịch sử → *Mở báo cáo kiểm thử*). Bước lỗi có **ảnh chụp nội dung tab trình duyệt** qua DevTools, chụp được cả khi cửa sổ bị che hoặc chạy headless. Tick **Tự xóa dữ liệu Dynamics 365 do flow tạo ra** để luôn dọn `{{d365.created}}` sau khi chạy, kể cả khi test thất bại.
 
 Chạy bộ kiểm thử từ giao diện: trang **Kiểm thử**, hoặc chuột phải công việc → **🧪 Chạy kiểm thử & xem báo cáo** / **🧪 Chạy nhóm "…" như bộ kiểm thử**. Các kịch bản chạy lần lượt và cuối cùng mở một báo cáo chung.
 
@@ -287,6 +304,18 @@ exit $p.ExitCode        # 0 = mọi kịch bản đạt, 1 = có kịch bản kh
 ```
 
 ScheduleApp là ứng dụng cửa sổ, nên PowerShell / cmd không tự chờ nó chạy xong. Hãy dùng `Start-Process -Wait` hoặc `start /wait` như trên. Chế độ `--test` chạy độc lập (không cần mở giao diện, chạy được song song với ScheduleApp đang mở ở khay), in tiến trình ra console và ghi `junit.xml` để Azure DevOps (*Publish Test Results*, định dạng JUnit), Jenkins hoặc GitHub Actions hiển thị kết quả. Bước *Hỏi người dùng nhập* trong chế độ này dùng giá trị mặc định.
+
+Tham số thêm: `--tag smoke` (chỉ kịch bản có tag), `--env UAT` (môi trường), `--test-dir "thư mục"` (đọc kịch bản từ thư mục trong repo, không cần nhập vào máy CI), `--retry 1` (chạy lại kịch bản không đạt; đạt ở lần chạy lại được ghi là chập chờn), `--headless` (mở trình duyệt ẩn, cửa sổ 1920×1080), `--shard 2/3` (máy thứ 2 trong 3 máy chạy song song — chia theo nhóm, tên, Id nên không trùng / sót), `--list` (chỉ liệt kê kịch bản được chọn).
+
+**6. Môi trường, tag, chạy lại.** Trang **Kiểm thử** → *Môi trường: Quản lý…*: mỗi môi trường (Dev / Test / UAT) là bộ biến (vd `d365Url`, `taiKhoanTest`) **ghi đè** biến cùng tên của kịch bản khi chạy ở môi trường đó — chọn trên thanh lọc (áp dụng cả khi chạy theo lịch) hoặc `--env`. Tên môi trường có trong báo cáo, junit.xml và `{{env.name}}`. Tab *Kiểm thử* của công việc có **Tag** (lọc trên trang Kiểm thử, `--tag`) và **Mã test case** (vd Azure DevOps Test Plans, ghi vào junit.xml). Cột **Ổn định (10 lần)** cho thấy kịch bản chập chờn.
+
+**7. Kịch bản trong git.** *🗂 Thư mục kịch bản (git) → Xuất kịch bản ra thư mục…*: mỗi công việc một file `Nhóm\Tên.json` (giữ Id, kèm công việc dùng chung được gọi tới và `environments.json`; không ghi kết quả lần chạy để diff gọn; đổi tên thì file cũ được xóa). Commit lên git để review; máy khác *Nhập / cập nhật từ thư mục…* (cùng Id thì thay). CI chạy thẳng từ repo với `--test-dir`. Bí mật không nằm trong file — thêm bí mật cùng tên trên máy CI.
+
+**8. Kiểm thử theo dữ liệu.** Tab *Kiểm thử* → **Dữ liệu kiểm thử**: file Excel / CSV (dòng đầu là tiêu đề). Mỗi dòng chạy kịch bản một lần với `{{row.TênCột}}`, `{{data.index}}`, `{{data.count}}` và là **một test case riêng** trong báo cáo / junit.xml (vd *Tạo khách [dòng 3: KH002]*). Đường dẫn tương đối tính từ thư mục kịch bản khi chạy `--test-dir`. *Chạy thử flow* trong trình soạn dùng dòng đầu.
+
+**9. Đăng nhập & phân quyền.** Bật bước *Đăng nhập Microsoft* của C1 (tài khoản test, mật khẩu `{{secret:MatKhauTest}}`, khóa TOTP `{{secret:TotpTest}}`) để máy CI tự đăng nhập lại khi phiên hết hạn. Kiểm thử theo vai trò: mỗi vai trò một hồ sơ trình duyệt + tài khoản test (đặt vào môi trường hoặc lặp theo dữ liệu), kiểm tra *D365: người dùng có vai trò*, field khóa (*trạng thái field* `disabled`) và nút bị ẩn (*nút trên thanh lệnh* + Đảo ngược) — xem C6.
+
+**Giới hạn đã biết:** subgrid / view / quick create / vai trò dùng Client API và Web API được hỗ trợ chính thức; còn nhận diện **nút trên thanh lệnh, hộp thoại, thông báo, nút "Lưu và đóng" của form tạo nhanh và trang đăng nhập Microsoft** dựa vào cấu trúc trang (data-id, aria-label, Id của trang đăng nhập) — đã kiểm chứng trên trang giả lập dựng theo cấu trúc đó, cần chạy `D365RealTests` trên môi trường D365 test của bạn (xem *Phát triển & kiểm thử*). Chưa tự động hóa thao tác chuột trên lưới (sắp xếp, lọc cột), upload file, timeline, dashboard, PCF / canvas app nhúng. Mỗi máy chạy một trình duyệt điều khiển một lúc — chạy song song bằng nhiều máy với `--shard`.
 
 ## Nhận dạng màn hình
 
@@ -386,6 +415,8 @@ Thư mục `%AppData%\ScheduleApp` (hoặc `SCHEDULEAPP_DATA_DIR`):
 | `browser-chrome\` · `browser-edge\` | Hồ sơ trình duyệt dùng cho bước *Trình duyệt* |
 | `test-reports\<ngày giờ>_<tên>\` | Báo cáo kiểm thử: `index.html`, `junit.xml`, `shots\` (ảnh lúc lỗi) |
 
+Môi trường kiểm thử nằm trong `settings.json`; khi xuất thư mục kịch bản thì có thêm `environments.json` trong thư mục đó.
+
 ## Cập nhật phiên bản
 
 **⚙ Cài đặt → Chung → Nguồn bản mới** (ScheduleApp tự kiểm tra khi khởi động, báo ở khay hệ thống; hoặc **Thêm → Kiểm tra cập nhật…**):
@@ -401,9 +432,17 @@ Bấm **Cập nhật ngay**: tải bản mới (kiểm tra SHA-256), đóng Sche
 ## Phát triển & kiểm thử
 
 ```powershell
-dotnet test ScheduleApp.slnx                      # ~100 bài kiểm thử (xUnit)
+dotnet test ScheduleApp.slnx                      # ~130 bài kiểm thử (xUnit)
 $env:SCHEDULEAPP_LIVE_TESTS = 1; dotnet test ScheduleApp.slnx   # thêm UI Automation, Edge headless, Excel thật, Dynamics 365 giả lập
+
+# Dynamics 365 thật (môi trường TEST — bài kiểm thử tạo rồi xóa khách hàng / liên hệ "ScheduleApp RealTest…")
+$env:SCHEDULEAPP_D365_URL = "https://<org>.crm5.dynamics.com/main.aspx?appid=…"
+$env:SCHEDULEAPP_D365_PROFILE_DIR = "$env:APPDATA\ScheduleApp\browser-edge-D365 Test"   # hồ sơ "D365 Test" đã đăng nhập (đóng Edge của hồ sơ này trước), hoặc dùng 3 biến dưới
+# $env:SCHEDULEAPP_D365_USER / SCHEDULEAPP_D365_PASSWORD / SCHEDULEAPP_D365_TOTP;  SCHEDULEAPP_D365_HEADLESS = 0 để xem trình duyệt
+dotnet test ScheduleApp.slnx --filter FullyQualifiedName~D365RealTests
 ```
+
+Tài liệu quá trình nâng cấp kiểm thử D365 (đánh giá, từng bước làm, cách kiểm chứng, giới hạn): [docs/QUA-TRINH-NANG-CAP-KIEM-THU-D365.md](docs/QUA-TRINH-NANG-CAP-KIEM-THU-D365.md).
 
 Kiểm thử chạy với thư mục dữ liệu tạm, không đụng tới dữ liệu thật. Phạm vi gồm: biến, lịch, cấu trúc flow, engine (điều kiện, lặp, thử lại, nhãn, flow con), đọc/ghi Excel/CSV, JSON, gọi API (máy chủ HTTP giả lập: OAuth, Basic, lỗi OData), cập nhật (manifest, SHA-256, script thay file), phiên bản, mẫu nhúng. Phần kiểm thử Dynamics 365 có: Assert mềm/cứng, báo cáo HTML/JUnit, và bộ bước D365 chạy trên Edge headless với một máy chủ giả lập model-driven app (`Xrm`, lookup, business rule, BPF, ribbon, hộp thoại, Web API). Các phần cần người thật bấm (ghi macro, chế độ an toàn, Telegram, email, đánh thức máy) có danh sách kiểm tra tay trong [docs/KIEM-THU-THU-CONG.md](docs/KIEM-THU-THU-CONG.md). CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) build + chạy kiểm thử mỗi lần push.
 
@@ -421,16 +460,18 @@ Services/    Scheduler (tick mỗi giây, chạy bù, đánh thức máy), FlowR
 Services/Engine/  FlowEngine (bộ đếm chương trình: điều kiện, vòng lặp, nhãn, thử lại, xử lý lỗi, gỡ lỗi),
                   FlowContext (biến, tùy chọn chạy), VariableExpander ({{…}}), ConditionEvaluator, LoopFrame
 Services/Data/    TabularReader / TabularWriter (đọc, ghi .xlsx / .csv không cần Excel), JsonPath
-Services/Testing/ TestRecorder (kết quả từng bước, ảnh lúc lỗi), TestReport (HTML + JUnit XML), TestSuite (chạy bộ kịch bản),
-                  TestCli (--test cho CI)
-Automation/  UiElementFinder (UI Automation), BrowserClient (Chrome DevTools Protocol),
-             D365Client (Dynamics 365 model-driven: Xrm Client API, Web API bằng phiên trình duyệt, dọn dữ liệu test)
+Services/Testing/ TestRecorder (kết quả từng bước, ảnh lúc lỗi), TestReport (HTML + JUnit XML), TestSuite (chạy bộ kịch bản:
+                  theo dữ liệu, chạy lại, tag, shard), TestFolder (kịch bản thành file cho git, môi trường), TestCli (--test cho CI)
+Automation/  UiElementFinder (UI Automation), BrowserClient (Chrome DevTools Protocol, headless),
+             D365Client (Dynamics 365 model-driven: Xrm Client API, subgrid, view/FetchXML, quick create, nút thanh lệnh,
+             đăng nhập Microsoft, Web API bằng phiên trình duyệt, dọn dữ liệu test), Totp (mã MFA RFC 6238)
 Native/      Win32 P/Invoke, InputSimulator (SendInput: click, phím, cuộn, kéo thả), WindowHelper,
              PowerHelper (giữ máy thức, hẹn giờ đánh thức, thời gian rảnh, DPI), UserInputGuard (chế độ an toàn)
 Vision/      ScreenCapture, ImageMatcher (NCC + màu), ScreenOcr (Windows OCR), ScreenLocator (co giãn theo DPI)
 Recording/   MacroRecorder (hook chuột/bàn phím toàn hệ thống)
 UI/          MainForm (thanh điều hướng + trang Công việc), TestDashboard (trang Kiểm thử), Theme (màu, nút phẳng, renderer, NavButton, StatCard),
-             D365Forms (chọn field từ form D365, cửa sổ ghi thao tác D365), JobEditorForm, StepEditorForm, FlowDesigner, StepToolbox, StepVisuals, TriggerEditorForm,
+             D365Forms (chọn field / subgrid từ form D365, cửa sổ ghi thao tác D365), EnvironmentsForm (môi trường kiểm thử),
+             HelpView + HelpContent (trang Hướng dẫn, F1), JobEditorForm, StepEditorForm, FlowDesigner, StepToolbox, StepVisuals, TriggerEditorForm,
              HistoryForm (+ thống kê), SettingsForm, ApiConnectionForm, SecretsForm, TemplatePickerForm, VersionPickerForm,
              UpdateForm, PromptForms (nhập liệu, xác nhận, thanh gỡ lỗi), ReminderForm, VisionForms, UiCommon
 Samples/     Mẫu công việc (nhúng vào ứng dụng cho mục "Mẫu có sẵn…")

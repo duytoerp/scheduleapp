@@ -7,12 +7,18 @@
     "Schedule": { "Type": "Manual" },
     "StopOnError": true,
     "Variables": [
-      { "Name": "d365Url", "Value": "https://tenorg.crm5.dynamics.com/main.aspx?appid=00000000-0000-0000-0000-000000000000" }
+      { "Name": "d365Url", "Value": "https://tenorg.crm5.dynamics.com/main.aspx?appid=00000000-0000-0000-0000-000000000000" },
+      { "Name": "taiKhoanTest", "Value": "qa.test@tenorg.onmicrosoft.com" }
     ],
     "Steps": [
       {
         "Type": "Browser", "BrowserAction": "Launch", "Target": "Edge", "Arguments": "D365 Test", "Text": "{{d365Url}}",
         "DelayMs": 15000, "DelayAfterMs": 500
+      },
+      {
+        "Type": "Dynamics", "D365Action": "Login", "Enabled": false,
+        "Text": "{{taiKhoanTest}}", "Arguments": "{{secret:MatKhauTest}}", "RowRef": "{{secret:TotpTest}}",
+        "DelayMs": 90000, "DelayAfterMs": 0
       },
       {
         "Type": "Dynamics", "D365Action": "OpenView", "Text": "account",
@@ -105,6 +111,105 @@
       {
         "Type": "Assert", "Condition": "D365RecordCount", "Text": "accounts?$select=name&$filter=accountid eq {{accountId}} and telephone1 eq null",
         "CompareOp": "Equals", "Arguments": "1", "Message": "Đã xóa số điện thoại trong hệ thống", "DelayMs": 10000, "DelayAfterMs": 0
+      }
+    ]
+  },
+  {
+    "Id": "5d6e0b51-0d5f-4c4e-9c43-1d365a000005",
+    "Name": "C5 · Tạo liên hệ từ subgrid của khách hàng",
+    "Group": "Mẫu kiểm thử Dynamics 365",
+    "Enabled": true,
+    "Schedule": { "Type": "Manual" },
+    "StopOnError": true,
+    "IsTestCase": true,
+    "CleanupTestData": true,
+    "Tags": "subgrid, regression",
+    "Steps": [
+      { "Type": "CallJob", "JobRef": "5d6e0b51-0d5f-4c4e-9c43-1d365a000001", "Target": "C1 · Mở Dynamics 365 (dùng chung cho các kịch bản)", "DelayAfterMs": 0 },
+      {
+        "Type": "Dynamics", "D365Action": "WebApi", "Method": "POST", "Arguments": "accounts",
+        "Text": "{\"name\": \"Test KH {{now:yyyyMMdd-HHmmss}}\"}", "Variable": "accountId", "DelayMs": 30000, "DelayAfterMs": 0
+      },
+      { "Type": "Dynamics", "D365Action": "OpenForm", "Text": "account", "Arguments": "{{accountId}}", "DelayMs": 30000, "DelayAfterMs": 0 },
+      {
+        "Type": "Assert", "Condition": "D365SubgridCount", "Text": "Contacts", "CompareOp": "Equals", "Arguments": "0",
+        "Message": "Khách hàng mới chưa có liên hệ", "DelayMs": 10000, "DelayAfterMs": 0
+      },
+      { "Type": "Dynamics", "D365Action": "SubgridNew", "Text": "Contacts", "DelayMs": 30000, "DelayAfterMs": 0 },
+      {
+        "Type": "Assert", "Condition": "D365FieldValue", "Text": "parentcustomerid", "CompareOp": "StartsWith", "Arguments": "Test KH",
+        "Message": "Liên hệ mới được gắn sẵn công ty (ánh xạ của quan hệ)", "DelayMs": 5000, "DelayAfterMs": 0
+      },
+      { "Type": "Dynamics", "D365Action": "SetField", "Text": "lastname", "Arguments": "Test LH {{now:HHmmss}}", "DelayMs": 30000, "DelayAfterMs": 0 },
+      { "Type": "Dynamics", "D365Action": "Save", "DelayMs": 60000, "DelayAfterMs": 0 },
+      { "Type": "Dynamics", "D365Action": "OpenForm", "Text": "account", "Arguments": "{{accountId}}", "DelayMs": 30000, "DelayAfterMs": 0 },
+      {
+        "Type": "Assert", "Condition": "D365SubgridCount", "Text": "Contacts", "CompareOp": "Equals", "Arguments": "1",
+        "Message": "Subgrid liên hệ có 1 dòng", "DelayMs": 15000, "DelayAfterMs": 0
+      },
+      {
+        "Type": "Assert", "Condition": "D365SubgridRow", "Text": "Contacts", "Arguments": "Test LH",
+        "Message": "Dòng của liên hệ vừa tạo hiện trên subgrid", "DelayMs": 5000, "DelayAfterMs": 0
+      }
+    ]
+  },
+  {
+    "Id": "5d6e0b51-0d5f-4c4e-9c43-1d365a000006",
+    "Name": "C6 · Phân quyền: vai trò, nút trên thanh lệnh",
+    "Group": "Mẫu kiểm thử Dynamics 365",
+    "Enabled": true,
+    "Schedule": { "Type": "Manual" },
+    "StopOnError": true,
+    "IsTestCase": true,
+    "Tags": "security, smoke",
+    "Variables": [
+      { "Name": "vaiTro", "Value": "Salesperson" }
+    ],
+    "Steps": [
+      { "Type": "CallJob", "JobRef": "5d6e0b51-0d5f-4c4e-9c43-1d365a000001", "Target": "C1 · Mở Dynamics 365 (dùng chung cho các kịch bản)", "DelayAfterMs": 0 },
+      { "Type": "Dynamics", "D365Action": "GetUser", "Variable": "nguoiDung", "DelayMs": 30000, "DelayAfterMs": 0 },
+      {
+        "Type": "Assert", "Condition": "D365UserRole", "Text": "{{vaiTro}}",
+        "Message": "Tài khoản test có đúng vai trò cần kiểm thử", "DelayMs": 0, "DelayAfterMs": 0, "OnError": "Stop"
+      },
+      { "Type": "Dynamics", "D365Action": "OpenForm", "Text": "account", "DelayMs": 30000, "DelayAfterMs": 0 },
+      {
+        "Type": "Assert", "Condition": "D365Command", "Text": "Mscrm.Form.account.Save", "Arguments": "enabled",
+        "Message": "Người dùng tạo được khách hàng (nút Lưu bấm được)", "DelayMs": 10000, "DelayAfterMs": 0
+      },
+      {
+        "Type": "Assert", "Condition": "D365Command", "Text": "Mscrm.Form.account.Delete", "Arguments": "visible", "Negate": true,
+        "Message": "Form tạo mới không có nút Xóa", "DelayMs": 3000, "DelayAfterMs": 0
+      }
+    ]
+  },
+  {
+    "Id": "5d6e0b51-0d5f-4c4e-9c43-1d365a000007",
+    "Name": "C7 · Khách hàng mới hiện trong view mặc định",
+    "Group": "Mẫu kiểm thử Dynamics 365",
+    "Enabled": true,
+    "Schedule": { "Type": "Manual" },
+    "StopOnError": true,
+    "IsTestCase": true,
+    "CleanupTestData": true,
+    "Tags": "view, regression",
+    "Steps": [
+      { "Type": "CallJob", "JobRef": "5d6e0b51-0d5f-4c4e-9c43-1d365a000001", "Target": "C1 · Mở Dynamics 365 (dùng chung cho các kịch bản)", "DelayAfterMs": 0 },
+      { "Type": "SetVariable", "Variable": "tenKH", "VarSource": "Value", "Text": "View Test {{now:yyyyMMdd-HHmmss}}", "DelayAfterMs": 0 },
+      {
+        "Type": "Dynamics", "D365Action": "WebApi", "Method": "POST", "Arguments": "accounts",
+        "Text": "{\"name\": \"{{tenKH:json}}\"}", "Variable": "accountId", "DelayMs": 30000, "DelayAfterMs": 0
+      },
+      { "Type": "Dynamics", "D365Action": "ViewQuery", "Text": "account", "RowRef": "{{tenKH}}", "Variable": "soDong", "DelayMs": 30000, "DelayAfterMs": 0 },
+      {
+        "Type": "Assert", "Condition": "Compare", "Target": "{{soDong}}", "CompareOp": "Equals", "Arguments": "1",
+        "Message": "View mặc định tìm thấy đúng 1 khách hàng vừa tạo", "DelayMs": 0, "DelayAfterMs": 0
+      },
+      { "Type": "Dynamics", "D365Action": "ViewOpenRecord", "Text": "account", "RowRef": "{{tenKH}}", "DelayMs": 30000, "DelayAfterMs": 0 },
+      { "Type": "Dynamics", "D365Action": "GetRecordId", "Variable": "moRa", "DelayMs": 30000, "DelayAfterMs": 0 },
+      {
+        "Type": "Assert", "Condition": "Compare", "Target": "{{moRa}}", "CompareOp": "Equals", "Arguments": "{{accountId}}",
+        "Message": "Mở đúng bản ghi từ view", "DelayMs": 0, "DelayAfterMs": 0
       }
     ]
   }

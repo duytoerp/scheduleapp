@@ -111,7 +111,7 @@ internal static class HelpContent
             """
             ## Khi một bước lỗi
             Trong mục **▸ Nâng cao** của form soạn bước: *thử lại N lần cách X ms*, rồi *dừng flow* / *bỏ qua chạy tiếp* / *nhảy tới nhãn* / theo cài đặt của công việc.
-            ## Tab Lỗi · thông báo · kiểm thử của công việc
+            ## Tab Lỗi · thông báo của công việc
             - Dừng flow khi một bước lỗi (mặc định).
             - **Công việc chạy khi thất bại**: dọn dẹp, gửi báo cáo, có `{{failed.message}}`.
             - Khi nào gửi thông báo: chỉ khi lỗi, mỗi lần, hoặc không.
@@ -126,7 +126,7 @@ internal static class HelpContent
             """
             ScheduleApp kiểm thử được app **Dynamics 365 CE / Power Apps model-driven** mà không cần viết code. Các bước gọi thẳng **Client API (Xrm)** của form trong trình duyệt, nên kịch bản không vỡ khi Microsoft đổi giao diện, và dùng luôn phiên đăng nhập của trình duyệt (MFA, SSO).
             ## Kịch bản kiểm thử
-            Một **kịch bản** là một công việc được tick **Đây là kịch bản kiểm thử** (tab *Lỗi · thông báo · kiểm thử*). Mỗi lần chạy, ScheduleApp ghi kết quả từng bước, từng điều kiện *Kiểm tra*, chụp ảnh khi lỗi và xuất báo cáo HTML + JUnit XML.
+            Một **kịch bản** là một công việc được tick **Đây là kịch bản kiểm thử** (tab *Kiểm thử*). Mỗi lần chạy, ScheduleApp ghi kết quả từng bước, từng điều kiện *Kiểm tra*, chụp ảnh khi lỗi và xuất báo cáo HTML + JUnit XML.
             ## Quy trình
             1. **Chuẩn bị**: một công việc dùng chung mở trình duyệt vào app D365 bằng hồ sơ riêng. Xem chủ đề *Chuẩn bị trình duyệt & đăng nhập*.
             2. **Ghi thao tác**: trang **Kiểm thử** → **⏺ Ghi kịch bản D365**, thao tác trên form, các bước được tạo tự động.
@@ -204,6 +204,9 @@ internal static class HelpContent
             - **Chuyển tab** · **BPF sang / về giai đoạn** · **Bấm nút trên hộp thoại** (trống = nút chính).
             - **Lấy Id bản ghi** · **Đọc thông báo / lỗi trên form** vào biến.
             - **Gọi Web API** · **Xóa dữ liệu test đã tạo** · **Chạy JavaScript** (có sẵn `formContext`, `Xrm`, dùng được `await`).
+            - **Subgrid** (mở dòng, đọc ô, + Mới, làm mới) và **Danh sách (view)** (đọc / tìm và mở bản ghi): xem chủ đề *Subgrid & danh sách (view)*.
+            - **Tạo nhanh (quick create)**, mở **form chính** theo tên: xem *Chọn form, nút thanh lệnh, tạo nhanh*.
+            - **Đăng nhập Microsoft**, **đọc người dùng & vai trò**: xem *Đăng nhập tự động & phân quyền*.
             ## Cách ghi giá trị theo kiểu field
             - **Lookup**: tên bản ghi, hoặc `bảng:tên` / `bảng:guid`, vd `account:Contoso`, `contact:{{contactId}}`.
             - **Option set**: nhãn (không phân biệt dấu) hoặc số. **Nhiều lựa chọn**: `A; B`.
@@ -228,7 +231,65 @@ internal static class HelpContent
             ## Kiểm tra sai thì sao?
             Mặc định bước được ghi **KHÔNG ĐẠT** rồi flow **chạy tiếp**, để một lần chạy thấy hết mọi chỗ sai. Nếu các bước sau phụ thuộc vào điều kiện này, mở **▸ Nâng cao** → *Khi bước lỗi* → **Dừng flow**.
             > Nhanh nhất: trong trình soạn bấm **✓ Kiểm tra từ form D365…**, tick các field. Mỗi field thành một bước Kiểm tra với giá trị hiện tại.
+            > Kiểm tra cho subgrid, nút trên thanh lệnh, form đang mở, vai trò người dùng: xem các chủ đề ngay sau.
             """),
+
+        new("d365-grids", "Kiểm thử Dynamics 365", "Subgrid & danh sách (view)",
+            "Đếm / tìm dòng, đọc ô, mở bản ghi, tạo bản ghi liên quan từ subgrid; đọc bản ghi theo bộ lọc của view.",
+            """
+            ## Subgrid trên form
+            Ô **Subgrid** là tên control trên form (vd `Contacts`) hoặc nhãn hiển thị. Bấm **Chọn subgrid từ form…** để xem các subgrid của form đang mở. Các bước tự chờ subgrid tải xong dữ liệu.
+            - **Subgrid: mở bản ghi của một dòng** · **đọc giá trị một ô**: ô *Dòng* là số thứ tự (1 = dòng đầu) hoặc chữ có trong dòng (tên, email…, không phân biệt dấu). Ô *Cột* là tên logic, trống = cột tên.
+            - **Subgrid: tạo bản ghi liên quan mới** như bấm **+ Mới** trên subgrid: form của bảng liên quan mở ra, field của bản ghi cha được điền sẵn theo ánh xạ của quan hệ. Bản ghi đang mở phải được lưu trước.
+            - **Subgrid: làm mới** sau khi plugin / Power Automate tạo bản ghi liên quan.
+            - Kiểm tra **D365: số dòng của subgrid** (tổng số bản ghi theo view của subgrid) và **D365: subgrid có dòng chứa chữ**.
+            ## Danh sách (view)
+            **Danh sách (view): đọc các bản ghi** chạy chính FetchXML của view qua Web API (giữ nguyên bộ lọc và sắp xếp của view), nên kiểm tra được *view lọc đúng dữ liệu*:
+            - Ô **View**: tên hoặc Id view (view hệ thống hoặc view cá nhân). Trống = view mặc định của bảng.
+            - Ô **Tìm theo tên** lọc thêm theo cột tên (chứa chữ), như ô tìm nhanh.
+            - Kết quả: `{{view.count}}`, `{{view.ids}}`, `{{view.names}}` (mỗi dòng một bản ghi).
+            **Danh sách (view): tìm và mở bản ghi** mở bản ghi đầu tiên tìm được (lỗi nếu không có).
+            > Ví dụ: tạo khách hàng qua Web API, rồi kiểm tra nó hiện trong view "Khách hàng đang hoạt động của tôi" — xem mẫu C7.
+            ! Đọc view qua Web API không bấm vào lưới trên màn hình: sắp xếp / lọc cột bằng chuột trên lưới chưa được tự động hóa.
+            """,
+            new HelpAction("Thêm mẫu kiểm thử", CmdTemplates)),
+
+        new("d365-forms", "Kiểm thử Dynamics 365", "Chọn form, nút thanh lệnh, tạo nhanh",
+            "Mở đúng form chính, kiểm tra nút hiện / bấm được / bị mờ, tạo nhanh bản ghi có điền sẵn.",
+            """
+            ## Mở đúng form chính
+            Bước **Mở form bản ghi** có ô **Form chính**: tên form (vd `Bán hàng`) hoặc Id. Trống = form mặc định của người dùng. Kiểm tra form đang mở bằng **D365: form đang mở là**.
+            ## Kiểm tra nút trên thanh lệnh
+            Điều kiện **D365: nút trên thanh lệnh** theo nhãn hoặc một phần command id (`Mscrm.Form.account.Deactivate`), trạng thái:
+            - `visible`: nút có trên thanh lệnh hoặc trong menu "…" (được mở ra để tìm rồi đóng lại).
+            - `enabled`: hiện và bấm được. `disabled`: hiện nhưng bị mờ.
+            - Tick **Đảo ngược** để kiểm tra nút bị ẩn, vd người dùng không có quyền xóa.
+            > Dùng command id thay vì nhãn để kịch bản chạy được với mọi ngôn ngữ giao diện.
+            ## Tạo nhanh (quick create)
+            **Tạo nhanh bản ghi**: ô *Bảng* (vd `contact`), ô giá trị mỗi dòng `field=giá trị` (giá trị gốc: số cho option set, `bảng:guid` cho lookup). ScheduleApp mở form tạo nhanh, bấm **Lưu và đóng**, lấy Id bản ghi mới vào `{{d365.lastId}}` và ghi vào `{{d365.created}}` để dọn.
+            ! Bảng phải bật form tạo nhanh. Nếu lưu bị chặn (thiếu field bắt buộc), bước báo lỗi kèm nội dung lỗi trên form tạo nhanh.
+            """),
+
+        new("d365-login", "Kiểm thử Dynamics 365", "Đăng nhập tự động & phân quyền",
+            "Đăng nhập Microsoft bằng tài khoản test (cả MFA mã TOTP), phát hiện phiên hết hạn, kiểm thử theo vai trò.",
+            """
+            ## Đăng nhập tự động
+            Bước **Đăng nhập Microsoft** đặt ngay sau bước *Mở trình duyệt* (mẫu C1 có sẵn, đang tắt):
+            1. Lưu mật khẩu của tài khoản test trong **🔑 Bí mật**, vd tên `MatKhauTest`.
+            2. Nếu tài khoản có MFA: trong trang *Thông tin bảo mật* (Security info) của tài khoản Microsoft, thêm phương thức *ứng dụng xác thực* và chọn dùng ứng dụng xác thực khác; ở màn hình mã QR bấm *Can't scan image?* để xem **khóa bí mật** (chuỗi chữ A–Z, số 2–7) rồi lưu vào Bí mật, vd `TotpTest`.
+            3. Điền bước: tài khoản (email), mật khẩu `{{secret:MatKhauTest}}`, khóa TOTP `{{secret:TotpTest}}`.
+            Bước tự làm: email → mật khẩu → mã 6 số (tự tính như ứng dụng Authenticator) → *Duy trì đăng nhập*. Đã đăng nhập sẵn thì bỏ qua.
+            ! Không tự duyệt được thông báo đẩy trên điện thoại (Authenticator push), không làm được trang đăng nhập riêng của tổ chức (ADFS tùy biến). Với các trường hợp này đăng nhập tay một lần trong hồ sơ trình duyệt.
+            ## Phiên đăng nhập hết hạn
+            Khi trình duyệt bị chuyển về trang đăng nhập, bước D365 báo ngay *"Phiên đăng nhập Dynamics 365 đã hết"* thay vì chờ tới hết giờ.
+            ## Kiểm thử theo vai trò
+            - **Đọc người dùng & vai trò**: `{{d365.user}}`, `{{d365.roles}}`.
+            - Kiểm tra **D365: người dùng có vai trò**: chắc chắn kịch bản đang chạy bằng đúng tài khoản cần thử.
+            - Mỗi vai trò dùng một **hồ sơ trình duyệt** + một **tài khoản test** riêng. Đặt tài khoản / hồ sơ vào **môi trường** hoặc biến để chạy cùng kịch bản với nhiều vai trò (vd lặp từng dòng Excel: hồ sơ, tài khoản, vai trò mong đợi).
+            - Kiểm tra quyền: field khóa (*D365: trạng thái field* `disabled`), nút ẩn (*D365: nút trên thanh lệnh* + Đảo ngược). Xem mẫu C6.
+            ! Chỉ dùng tài khoản test riêng cho kiểm thử, không dùng tài khoản quản trị thật.
+            """,
+            new HelpAction("Mở Bí mật", CmdSecrets)),
 
         new("test-data", "Kiểm thử Dynamics 365", "Dữ liệu test & dọn dẹp",
             "Tạo dữ liệu nhanh bằng Web API và tự xóa bản ghi do kịch bản tạo ra.",
@@ -242,10 +303,24 @@ internal static class HelpContent
             Kết quả trong `{{http.body}}`, mã trả về trong `{{http.status}}`. POST trả Id mới vào `{{d365.lastId}}`.
             ## Tự dọn dẹp
             Mọi bản ghi kịch bản tạo ra (lưu form mới hoặc POST Web API) được ghi vào `{{d365.created}}`.
-            - Tick **Tự xóa dữ liệu Dynamics 365 do flow tạo ra** (tab *Lỗi · thông báo · kiểm thử*): luôn dọn sau khi chạy, kể cả khi kiểm thử thất bại.
+            - Tick **Tự xóa dữ liệu Dynamics 365 do flow tạo ra** (tab *Kiểm thử*): luôn dọn sau khi chạy, kể cả khi kiểm thử thất bại.
             - Hoặc đặt bước **Xóa dữ liệu test đã tạo** ở cuối flow. Bản tạo sau được xóa trước.
             > Đặt tên dữ liệu test có dấu hiệu riêng (vd tiền tố `KH test`) để dễ nhận ra và dọn tay nếu cần.
             ! Tài khoản test cần quyền xóa trên các bảng đó, nếu không bước dọn dẹp sẽ báo "Không xóa được".
+            """),
+
+        new("data-driven", "Kiểm thử Dynamics 365", "Kiểm thử theo dữ liệu (Excel / CSV)",
+            "Một kịch bản chạy với nhiều bộ dữ liệu; mỗi dòng của file là một test case riêng trong báo cáo.",
+            """
+            ## Cách dùng
+            1. Tạo file Excel (.xlsx) hoặc CSV, dòng đầu là tiêu đề cột, vd `Ten`, `DienThoai`, `KetQuaMongDoi`.
+            2. Mở kịch bản → tab *Kiểm thử* → ô **Dữ liệu kiểm thử** chọn file (và sheet nếu là Excel).
+            3. Trong các bước dùng `{{row.Ten}}`, `{{row.DienThoai}}`… (giống vòng lặp Excel). Có thêm `{{row.rowNumber}}`, `{{data.index}}`, `{{data.count}}`.
+            ## Khi chạy
+            - Mỗi dòng chạy kịch bản một lần, là **một test case riêng** trong báo cáo và junit.xml, tên kèm dòng, vd *Tạo khách [dòng 3: KH002]*.
+            - Một dòng không đạt không làm dừng các dòng khác.
+            - **▶ Chạy thử flow** trong trình soạn chạy với **dòng đầu tiên** (giữ tô sáng bước, điểm dừng).
+            > Đường dẫn file tương đối được tính từ thư mục kịch bản khi chạy `--test-dir`, nên để file dữ liệu cạnh kịch bản trong git.
             """),
 
         new("test-run", "Kiểm thử Dynamics 365", "Chạy kiểm thử & đọc báo cáo",
@@ -255,6 +330,8 @@ internal static class HelpContent
             - Thẻ số liệu: tổng kịch bản, đạt / không đạt / chưa chạy ở lần chạy cuối.
             - Danh sách kịch bản: tick để chọn nhiều, nhấp đúp để sửa. Cột *Chi tiết* hiện lý do không đạt gần nhất.
             - **▶ Chạy đã chọn**, **▶ Chạy tất cả**, **✖ Chạy lại các kịch bản lỗi**: chạy lần lượt rồi mở một báo cáo chung.
+            - Cột **Ổn định (10 lần)**: số lần đạt trong 10 lần chạy gần nhất — kịch bản lúc đạt lúc không (chập chờn) hiện màu vàng.
+            - Thanh lọc: chọn **môi trường** chạy, lọc theo **tag**, xuất / nhập **thư mục kịch bản (git)**.
             - Số kịch bản đang không đạt hiện thành huy hiệu đỏ ở mục **Kiểm thử** bên trái.
             ## Báo cáo
             Mỗi lần chạy tạo một thư mục trong `test-reports\` gồm:
@@ -265,6 +342,38 @@ internal static class HelpContent
             """,
             new HelpAction("Mở trang Kiểm thử", CmdOpenTests), new HelpAction("Thư mục báo cáo", CmdReports)),
 
+        new("environments", "Kiểm thử Dynamics 365", "Môi trường, tag & chạy lại",
+            "Chạy cùng kịch bản trên Dev / Test / UAT; chọn bộ chạy theo tag; chạy lại kịch bản chập chờn.",
+            """
+            ## Môi trường
+            Mỗi **môi trường** (Dev, Test, UAT…) là một bộ biến, vd `d365Url`, `taiKhoanTest`. Khi chạy ở môi trường nào, biến của môi trường đó **ghi đè** biến cùng tên của kịch bản.
+            1. Trang **Kiểm thử** → **Môi trường: Quản lý…** → thêm môi trường và biến.
+            2. Chọn môi trường trong ô **Môi trường** trên thanh lọc. Mọi lần chạy kịch bản (kể cả theo lịch) dùng môi trường này.
+            3. Dòng lệnh: `--env UAT`. Tên môi trường hiện trong báo cáo và junit.xml; trong flow dùng `{{env.name}}`.
+            > Để mật khẩu trong 🔑 Bí mật và ghi `{{secret:Tên}}` trong biến môi trường.
+            ## Tag
+            Kịch bản có ô **Tag** (tab *Kiểm thử*), vd `smoke, regression`. Lọc theo tag trên trang Kiểm thử; dòng lệnh `--tag smoke` chỉ chạy kịch bản có tag đó. Ô **Mã test case** (vd Id trong Azure DevOps Test Plans) được ghi vào báo cáo và junit.xml.
+            ## Chạy lại kịch bản không đạt
+            Dòng lệnh `--retry 1`: kịch bản không đạt được chạy lại tối đa 1 lần. Đạt ở lần chạy lại thì báo cáo ghi **"chạy lại 1 lần"** kèm lỗi của lần đầu — dấu hiệu kịch bản chập chờn (chờ chưa đủ, dữ liệu dùng chung…) cần sửa.
+            """,
+            new HelpAction("Mở trang Kiểm thử", CmdOpenTests)),
+
+        new("test-folder", "Kiểm thử Dynamics 365", "Lưu kịch bản trong git",
+            "Xuất kịch bản thành file trong repo để review, làm việc nhóm và chạy CI thẳng từ repo.",
+            """
+            Kịch bản bình thường nằm trong `jobs.json` trên từng máy. Để cả nhóm cùng làm, lưu chúng thành file trong một thư mục của repo git:
+            1. Trang **Kiểm thử** → **🗂 Thư mục kịch bản (git) → Xuất kịch bản ra thư mục…** (kịch bản đã tick, hoặc mọi kịch bản đang hiện).
+            2. Mỗi công việc thành một file `Nhóm\Tên.json`, kèm các **công việc dùng chung** mà kịch bản gọi tới (vd *Mở app D365*) và `environments.json`.
+            3. Commit thư mục lên git, review thay đổi như mã nguồn. Đổi tên / nhóm thì file cũ được xóa, file mới được ghi.
+            4. Máy khác: **Nhập / cập nhật từ thư mục…** sau khi `git pull` — công việc cùng Id được thay, công việc mới được thêm.
+            ## Chạy CI thẳng từ repo
+            ```
+            ScheduleApp.exe --test * --test-dir "C:\agent\_work\1\s\tests\d365" --env UAT --report "$(Build.ArtifactStagingDirectory)"
+            ```
+            Không cần nhập kịch bản vào máy CI trước. Mỗi file giữ Id nên bước *Chạy công việc khác* vẫn trỏ đúng.
+            ! Bí mật (`{{secret:…}}`) không nằm trong file. Trên máy CI, thêm các bí mật cùng tên trong 🔑 Bí mật của tài khoản Windows chạy agent.
+            """),
+
         new("ci", "Kiểm thử Dynamics 365", "Chạy từ dòng lệnh / CI",
             "Chạy bộ kiểm thử không mở giao diện, lấy mã thoát và junit.xml cho pipeline.",
             """
@@ -272,8 +381,13 @@ internal static class HelpContent
             ScheduleApp.exe --test "Kiểm thử CRM" --report "D:\TestResults"
             ```
             - Tham số `--test`: tên nhóm, tên công việc, hoặc `*` (mọi kịch bản).
-            - Mã thoát: `0` = mọi kịch bản đạt, `1` = có kịch bản không đạt, `2` = không tìm thấy kịch bản.
+            - Mã thoát: `0` = mọi kịch bản đạt, `1` = có kịch bản không đạt, `2` = không tìm thấy kịch bản / tham số sai.
             - Chạy độc lập, không cần mở giao diện, chạy được song song với ScheduleApp đang mở ở khay.
+            ## Tham số thêm
+            - `--tag smoke` chỉ chạy kịch bản có tag · `--env UAT` chạy ở môi trường · `--test-dir "thư mục"` đọc kịch bản từ thư mục trong repo.
+            - `--retry 1` chạy lại kịch bản không đạt · `--headless` mở trình duyệt ẩn (máy CI không cần hiện cửa sổ).
+            - `--shard 1/3` chạy phần 1 trong 3 phần — 3 máy (agent) chạy song song `1/3`, `2/3`, `3/3`, mỗi máy một báo cáo.
+            - `--list` chỉ liệt kê các kịch bản được chọn rồi thoát (kiểm tra bộ lọc trước khi chạy).
             ## Trong PowerShell / Azure DevOps
             ScheduleApp là ứng dụng cửa sổ nên PowerShell không tự chờ. Dùng `Start-Process -Wait`:
             ```
@@ -291,6 +405,10 @@ internal static class HelpContent
             Chưa có trình duyệt điều khiển. Thêm bước **Trình duyệt → Mở trình duyệt ở chế độ điều khiển** (hoặc *Chạy công việc khác* gọi công việc mở app) ở đầu flow.
             ## "Trình duyệt không mở cổng điều khiển"
             Edge/Chrome đang chạy với cùng hồ sơ. Đóng hết cửa sổ trình duyệt đó rồi chạy lại.
+            ## "Phiên đăng nhập Dynamics 365 đã hết"
+            Trình duyệt bị chuyển về trang đăng nhập Microsoft (phiên hết hạn, chính sách bảo mật đòi đăng nhập lại). Thêm bước **Đăng nhập Microsoft** sau bước mở trình duyệt, hoặc đăng nhập tay lại trong hồ sơ trình duyệt đó.
+            ## Bước chạy nhầm tab (tab chào của tiện ích…)
+            Tiện ích trình duyệt có thể tự mở thêm tab. Bước D365 tự ưu tiên tab Dynamics 365; với bước *Trình duyệt* hãy điền ô **Tab** (một phần URL), vd `dynamics.com`.
             ## "Trang hiện tại không phải form Dynamics 365"
             Tab đang ở trang đăng nhập, danh sách hoặc trang khác. Thêm bước **Mở form bản ghi** hoặc **Chờ form tải xong** trước bước này. Nếu mở nhiều tab, điền ô **Tab** (một phần URL/tiêu đề).
             ## "Form không có field …"

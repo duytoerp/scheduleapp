@@ -62,7 +62,7 @@ internal sealed class EnvironmentsForm : BaseForm
         var hint = new Label
         {
             Text = "Biến của môi trường ghi đè biến cùng tên của kịch bản (tab Biến), vd d365Url, taiKhoanTest. Chọn môi trường trên trang " +
-                   "Kiểm thử, hoặc khi chạy dòng lệnh: --env \"Tên\". Mật khẩu nên để trong 🔑 Bí mật rồi ghi {{secret:Tên}}. " +
+                   "Kiểm thử, hoặc khi chạy dòng lệnh: --env \"Tên\". Mật khẩu nên để trong mục Bí mật rồi ghi {{secret:Tên}}. " +
                    "Biến {{env.name}} = tên môi trường đang chạy.",
             Dock = DockStyle.Bottom,
             AutoSize = true,

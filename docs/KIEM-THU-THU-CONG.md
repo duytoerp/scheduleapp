@@ -52,12 +52,24 @@ $env:SCHEDULEAPP_DATA_DIR = "$env:TEMP\ScheduleAppManual"; .\publish\ScheduleApp
 
 ## 7b. Kiểm thử Dynamics 365 (cần môi trường D365 test)
 
-- [ ] Nhập 4 mẫu "Kiểm thử Dynamics 365", sửa `d365Url` của C1 → chạy C1, đăng nhập tay lần đầu trong cửa sổ Edge → chạy lại C1 thì không phải đăng nhập.
+- [ ] **Trước tiên chạy bộ tự động với D365 thật**: đặt `SCHEDULEAPP_D365_URL` (+ hồ sơ đã đăng nhập hoặc tài khoản test) rồi `dotnet test --filter FullyQualifiedName~D365RealTests` (xem README *Phát triển & kiểm thử*) → ĐẠT; đọc output: danh sách nút, subgrid, vai trò đọc được từ form thật.
+- [ ] Nhập 7 mẫu "Kiểm thử Dynamics 365", sửa `d365Url` của C1 → chạy C1, đăng nhập tay lần đầu trong cửa sổ Edge → chạy lại C1 thì không phải đăng nhập.
 - [ ] Chuột phải C2 → *Chạy kiểm thử & xem báo cáo* → báo cáo ĐẠT, có 4 kiểm tra; bản ghi "Test KH …" đã bị xóa khỏi D365 (dọn dữ liệu).
 - [ ] Sửa Assert "Tên đã lưu đúng" của C2 thành giá trị sai → báo cáo KHÔNG ĐẠT, dòng kiểm tra có giá trị thực tế và ảnh chụp trang D365; bản ghi test vẫn được xóa.
 - [ ] C3 (lưu thiếu tên) ĐẠT với form tiếng Việt và tiếng Anh (nút lưu tìm theo command id).
 - [ ] Nhập lookup theo tên trùng nhau (2 bản ghi cùng tên) → bước lỗi gợi ý nhập Id.
 - [ ] `Start-Process ScheduleApp.exe -ArgumentList '--test','"Mẫu kiểm thử Dynamics 365"' -Wait -PassThru` khi ScheduleApp đang mở ở khay → chạy được, `ExitCode` 0/1 đúng, có `junit.xml`; nạp `junit.xml` vào Azure DevOps *Publish Test Results* hiển thị đúng.
+- [ ] C5 (subgrid) ĐẠT: liên hệ mới có sẵn công ty, subgrid *Contacts* đếm 1 dòng; nếu form account của bạn đặt tên subgrid khác, bấm *Chọn subgrid từ form…* để lấy đúng tên.
+- [ ] C6 (phân quyền): đặt biến `vaiTro` bằng vai trò của tài khoản test → ĐẠT; đổi thành vai trò không có → KHÔNG ĐẠT ở bước kiểm tra vai trò và flow dừng (Khi bước lỗi = Dừng flow).
+- [ ] C7 (view) ĐẠT; mở một view cá nhân bằng tên trong bước *Danh sách (view): đọc các bản ghi* → `{{view.count}}` đúng như số dòng thấy trên lưới với cùng ô tìm.
+- [ ] Bước *Mở form bản ghi* với ô *Form chính* = tên một form khác của account → form đó mở ra; kiểm tra *D365: form đang mở là* ĐẠT.
+- [ ] *Tạo nhanh* contact với `lastname=…` và `parentcustomerid=account:<Id>` → bản ghi được tạo, `{{d365.lastId}}` có Id, được dọn khi kết thúc.
+- [ ] Kiểm tra *D365: nút trên thanh lệnh* với một nút nằm trong menu "…" (vd *Share* / *Chia sẻ*) → `visible` ĐẠT, menu tự đóng lại sau khi kiểm tra.
+- [ ] Đăng nhập tự động: hồ sơ trình duyệt mới + bật bước *Đăng nhập Microsoft* của C1 với tài khoản test (mật khẩu, khóa TOTP trong Bí mật) → tự vào được app; sai mật khẩu → bước lỗi kèm câu báo của trang Microsoft. Đăng xuất D365 trong cửa sổ đó rồi chạy C2 khi tắt bước đăng nhập → bước D365 báo "Phiên đăng nhập Dynamics 365 đã hết".
+- [ ] Môi trường: tạo *UAT* với `d365Url` khác → chọn trên trang Kiểm thử → chạy C2 → báo cáo ghi "môi trường UAT", mở đúng URL của UAT. `--env UAT` trên dòng lệnh cho kết quả giống.
+- [ ] Thư mục kịch bản: *Xuất kịch bản ra thư mục…* vào một repo git → `git status` thấy file `Mẫu kiểm thử Dynamics 365\C2 · ….json`, `environments.json`; đổi tên C2 rồi xuất lại → file cũ bị xóa. Máy khác *Nhập / cập nhật từ thư mục…* → có đủ kịch bản; `ScheduleApp.exe --test * --test-dir <thư mục> --list` liệt kê đủ.
+- [ ] Theo dữ liệu: C2 + file CSV 3 dòng (cột `Ten`), đổi tên khách thành `{{row.Ten}}` → báo cáo có 3 test case "C2 … [dòng N: …]".
+- [ ] `--headless` trên máy CI (agent chạy dưới tài khoản Windows đã đăng nhập D365 trong hồ sơ) → không hiện cửa sổ, báo cáo vẫn có ảnh chụp lúc lỗi.
 
 ## 8. Lịch, ngủ máy, cập nhật
 

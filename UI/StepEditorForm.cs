@@ -314,8 +314,21 @@ internal sealed class StepEditorForm : BaseForm
 
     protected override string HelpTopicId => CurrentType switch
     {
-        StepType.Dynamics => "d365-steps",
-        StepType.Assert => "assert",
+        StepType.Dynamics => CurrentD365 switch
+        {
+            var d when IsSubgrid(d) => "d365-grids",
+            D365Action.ViewQuery or D365Action.ViewOpenRecord => "d365-grids",
+            D365Action.QuickCreate => "d365-forms",
+            D365Action.Login or D365Action.GetUser => "d365-login",
+            _ => "d365-steps"
+        },
+        StepType.Assert => CurrentCondition switch
+        {
+            ConditionKind.D365SubgridCount or ConditionKind.D365SubgridRow => "d365-grids",
+            ConditionKind.D365Command or ConditionKind.D365CurrentForm => "d365-forms",
+            ConditionKind.D365UserRole => "d365-login",
+            _ => "assert"
+        },
         StepType.SetVariable => "variables",
         _ => "flow"
     };
@@ -585,7 +598,7 @@ internal sealed class StepEditorForm : BaseForm
                         break;
                     case D365Action.Login:
                         if (s.Text.Trim().Length == 0) return ("Hãy nhập tài khoản đăng nhập (email của tài khoản test).", _txtText);
-                        if (s.Arguments.Trim().Length == 0) return ("Hãy nhập mật khẩu — nên lưu trong 🔑 Bí mật rồi dùng {{secret:Tên}}.", _cboArgs);
+                        if (s.Arguments.Trim().Length == 0) return ("Hãy nhập mật khẩu — nên lưu trong mục Bí mật rồi dùng {{secret:Tên}}.", _cboArgs);
                         if (s.RowRef.Length > 0 && !s.RowRef.Contains("{{"))
                         {
                             try { Automation.Totp.DecodeBase32(s.RowRef); }
@@ -1249,7 +1262,7 @@ internal sealed class StepEditorForm : BaseForm
             "Vd POST accounts với body {\"name\":\"Test {{now:HHmmss}}\"}.",
         D365Action.Cleanup =>
             "Xóa mọi bản ghi trong {{d365.created}} (tạo bằng bước Lưu / Web API POST), bản tạo sau xóa trước. Hoặc bật \"Tự xóa dữ liệu test\" " +
-            "ở tab Lỗi · thông báo · kiểm thử của công việc để luôn dọn kể cả khi test thất bại.",
+            "ở tab Kiểm thử của công việc để luôn dọn kể cả khi test thất bại.",
         D365Action.RunScript => "JavaScript chạy trong trang với formContext và Xrm có sẵn, dùng await được; giá trị return lưu vào biến. " +
                                 "Vd: return formContext.getAttribute('revenue').getValue() * 2",
         D365Action.SubgridOpenRow => "Mở bản ghi của một dòng trong subgrid (chờ subgrid tải xong). Dòng: số thứ tự (1 = dòng đầu) hoặc chữ có trong dòng " +
@@ -1265,7 +1278,7 @@ internal sealed class StepEditorForm : BaseForm
                                   "bấm \"Lưu và đóng\" rồi lấy Id bản ghi mới ({{d365.lastId}}, được ghi vào {{d365.created}} để dọn).",
         D365Action.Login => "Đăng nhập trang Microsoft bằng tài khoản test: email → mật khẩu → mã xác thực TOTP (nếu tài khoản có MFA bằng ứng dụng " +
                             "xác thực) → duy trì đăng nhập. Đặt sau bước \"Mở trình duyệt\". Đã đăng nhập sẵn thì bỏ qua. Lưu mật khẩu và khóa TOTP trong " +
-                            "🔑 Bí mật. Không tự duyệt được thông báo đẩy (Authenticator push).",
+                            "mục Bí mật. Không tự duyệt được thông báo đẩy (Authenticator push).",
         D365Action.GetUser => "Đọc người dùng đang đăng nhập: {{d365.user}}, {{d365.userId}}, {{d365.roles}} (mỗi dòng một vai trò).",
         _ => ""
     };

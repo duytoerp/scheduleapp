@@ -1,5 +1,7 @@
 using ScheduleApp.Automation;
 using ScheduleApp.Models;
+using ScheduleApp.Services;
+using ScheduleApp.Services.Testing;
 
 namespace ScheduleApp.Tests;
 
@@ -164,5 +166,41 @@ public sealed class D365AdvancedLiveTests
         await d.Do(D365Action.OpenForm, "account");
 
         await Assert.ThrowsAsync<FormatException>(() => d.Do(D365Action.Login, "test@contoso.vn", "x", rowRef: "1234!"));
+    }
+    /// <summary>Kịch bản mẫu C6 (vai trò, nút thanh lệnh) chạy trọn qua công việc dùng chung C1 trên Edge ẩn, URL lấy từ biến môi trường.</summary>
+    [LiveFact]
+    public async Task SecuritySampleRunsHeadlessThroughSharedOpener()
+    {
+        using var server = new FakeD365Server();
+        SettingsStore.Current.BrowserPort = 9340;
+        var resource = typeof(Job).Assembly.GetManifestResourceNames().Single(n => n.EndsWith("mau-kiem-thu-d365.json", StringComparison.Ordinal));
+        using var stream = typeof(Job).Assembly.GetManifestResourceStream(resource)!;
+        var jobs = JobStore.ImportJson(new StreamReader(stream).ReadToEnd());
+        var c6 = jobs.Single(j => j.Name.StartsWith("C6", StringComparison.Ordinal));
+        var runner = new FlowRunner(new FakeUi(), id => jobs.FirstOrDefault(j => j.Id == id));
+        BrowserClient.ForceHeadless = true;
+        try
+        {
+            var suite = await TestSuite.RunAsync(runner, [c6], "C6", TestSupport.NewDir(), new SuiteOptions
+            {
+                Environment = "Giả lập",
+                Variables = new() { ["d365Url"] = server.BaseUrl + "main.aspx?appid=test" }
+            });
+            var result = Assert.Single(suite.Cases);
+            Assert.True(result.Ok, result.FailureSummary);
+            Assert.Equal(3, result.AssertsPassed);
+            Assert.Contains(result.Steps, s => s.Depth == 1 && s.Description.Contains("chế độ điều khiển")); // bước của C1
+        }
+        finally
+        {
+            BrowserClient.ForceHeadless = false;
+            foreach (var d in BrowserProfiles.AllDirs().Where(BrowserProfiles.InUse).ToList())
+            {
+                try { await BrowserClient.CloseBrowserAsync(d, CancellationToken.None); }
+                catch (TimeoutException) { }
+            }
+            try { BrowserClient.LastLaunched?.Kill(entireProcessTree: true); }
+            catch (InvalidOperationException) { /* đã thoát */ }
+        }
     }
 }
