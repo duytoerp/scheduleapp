@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using ScheduleApp.Automation;
 using ScheduleApp.Models;
 using ScheduleApp.Native;
+using ScheduleApp.Services.Data;
 using ScheduleApp.Services.Engine;
 using ScheduleApp.Vision;
 
@@ -146,9 +147,110 @@ public static class StepExecutor
                 }, ct);
                 break;
 
+            case StepType.WriteData:
+                WriteData(s, ctx);
+                break;
+
+            case StepType.HttpRequest:
+                await HttpRequestAsync(s, ctx);
+                break;
+
+            case StepType.AskAi:
+                await AskAiAsync(s, ctx);
+                break;
+
+            case StepType.Notify:
+            {
+                string? shot = null;
+                if (s.Force) shot = ErrorScreenshots.CaptureAlways(job.Name, "thong-bao");
+                var title = string.IsNullOrWhiteSpace(s.Target) ? $"🔔 {job.Name}" : s.Target;
+                if (!NotificationService.AnyChannelEnabled)
+                    throw new InvalidOperationException("Chưa bật kênh thông báo nào (⚙ Cài đặt → Thông báo).");
+                var errors = await NotificationService.SendAsync(title, s.Text, shot);
+                if (errors.Count > 0) throw new InvalidOperationException("Gửi thông báo lỗi: " + string.Join("; ", errors));
+                Log.Info("      Đã gửi thông báo.");
+                break;
+            }
+
             default:
                 throw new InvalidOperationException($"Bước \"{ActionStep.TypeNames[s.Type]}\" không chạy được ở đây.");
         }
+    }
+
+    // ───────────────────────────── Ghi Excel / CSV ─────────────────────────────
+
+    private static void WriteData(ActionStep s, FlowContext ctx)
+    {
+        var path = Environment.ExpandEnvironmentVariables(s.Target.Trim().Trim('"'));
+        if (path.Length == 0) throw new InvalidOperationException("Chưa nhập file Excel / CSV.");
+        // Text chưa thay biến (xem FlowContext.ExpandStep) — thay riêng từng ô để giá trị có xuống dòng vẫn đúng.
+        var values = TabularWriter.ParseAssignments(s.Text, ctx.Expand);
+        int row = TabularWriter.Write(path, s.Arguments, s.DataAction, s.RowRef, values);
+        ctx.Vars["lastRow"] = row.ToString(CultureInfo.InvariantCulture);
+        Log.Info($"      Đã ghi dòng {row} của \"{Path.GetFileName(path)}\": {Truncate(string.Join(", ", values.Select(v => $"{v.Key}={Log.Redact(v.Value)}")))}");
+    }
+
+    // ───────────────────────────── Gọi API ─────────────────────────────
+
+    private static async Task HttpRequestAsync(ActionStep s, FlowContext ctx)
+    {
+        var conn = ApiClient.FindConnection(s.Connection);
+        var method = string.IsNullOrWhiteSpace(s.Method) ? "GET" : s.Method;
+        var r = await ApiClient.SendAsync(method, s.Target, conn, s.Headers, s.Text, s.DelayMs, ctx.Ct);
+        ctx.Vars["http.status"] = r.Status.ToString(CultureInfo.InvariantCulture);
+        ctx.Vars["http.body"] = r.Body;
+        Log.Info($"      {method.ToUpperInvariant()} {r.Url} → {r.Status}");
+        if (!r.IsSuccess && !s.Force)
+            throw new InvalidOperationException($"API trả về {r.Status}: {ApiClient.Short(ExtractApiError(r.Body))}");
+
+        if (string.IsNullOrWhiteSpace(s.Variable)) return;
+        var value = string.IsNullOrWhiteSpace(s.Arguments) || !r.IsSuccess ? r.Body : JsonPath.Select(r.Body, s.Arguments);
+        ctx.SetVar(s.Variable, value);
+        Log.Info($"      {{{{{s.Variable.Trim()}}}}} = \"{Truncate(Log.Redact(value)).Replace("\r", "").Replace("\n", " ⏎ ")}\"");
+    }
+
+    /// <summary>Thông điệp lỗi trong JSON (Dynamics 365 / OData: error.message) hoặc nguyên nội dung.</summary>
+    private static string ExtractApiError(string body)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("error", out var e))
+            {
+                if (e.ValueKind == System.Text.Json.JsonValueKind.String) return e.GetString() ?? body;
+                if (e.TryGetProperty("message", out var m)) return m.GetString() ?? body;
+            }
+            if (root.TryGetProperty("message", out var msg)) return msg.GetString() ?? body;
+        }
+        catch (System.Text.Json.JsonException) { }
+        return body;
+    }
+
+    // ───────────────────────────── Hỏi AI ─────────────────────────────
+
+    private static async Task AskAiAsync(ActionStep s, FlowContext ctx)
+    {
+        byte[]? image = null;
+        if (s.Force)
+        {
+            var window = IntPtr.Zero;
+            if (!string.IsNullOrWhiteSpace(s.Target))
+            {
+                window = await WindowHelper.WaitForAsync(s.Target, FindWindowTimeoutMs, ctx.Ct);
+                WindowHelper.Focus(window);
+                await Task.Delay(300, ctx.Ct);
+            }
+            using var shot = ScreenCapture.Capture(ScreenLocator.AreaOf(window));
+            using var ms = new MemoryStream();
+            shot.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+            image = ms.ToArray();
+        }
+        Log.Info("      Đang hỏi AI…");
+        var answer = await AiClient.AskAsync(s.Text, image, s.DelayMs, ctx.Ct);
+        ctx.Vars["ai.answer"] = answer;
+        if (!string.IsNullOrWhiteSpace(s.Variable)) ctx.SetVar(s.Variable, answer);
+        Log.Info($"      AI trả lời: \"{Truncate(answer).Replace("\r", "").Replace("\n", " ⏎ ")}\"");
     }
 
     // ───────────────────────────── Gán biến ─────────────────────────────
@@ -209,13 +311,29 @@ public static class StepExecutor
                 value = await reader.ReadToEndAsync(ct);
                 break;
             }
+            case VarSource.ListAdd:
+            {
+                // Danh sách = mỗi phần tử một dòng; dùng với "Lặp: mỗi dòng văn bản" và {{ds:count}}, {{ds:join(, )}}…
+                var current = ctx.Vars.GetValueOrDefault(s.Variable.Trim()) ?? "";
+                value = current.Length == 0 ? s.Text : current.TrimEnd('\r', '\n') + "\n" + s.Text;
+                break;
+            }
+            case VarSource.Split:
+            {
+                var sep = s.Arguments.Length == 0 ? "," : s.Arguments.Replace("\\n", "\n").Replace("\\t", "\t");
+                value = string.Join("\n", s.Text.Split(sep, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries));
+                break;
+            }
+            case VarSource.JsonPath:
+                value = JsonPath.Select(s.Text, s.Arguments);
+                break;
             default:
                 value = "";
                 break;
         }
 
         // Trích một phần bằng regex (nhóm 1 nếu có, nếu không lấy cả đoạn khớp).
-        bool extract = s.VarSource is not (VarSource.Value or VarSource.Calc or VarSource.AskUser) && !string.IsNullOrWhiteSpace(s.Arguments);
+        bool extract = s.UsesRegex && !string.IsNullOrWhiteSpace(s.Arguments);
         if (extract)
         {
             var m = Regex.Match(value, s.Arguments, RegexOptions.IgnoreCase | RegexOptions.Multiline, TimeSpan.FromSeconds(2));

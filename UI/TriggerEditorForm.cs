@@ -81,18 +81,26 @@ internal sealed class TriggerEditorForm : BaseForm
     private void UpdateUi()
     {
         var t = CurrentType;
-        bool value = t is TriggerType.Hotkey or TriggerType.FileCreated or TriggerType.ProcessStarted or TriggerType.ProcessExited;
+        bool value = t is TriggerType.Hotkey or TriggerType.FileCreated or TriggerType.ProcessStarted or TriggerType.ProcessExited or TriggerType.EmailReceived;
         _lblValue.Visible = _cboValue.Visible = value;
-        _btnValue.Visible = t is TriggerType.FileCreated or TriggerType.ProcessStarted or TriggerType.ProcessExited;
-        _lblValue2.Visible = _txtValue2.Visible = t == TriggerType.FileCreated;
-        _lblMinutes.Visible = _numMinutes.Visible = t == TriggerType.Idle;
+        _btnValue.Visible = t is TriggerType.FileCreated or TriggerType.ProcessStarted or TriggerType.ProcessExited or TriggerType.EmailReceived;
+        _lblValue2.Visible = _txtValue2.Visible = t is TriggerType.FileCreated or TriggerType.EmailReceived;
+        _lblMinutes.Visible = _numMinutes.Visible = t is TriggerType.Idle or TriggerType.EmailReceived;
         _lblValue.Text = t switch
         {
             TriggerType.Hotkey => "Phím tắt (bấm tổ hợp phím):",
             TriggerType.FileCreated => "Thư mục theo dõi:",
+            TriggerType.EmailReceived => "Tiêu đề chứa (trống = mọi thư):",
             _ => "Tên tiến trình:"
         };
-        _btnValue.Text = t == TriggerType.FileCreated ? "Chọn…" : "↻ Danh sách";
+        _lblValue2.Text = t == TriggerType.EmailReceived ? "Người gửi chứa (tùy chọn):" : "Chỉ file (vd *.pdf;*.xlsx):";
+        _lblMinutes.Text = t == TriggerType.EmailReceived ? "Kiểm tra mỗi (phút):" : "Số phút rảnh:";
+        _btnValue.Text = t switch
+        {
+            TriggerType.FileCreated => "Chọn…",
+            TriggerType.EmailReceived => "Thử hộp thư",
+            _ => "↻ Danh sách"
+        };
         _cboValue.Items.Clear();
         _lblHint.Text = t switch
         {
@@ -104,8 +112,13 @@ internal sealed class TriggerEditorForm : BaseForm
             TriggerType.Idle => "Chạy khi không có thao tác chuột/bàn phím trong N phút (vd tự khóa, dọn dẹp, đồng bộ).",
             TriggerType.SessionUnlock => "Chạy mỗi khi bạn mở khóa màn hình Windows (vd mở lại các ứng dụng làm việc).",
             TriggerType.AppStartup => "Chạy khi ScheduleApp khởi động — bật \"Khởi động cùng Windows\" để chạy lúc đăng nhập.",
+            TriggerType.EmailReceived =>
+                "Chạy một lần cho mỗi email CHƯA ĐỌC khớp bộ lọc (không phân biệt hoa thường/dấu), rồi đánh dấu đã đọc. Hộp thư (Outlook trên máy hoặc IMAP) " +
+                "cấu hình trong ⚙ Cài đặt → Tích hợp. Trong flow dùng {{email.subject}}, {{email.from}}, {{email.body}}, {{email.date}}, " +
+                "{{email.attachments}} (đường dẫn các file đính kèm, mỗi dòng một file — lặp bằng \"Mỗi dòng văn bản\"), {{email.attachmentDir}}.",
             _ => ""
         };
+        if (t == TriggerType.EmailReceived && _numMinutes.Value == 10 && _trigger.Type != TriggerType.EmailReceived) _numMinutes.Value = 2;
     }
 
     private void OnHotkeyKeyDown(object? sender, KeyEventArgs e)
@@ -129,8 +142,29 @@ internal sealed class TriggerEditorForm : BaseForm
         _cboValue.Text = string.Join("+", parts);
     }
 
-    private void OnValueButton()
+    private async void OnValueButton()
     {
+        if (CurrentType == TriggerType.EmailReceived)
+        {
+            _btnValue.Enabled = false;
+            UseWaitCursor = true;
+            try
+            {
+                var msg = await MailWatcher.TestAsync(SettingsStore.Current.Inbox, CancellationToken.None);
+                MessageBox.Show(this, msg, Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "Không đọc được hộp thư:\n" + ex.Message + "\n\nKiểm tra cấu hình trong ⚙ Cài đặt → Tích hợp.", Text,
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                UseWaitCursor = false;
+                _btnValue.Enabled = true;
+            }
+            return;
+        }
         if (CurrentType == TriggerType.FileCreated)
         {
             using var dlg = new FolderBrowserDialog { Description = "Chọn thư mục theo dõi", UseDescriptionForTitle = true, SelectedPath = _cboValue.Text };
@@ -149,7 +183,7 @@ internal sealed class TriggerEditorForm : BaseForm
     {
         var t = CurrentType;
         var value = _cboValue.Text.Trim();
-        if (_cboValue.Visible && value.Length == 0)
+        if (_cboValue.Visible && value.Length == 0 && t != TriggerType.EmailReceived)
         {
             MessageBox.Show(this, $"Hãy nhập \"{_lblValue.Text.TrimEnd(':')}\".", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;

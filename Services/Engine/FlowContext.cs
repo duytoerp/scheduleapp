@@ -83,7 +83,10 @@ public sealed class FlowContext
         var copy = s.ShallowCopy();
         copy.Target = Expand(s.Target);
         copy.Arguments = Expand(s.Arguments);
-        copy.Text = Expand(s.Text);
+        // Ghi Excel: mỗi dòng "Cột=giá trị" được thay biến riêng lúc ghi (giá trị có thể chứa xuống dòng).
+        copy.Text = s.Type == StepType.WriteData ? s.Text : Expand(s.Text);
+        copy.RowRef = Expand(s.RowRef);
+        copy.Headers = Expand(s.Headers);
         return copy;
     }
 

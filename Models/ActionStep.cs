@@ -46,7 +46,14 @@ public enum StepType
 
     // Chuột mở rộng
     MouseScroll,
-    MouseDrag
+    MouseDrag,
+
+    // Dữ liệu & tích hợp
+    ContinueLoop,
+    WriteData,
+    HttpRequest,
+    AskAi,
+    Notify
 }
 
 public enum MouseButtonKind
@@ -118,7 +125,22 @@ public enum VarSource
     ScreenText,
     Element,
     AskUser,
-    File
+    File,
+    /// <summary>Thêm một dòng vào cuối biến danh sách (mỗi phần tử một dòng).</summary>
+    ListAdd,
+    /// <summary>Tách chuỗi thành danh sách theo dấu phân cách.</summary>
+    Split,
+    /// <summary>Trích giá trị từ chuỗi JSON theo đường dẫn (vd value[0].name).</summary>
+    JsonPath
+}
+
+/// <summary>Cách ghi của bước "Ghi Excel / CSV".</summary>
+public enum DataAction
+{
+    /// <summary>Thêm dòng mới vào cuối bảng.</summary>
+    AppendRow,
+    /// <summary>Sửa các ô của một dòng có sẵn (theo số dòng hoặc cột khóa).</summary>
+    UpdateRow
 }
 
 public enum BrowserAction
@@ -236,6 +258,22 @@ public sealed class ActionStep
     /// <summary>Điểm dừng khi chạy thử từ trình soạn.</summary>
     public bool Breakpoint { get; set; }
 
+    // ── Ghi dữ liệu, API ──
+
+    public DataAction DataAction { get; set; } = DataAction.AppendRow;
+
+    /// <summary>Ghi Excel/CSV — dòng cần sửa: số dòng trong Excel (vd {{row.rowNumber}}) hoặc "Cột=giá trị" để tìm theo cột khóa.</summary>
+    public string RowRef { get; set; } = "";
+
+    /// <summary>Gọi API: phương thức HTTP (GET, POST, PATCH…).</summary>
+    public string Method { get; set; } = "GET";
+
+    /// <summary>Gọi API: header thêm, mỗi dòng "Tên: giá trị".</summary>
+    public string Headers { get; set; } = "";
+
+    /// <summary>Gọi API: tên kết nối đã khai báo trong Cài đặt (URL gốc + xác thực); trống = gọi trực tiếp.</summary>
+    public string Connection { get; set; } = "";
+
     public static readonly Dictionary<StepType, string> TypeNames = new()
     {
         [StepType.LaunchApp] = "Mở ứng dụng / file / URL",
@@ -269,7 +307,12 @@ public sealed class ActionStep
         [StepType.WaitForElement] = "Chờ phần tử UI",
         [StepType.Browser] = "Trình duyệt (Chrome/Edge)",
         [StepType.MouseScroll] = "Cuộn chuột",
-        [StepType.MouseDrag] = "Kéo thả chuột"
+        [StepType.MouseDrag] = "Kéo thả chuột",
+        [StepType.ContinueLoop] = "Bỏ qua, sang lần lặp kế",
+        [StepType.WriteData] = "Ghi Excel / CSV",
+        [StepType.HttpRequest] = "Gọi API (HTTP / REST)",
+        [StepType.AskAi] = "Hỏi AI (Claude)",
+        [StepType.Notify] = "Gửi thông báo"
     };
 
     public static readonly Dictionary<ConditionKind, string> ConditionNames = new()
@@ -318,8 +361,19 @@ public sealed class ActionStep
         [VarSource.ScreenText] = "Chữ đọc được trên màn hình (OCR)",
         [VarSource.Element] = "Giá trị của phần tử UI",
         [VarSource.AskUser] = "Hỏi người dùng nhập",
-        [VarSource.File] = "Nội dung file văn bản"
+        [VarSource.File] = "Nội dung file văn bản",
+        [VarSource.ListAdd] = "Thêm vào cuối danh sách",
+        [VarSource.Split] = "Tách chuỗi thành danh sách",
+        [VarSource.JsonPath] = "Trích từ JSON (vd kết quả API)"
     };
+
+    public static readonly Dictionary<DataAction, string> DataActionNames = new()
+    {
+        [DataAction.AppendRow] = "Thêm dòng mới vào cuối",
+        [DataAction.UpdateRow] = "Sửa ô của một dòng có sẵn"
+    };
+
+    public static readonly string[] HttpMethods = ["GET", "POST", "PATCH", "PUT", "DELETE"];
 
     public static readonly Dictionary<BrowserAction, string> BrowserActionNames = new()
     {
@@ -354,12 +408,15 @@ public sealed class ActionStep
             StepType.ClickElement or StepType.SetElementText => 10_000,
             StepType.WaitForElement or StepType.Browser => 15_000,
             StepType.SetVariable => 30_000,
+            StepType.HttpRequest => 60_000,
+            StepType.AskAi => 120_000,
             StepType.If or StepType.Loop => 0,
             _ => 1_000
         },
         WaitForUser = type == StepType.Reminder,
         Count = type switch { StepType.Loop => 3, StepType.MouseScroll => -3, _ => 1 },
-        DelayAfterMs = IsControlType(type) || type is StepType.SetVariable or StepType.LogMessage ? 0 : 500
+        DelayAfterMs = IsControlType(type) || type is StepType.SetVariable or StepType.LogMessage or StepType.WriteData
+            or StepType.HttpRequest or StepType.AskAi or StepType.Notify ? 0 : 500
     };
 
     /// <summary>Bản sao nông (dùng khi thay biến trước lúc chạy — không sao chép lại dữ liệu hình mẫu).</summary>
@@ -370,7 +427,7 @@ public sealed class ActionStep
 
     /// <summary>Bước điều khiển luồng (không thao tác gì ngoài màn hình).</summary>
     public static bool IsControlType(StepType t) => t is StepType.If or StepType.Else or StepType.EndIf or StepType.Loop
-        or StepType.EndLoop or StepType.BreakLoop or StepType.Label or StepType.Goto or StepType.StopFlow;
+        or StepType.EndLoop or StepType.BreakLoop or StepType.ContinueLoop or StepType.Label or StepType.Goto or StepType.StopFlow;
 
     [JsonIgnore] public bool IsControl => IsControlType(Type);
 
@@ -384,7 +441,8 @@ public sealed class ActionStep
     [JsonIgnore]
     public bool UsesScreen => Type is StepType.ClickImage or StepType.WaitForImage or StepType.ClickText or StepType.WaitForText
         || (Type is StepType.If or StepType.Loop && Condition is ConditionKind.ImageOnScreen or ConditionKind.TextOnScreen)
-        || (Type == StepType.SetVariable && VarSource == VarSource.ScreenText);
+        || (Type == StepType.SetVariable && VarSource == VarSource.ScreenText)
+        || (Type is StepType.AskAi or StepType.Notify && Force);
 
     [JsonIgnore] public bool IsImageStep => Type is StepType.ClickImage or StepType.WaitForImage;
     [JsonIgnore] public bool IsTextStep => Type is StepType.ClickText or StepType.WaitForText;
@@ -420,8 +478,11 @@ public sealed class ActionStep
             VarSource.Element => $"phần tử [{Short(Text)}]" + SearchArea(),
             VarSource.AskUser => $"hỏi: \"{Short(Text)}\"",
             VarSource.File => $"file \"{Short(Target)}\"",
+            VarSource.ListAdd => $"thêm \"{Short(Text)}\" vào cuối",
+            VarSource.Split => $"tách \"{Short(Text)}\" theo \"{(Arguments.Length == 0 ? "," : Arguments)}\"",
+            VarSource.JsonPath => $"JSON {Short(Text)} → {Short(Arguments)}",
             _ => ""
-        } + (string.IsNullOrWhiteSpace(Arguments) || VarSource is VarSource.Value or VarSource.Calc or VarSource.AskUser ? "" : $"  (regex {Short(Arguments)})"),
+        } + (string.IsNullOrWhiteSpace(Arguments) || !UsesRegex ? "" : $"  (regex {Short(Arguments)})"),
         StepType.LogMessage => $"Ghi: {Short(Text)}",
         StepType.If => "Nếu " + DescribeCondition(),
         StepType.Else => "Ngược lại",
@@ -458,8 +519,20 @@ public sealed class ActionStep
         StepType.MouseScroll => $"Cuộn {(Count >= 0 ? "lên" : "xuống")} {Math.Abs(Count)} nấc" +
                                 (X != 0 || Y != 0 ? $" tại ({X}, {Y})" : "") + InWindow(),
         StepType.MouseDrag => $"Kéo từ ({X}, {Y}) tới ({X2}, {Y2})" + InWindow(),
+        StepType.ContinueLoop => "Bỏ qua phần còn lại, sang lần lặp kế tiếp",
+        StepType.WriteData => (DataAction == DataAction.AppendRow ? "Thêm dòng vào" : $"Sửa dòng [{Short(RowRef)}] của") +
+                              $" \"{Short(Target)}\"" + (string.IsNullOrWhiteSpace(Arguments) ? "" : $" [sheet {Arguments}]") +
+                              $": {Short(string.Join(", ", Text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)))}",
+        StepType.HttpRequest => $"{Method.ToUpperInvariant()} " + (string.IsNullOrWhiteSpace(Connection) ? "" : $"[{Connection}] ") + Short(Target) +
+                                (string.IsNullOrWhiteSpace(Arguments) ? "" : $" → {Short(Arguments)}") + IntoVar(),
+        StepType.AskAi => $"AI: \"{Short(Text)}\"" + (Force ? " + ảnh màn hình" + SearchArea() : "") + IntoVar(),
+        StepType.Notify => $"Gửi: {Short(Text)}" + (Force ? " + ảnh màn hình" : ""),
         _ => Type.ToString()
     };
+
+    /// <summary>Gán biến: ô "Tham số" là regex trích xuất (với các nguồn đọc dữ liệu thô).</summary>
+    [JsonIgnore]
+    public bool UsesRegex => VarSource is VarSource.Clipboard or VarSource.Command or VarSource.ScreenText or VarSource.Element or VarSource.File;
 
     [JsonIgnore] public string LoopVar => string.IsNullOrWhiteSpace(Variable) ? (LoopKind == LoopKind.Rows ? "row" : "item") : Variable.Trim();
 

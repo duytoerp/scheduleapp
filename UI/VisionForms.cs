@@ -226,10 +226,26 @@ internal sealed class RecorderToolbar : BaseForm
             Margin = new Padding(3, 6, 3, 0)
         };
 
+        var chkElements = new CheckBox
+        {
+            Text = "Ghi click thành \"Click phần tử UI\" khi nhận diện được (ổn định hơn tọa độ)",
+            AutoSize = true,
+            Checked = Services.SettingsStore.Current.RecordElements,
+            Margin = new Padding(3, 4, 3, 0)
+        };
+        _recorder.RecordElements = chkElements.Checked;
+        chkElements.CheckedChanged += (_, _) =>
+        {
+            _recorder.RecordElements = chkElements.Checked;
+            Services.SettingsStore.Current.RecordElements = chkElements.Checked;
+            Services.SettingsStore.Save();
+        };
+
         var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
         row.Controls.AddRange([_status, btnStop, btnCancel]);
         var layout = new TableLayoutPanel { AutoSize = true, ColumnCount = 1, Dock = DockStyle.Fill };
         layout.Controls.Add(row);
+        layout.Controls.Add(chkElements);
         layout.Controls.Add(hint);
         Controls.Add(layout);
         ResumeLayout(true);

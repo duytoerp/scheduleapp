@@ -155,6 +155,14 @@ public static class FlowEngine
                     continue;
                 }
 
+                case StepType.ContinueLoop:
+                {
+                    // Nhảy tới "Hết lặp" của vòng lặp trong cùng — nó sẽ sang lần lặp kế (hoặc kết thúc).
+                    if (loops.Count == 0) { pc++; continue; }
+                    pc = loops[^1].End;
+                    continue;
+                }
+
                 case StepType.Goto:
                 {
                     int target = fs.Labels[step.Target.Trim()];

@@ -44,6 +44,17 @@ internal sealed class MacroRecorder : IDisposable
     public int StepCount => _steps.Count;
     public bool IsTyping => _typed.Length > 0;
 
+    /// <summary>
+    /// Click vào nút / ô nhập / mục menu có tên hoặc AutomationId → ghi thành "Click phần tử UI" (không phụ thuộc tọa độ, độ phân giải).
+    /// Phần tử không nhận diện được vẫn ghi bằng tọa độ.
+    /// </summary>
+    public bool RecordElements { get; set; } = true;
+
+    /// <summary>Số click đã được ghi thành bước "Click phần tử UI".</summary>
+    public int ElementClicks => _steps.Count(s => s.Type == StepType.ClickElement);
+
+    private readonly List<Task> _conversions = [];
+
     public void Start()
     {
         var module = Win32.GetModuleHandle(null);
@@ -62,6 +73,8 @@ internal sealed class MacroRecorder : IDisposable
     public List<ActionStep> Stop()
     {
         Unhook();
+        // Chờ các lần nhận diện phần tử còn dở (chạy nền, không cần luồng UI).
+        try { Task.WaitAll([.. _conversions], 3000); } catch (AggregateException) { }
         FlushTyped();
         if (_steps.Count > 0) _steps[^1].DelayAfterMs = 500;
         return [.. _steps];
@@ -104,7 +117,7 @@ internal sealed class MacroRecorder : IDisposable
         return Win32.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
     }
 
-    private (Point Point, MouseButtonKind Button, IntPtr Root, long Tick)? _pressed;
+    private (Point Point, MouseButtonKind Button, IntPtr Root, long Tick, Task<Automation.UiElementFinder.CapturedElement?>? Element)? _pressed;
 
     private void OnButtonDown(Point p, MouseButtonKind button)
     {
@@ -114,7 +127,38 @@ internal sealed class MacroRecorder : IDisposable
             _pressed = null;
             return;
         }
-        _pressed = (p, button, root, Environment.TickCount64);
+        // Đọc phần tử dưới chuột ngay lúc nhấn (trước khi click làm giao diện thay đổi), chạy nền để hook trả về ngay.
+        var element = RecordElements ? Task.Run(() => CaptureElement(p)) : null;
+        _pressed = (p, button, root, Environment.TickCount64, element);
+    }
+
+    private static Automation.UiElementFinder.CapturedElement? CaptureElement(Point p)
+    {
+        try { return Automation.UiElementFinder.Capture(p); }
+        catch (Exception ex) { Debug.WriteLine(ex); return null; }
+    }
+
+    /// <summary>Phần tử đủ rõ ràng để click lại bằng UI Automation (có tên/id, không phải vùng lớn như cửa sổ, trang web, khung vẽ).</summary>
+    private static bool IsGoodElement(Automation.UiElementFinder.CapturedElement? e, IntPtr root) =>
+        e != null && e.Window == root &&
+        (e.Selector.Contains("AutomationId=") || e.Selector.Contains("Name=")) &&
+        !System.Text.RegularExpressions.Regex.IsMatch(e.Selector, @"ControlType=(Pane|Window|Document|Custom|Group|TitleBar|ScrollBar|Thumb|Table|DataGrid|List|Tree|Image)\b");
+
+    /// <summary>Khi nhận diện xong, đổi bước "Click chuột" thành "Click phần tử UI" (giữ tọa độ để tham khảo).</summary>
+    private void ConvertToElement(ActionStep step, IntPtr root, Task<Automation.UiElementFinder.CapturedElement?> capture)
+    {
+        _conversions.Add(capture.ContinueWith(t =>
+        {
+            var e = t.IsCompletedSuccessfully ? t.Result : null;
+            if (!IsGoodElement(e, root)) return;
+            lock (step)
+            {
+                if (step.Type != StepType.MouseClick) return;
+                step.Type = StepType.ClickElement;
+                step.Text = e!.Selector;
+                step.DelayMs = 10_000;
+            }
+        }, TaskScheduler.Default));
     }
 
     /// <summary>Thả chuột: di chuyển xa điểm nhấn → kéo thả, ngược lại → click.</summary>
@@ -140,7 +184,7 @@ internal sealed class MacroRecorder : IDisposable
         }
 
         // Hai click liên tiếp cùng chỗ trong thời gian double-click của Windows → gộp thành double-click.
-        if (_steps.Count > 0 && _steps[^1] is { Type: StepType.MouseClick, DoubleClick: false } last &&
+        if (_steps.Count > 0 && _steps[^1] is { Type: StepType.MouseClick or StepType.ClickElement, DoubleClick: false } last &&
             last.Button == down.Button && last.Target == target &&
             now - _lastTick <= Win32.GetDoubleClickTime() &&
             Math.Abs(last.X - x) <= 4 && Math.Abs(last.Y - y) <= 4)
@@ -151,7 +195,10 @@ internal sealed class MacroRecorder : IDisposable
             return;
         }
 
-        Add(new ActionStep { Type = StepType.MouseClick, Target = target, X = x, Y = y, Button = down.Button }, now, now);
+        var click = new ActionStep { Type = StepType.MouseClick, Target = target, X = x, Y = y, Button = down.Button };
+        Add(click, now, now);
+        // Click phần tử chỉ tìm được trong cửa sổ đích có tên (không áp dụng cho menu popup / taskbar ghi bằng tọa độ màn hình).
+        if (down.Element != null && target.Length > 0) ConvertToElement(click, down.Root, down.Element);
     }
 
     /// <summary>Cuộn chuột: các lần cuộn liên tiếp trong cùng cửa sổ được gộp thành một bước.</summary>

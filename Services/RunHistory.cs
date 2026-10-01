@@ -119,9 +119,12 @@ public static class ErrorScreenshots
     public static string Dir => Path.Combine(Log.LogDir, "screenshots");
 
     /// <summary>Chụp toàn bộ màn hình; trả về đường dẫn file hoặc null nếu tắt/không chụp được.</summary>
-    public static string? Capture(string jobName, int stepNumber)
+    public static string? Capture(string jobName, int stepNumber) =>
+        SettingsStore.Current.ScreenshotOnError ? CaptureAlways(jobName, $"buoc{stepNumber}") : null;
+
+    /// <summary>Chụp toàn bộ màn hình (kể cả khi tắt "chụp khi lỗi") — dùng cho bước "Gửi thông báo" kèm ảnh.</summary>
+    public static string? CaptureAlways(string jobName, string suffix)
     {
-        if (!SettingsStore.Current.ScreenshotOnError) return null;
         try
         {
             var now = DateTime.Now;
@@ -129,15 +132,15 @@ public static class ErrorScreenshots
             Directory.CreateDirectory(dir);
             var safeName = string.Concat(jobName.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
             if (safeName.Length > 60) safeName = safeName[..60];
-            var path = Path.Combine(dir, $"{now:HHmmss}_{safeName}_buoc{stepNumber}.png");
+            var path = Path.Combine(dir, $"{now:HHmmss}_{safeName}_{suffix}.png");
             using var shot = ScreenCapture.Capture(ScreenCapture.VirtualScreen);
             shot.Save(path, System.Drawing.Imaging.ImageFormat.Png);
-            Log.Info($"      📷 Đã chụp màn hình lỗi: {path}");
+            Log.Info($"      📷 Đã chụp màn hình: {path}");
             return path;
         }
         catch (Exception ex)
         {
-            Log.Warn("      Không chụp được màn hình lỗi: " + ex.Message);
+            Log.Warn("      Không chụp được màn hình: " + ex.Message);
             return null;
         }
     }

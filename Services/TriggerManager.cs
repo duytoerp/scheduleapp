@@ -35,6 +35,10 @@ public sealed class TriggerManager : IDisposable
     private readonly HashSet<(Guid, int)> _idleFired = [];
     private int _tick;
 
+    private DateTime _nextMailCheck = DateTime.MinValue;
+    private bool _mailBusy;
+    private string _lastMailError = "";
+
     public TriggerManager(List<Job> jobs, FlowRunner runner, IHotkeyHost host)
     {
         _jobs = jobs;
@@ -100,7 +104,9 @@ public sealed class TriggerManager : IDisposable
 
         _runningProcesses = RunningProcessNames();
         _idleFired.Clear();
-        _timer.Enabled = Active(TriggerType.ProcessStarted).Any() || Active(TriggerType.ProcessExited).Any() || Active(TriggerType.Idle).Any();
+        _nextMailCheck = DateTime.Now.AddSeconds(15); // kiểm tra email lần đầu ngay sau khi khởi động
+        _timer.Enabled = Active(TriggerType.ProcessStarted).Any() || Active(TriggerType.ProcessExited).Any() || Active(TriggerType.Idle).Any()
+                         || Active(TriggerType.EmailReceived).Any();
     }
 
     /// <summary>Gọi khi ScheduleApp vừa khởi động xong.</summary>
@@ -136,18 +142,25 @@ public sealed class TriggerManager : IDisposable
             ["trigger.base"] = Path.GetFileNameWithoutExtension(path),
             ["trigger.dir"] = Path.GetDirectoryName(path) ?? ""
         };
+        Enqueue(job, path, $"file mới {Path.GetFileName(path)}", vars);
+    }
+
+    /// <summary>Xếp một sự kiện (file mới, email mới) vào hàng đợi riêng của công việc; mỗi sự kiện chạy flow một lần.</summary>
+    private void Enqueue(Job job, string key, string trigger, Dictionary<string, string> vars)
+    {
+        vars["trigger.key"] = key;
         bool start;
         lock (_queueSync)
         {
             if (!_fileQueues.TryGetValue(job.Id, out var q)) _fileQueues[job.Id] = q = new();
-            if (q.Any(i => i.Vars["trigger.file"].Equals(path, StringComparison.OrdinalIgnoreCase))) return;
-            q.Enqueue(($"file mới {Path.GetFileName(path)}", vars));
+            if (q.Any(i => i.Vars["trigger.key"].Equals(key, StringComparison.OrdinalIgnoreCase))) return;
+            q.Enqueue((trigger, vars));
             start = q.Count == 1;
         }
         if (start) _ = PumpFilesAsync(job);
     }
 
-    /// <summary>Chạy lần lượt mỗi file một lần (FlowRunner bỏ qua kích hoạt trùng khi công việc đang chạy).</summary>
+    /// <summary>Chạy lần lượt mỗi sự kiện một lần (FlowRunner bỏ qua kích hoạt trùng khi công việc đang chạy).</summary>
     private async Task PumpFilesAsync(Job job)
     {
         while (true)
@@ -155,7 +168,7 @@ public sealed class TriggerManager : IDisposable
             (string Trigger, Dictionary<string, string> Vars) item;
             lock (_queueSync) item = _fileQueues[job.Id].Peek();
 
-            await WaitUntilReadableAsync(item.Vars["trigger.file"]);
+            if (item.Vars.TryGetValue("trigger.file", out var file)) await WaitUntilReadableAsync(file);
             Log.Info($"⚡ [{job.Name}] kích hoạt: {item.Trigger}");
             await _runner.EnqueueAsync(job, item.Trigger, new RunOptions { Variables = item.Vars });
 
@@ -214,6 +227,47 @@ public sealed class TriggerManager : IDisposable
             if (idle < TimeSpan.FromSeconds(5)) _idleFired.Remove(key);
             else if (idle >= TimeSpan.FromMinutes(Math.Max(1, t.Minutes)) && _idleFired.Add(key))
                 Fire(job, $"máy rảnh {t.Minutes} phút");
+        }
+
+        if (!_mailBusy && DateTime.Now >= _nextMailCheck)
+        {
+            var mailTriggers = Active(TriggerType.EmailReceived).ToList();
+            if (mailTriggers.Count > 0)
+            {
+                _nextMailCheck = DateTime.Now.AddMinutes(Math.Max(1, mailTriggers.Min(x => x.Trigger.Minutes)));
+                _mailBusy = true;
+                _ = CheckMailAsync(mailTriggers);
+            }
+        }
+    }
+
+    // ───────────────────────────── Email mới ─────────────────────────────
+
+    /// <summary>Kiểm tra hộp thư một lần cho mọi trình kích hoạt email; mỗi email khớp chạy công việc tương ứng một lần.</summary>
+    private async Task CheckMailAsync(List<(Job Job, JobTrigger Trigger)> triggers)
+    {
+        try
+        {
+            var filters = triggers.Select(x => (x.Trigger.Value, x.Trigger.Value2)).Distinct().ToList();
+            var mails = await Task.Run(() => MailWatcher.FetchAsync(filters, CancellationToken.None));
+            _lastMailError = "";
+            foreach (var mail in mails)
+            {
+                var matched = triggers.Where(x => MailWatcher.Matches(mail, x.Trigger.Value, x.Trigger.Value2)).Select(x => x.Job).Distinct().ToList();
+                Log.Info($"✉ Email mới: \"{mail.Subject}\" từ {mail.From}" + (mail.Attachments.Count > 0 ? $" ({mail.Attachments.Count} file đính kèm)" : ""));
+                foreach (var job in matched)
+                    Enqueue(job, mail.Id, $"email \"{(mail.Subject.Length > 40 ? mail.Subject[..40] + "…" : mail.Subject)}\"", mail.ToVariables());
+            }
+        }
+        catch (Exception ex)
+        {
+            // Lỗi giống lần trước (mất mạng, sai mật khẩu…) chỉ ghi một lần để không làm đầy nhật ký.
+            if (ex.Message != _lastMailError) Log.Warn("Không kiểm tra được email: " + ex.Message);
+            _lastMailError = ex.Message;
+        }
+        finally
+        {
+            _mailBusy = false;
         }
     }
 

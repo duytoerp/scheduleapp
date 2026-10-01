@@ -6,7 +6,12 @@ using System.Xml.Linq;
 namespace ScheduleApp.Services.Data;
 
 /// <summary>Bảng dữ liệu đọc từ file: dòng đầu là tiêu đề cột.</summary>
-public sealed record DataTableResult(List<string> Headers, List<string[]> Rows);
+/// <param name="RowNumbers">Số dòng thật trong file của từng dòng dữ liệu (như số dòng Excel hiển thị, dòng tiêu đề thường là 1).</param>
+public sealed record DataTableResult(List<string> Headers, List<string[]> Rows, List<int> RowNumbers)
+{
+    /// <summary>Số dòng thật của dòng tiêu đề.</summary>
+    public int HeaderRowNumber { get; init; } = 1;
+}
 
 /// <summary>
 /// Đọc file CSV / Excel (.xlsx) thành bảng — không cần cài Excel hay thư viện ngoài.
@@ -26,9 +31,10 @@ public static class TabularReader
             _ => throw new NotSupportedException($"Không đọc được định dạng \"{ext}\" — dùng .xlsx hoặc .csv.")
         };
 
-        // Bỏ dòng trống hoàn toàn.
-        raw = raw.Where(r => r.Any(c => !string.IsNullOrWhiteSpace(c))).ToList();
-        if (raw.Count == 0) return new DataTableResult([], []);
+        // Bỏ dòng trống hoàn toàn (giữ số dòng thật để ghi ngược lại đúng chỗ).
+        var numbers = raw.Select((r, i) => (Row: r, Number: i + 1)).Where(x => x.Row.Any(c => !string.IsNullOrWhiteSpace(c))).ToList();
+        raw = numbers.Select(x => x.Row).ToList();
+        if (raw.Count == 0) return new DataTableResult([], [], []);
 
         int width = raw.Max(r => r.Length);
         var headers = new List<string>();
@@ -42,19 +48,28 @@ public static class TabularReader
             headers.Add(unique);
         }
         var rows = raw.Skip(1).Select(r => r.Length == width ? r : [.. r, .. Enumerable.Repeat("", width - r.Length)]).ToList();
-        return new DataTableResult(headers, rows);
+        return new DataTableResult(headers, rows, numbers.Skip(1).Select(x => x.Number).ToList()) { HeaderRowNumber = numbers[0].Number };
+    }
+
+    /// <summary>Đọc toàn bộ ô của file CSV (không bỏ dòng trống) và dấu phân cách — dùng khi ghi lại file.</summary>
+    internal static (List<string[]> Rows, char Separator) ReadCsvRaw(string path)
+    {
+        var rows = ReadCsv(path, out char sep);
+        return (rows, sep);
     }
 
     // ───────────────────────────── CSV ─────────────────────────────
 
-    private static List<string[]> ReadCsv(string path)
+    private static List<string[]> ReadCsv(string path) => ReadCsv(path, out _);
+
+    private static List<string[]> ReadCsv(string path, out char sep)
     {
         string text;
         using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
         using (var reader = new StreamReader(fs, Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
             text = reader.ReadToEnd();
 
-        char sep = DetectSeparator(text, Path.GetExtension(path).Equals(".tsv", StringComparison.OrdinalIgnoreCase));
+        sep = DetectSeparator(text, Path.GetExtension(path).Equals(".tsv", StringComparison.OrdinalIgnoreCase));
         var rows = new List<string[]>();
         var row = new List<string>();
         var cell = new StringBuilder();
@@ -115,9 +130,9 @@ public static class TabularReader
 
     // ───────────────────────────── XLSX ─────────────────────────────
 
-    private static readonly XNamespace Main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
-    private static readonly XNamespace Rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
-    private static readonly XNamespace PkgRel = "http://schemas.openxmlformats.org/package/2006/relationships";
+    internal static readonly XNamespace Main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    internal static readonly XNamespace Rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    internal static readonly XNamespace PkgRel = "http://schemas.openxmlformats.org/package/2006/relationships";
 
     /// <summary>Tên các sheet trong file Excel (để chọn trong trình soạn).</summary>
     public static List<string> SheetNames(string path)
@@ -132,21 +147,7 @@ public static class TabularReader
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
 
-        var workbook = Load(zip, "xl/workbook.xml") ?? throw new InvalidDataException("File Excel không hợp lệ (thiếu workbook.xml).");
-        var sheets = workbook.Descendants(Main + "sheet").ToList();
-        if (sheets.Count == 0) throw new InvalidDataException("File Excel không có sheet nào.");
-
-        var sheet = string.IsNullOrWhiteSpace(sheetName)
-            ? sheets[0]
-            : sheets.FirstOrDefault(s => string.Equals((string?)s.Attribute("name"), sheetName.Trim(), StringComparison.OrdinalIgnoreCase))
-              ?? throw new InvalidOperationException(
-                  $"Không có sheet \"{sheetName}\". Các sheet: {string.Join(", ", sheets.Select(s => (string?)s.Attribute("name")))}.");
-
-        var relId = (string?)sheet.Attribute(Rel + "id");
-        var rels = Load(zip, "xl/_rels/workbook.xml.rels");
-        var target = rels?.Descendants(PkgRel + "Relationship").FirstOrDefault(r => (string?)r.Attribute("Id") == relId)?.Attribute("Target")?.Value
-                     ?? throw new InvalidDataException("Không tìm thấy dữ liệu của sheet.");
-        var sheetPath = target.StartsWith('/') ? target.TrimStart('/') : "xl/" + target;
+        var sheetPath = SheetPath(zip, sheetName);
         var sheetXml = Load(zip, sheetPath) ?? throw new InvalidDataException($"Thiếu {sheetPath} trong file Excel.");
 
         var shared = Load(zip, "xl/sharedStrings.xml")?.Root?.Elements(Main + "si").Select(TextOf).ToList() ?? [];
@@ -169,7 +170,27 @@ public static class TabularReader
         return rows;
     }
 
-    private static XDocument? Load(ZipArchive zip, string entryPath)
+    /// <summary>Đường dẫn trong file zip của sheet (trống = sheet đầu tiên).</summary>
+    internal static string SheetPath(ZipArchive zip, string? sheetName)
+    {
+        var workbook = Load(zip, "xl/workbook.xml") ?? throw new InvalidDataException("File Excel không hợp lệ (thiếu workbook.xml).");
+        var sheets = workbook.Descendants(Main + "sheet").ToList();
+        if (sheets.Count == 0) throw new InvalidDataException("File Excel không có sheet nào.");
+
+        var sheet = string.IsNullOrWhiteSpace(sheetName)
+            ? sheets[0]
+            : sheets.FirstOrDefault(s => string.Equals((string?)s.Attribute("name"), sheetName.Trim(), StringComparison.OrdinalIgnoreCase))
+              ?? throw new InvalidOperationException(
+                  $"Không có sheet \"{sheetName}\". Các sheet: {string.Join(", ", sheets.Select(s => (string?)s.Attribute("name")))}.");
+
+        var relId = (string?)sheet.Attribute(Rel + "id");
+        var rels = Load(zip, "xl/_rels/workbook.xml.rels");
+        var target = rels?.Descendants(PkgRel + "Relationship").FirstOrDefault(r => (string?)r.Attribute("Id") == relId)?.Attribute("Target")?.Value
+                     ?? throw new InvalidDataException("Không tìm thấy dữ liệu của sheet.");
+        return target.StartsWith('/') ? target.TrimStart('/') : "xl/" + target;
+    }
+
+    internal static XDocument? Load(ZipArchive zip, string entryPath)
     {
         var entry = zip.GetEntry(entryPath) ?? zip.Entries.FirstOrDefault(e => e.FullName.Equals(entryPath, StringComparison.OrdinalIgnoreCase));
         if (entry == null) return null;
@@ -178,10 +199,10 @@ public static class TabularReader
     }
 
     /// <summary>Chữ của một ô chuỗi (bỏ phần phiên âm rPh).</summary>
-    private static string TextOf(XElement si) =>
+    internal static string TextOf(XElement si) =>
         string.Concat(si.Descendants(Main + "t").Where(t => t.Parent?.Name != Main + "rPh").Select(t => t.Value));
 
-    private static string CellValue(XElement c, List<string> shared, HashSet<int> dateStyles)
+    internal static string CellValue(XElement c, List<string> shared, HashSet<int> dateStyles)
     {
         var type = (string?)c.Attribute("t");
         var v = c.Element(Main + "v")?.Value;
@@ -213,7 +234,7 @@ public static class TabularReader
     }
 
     /// <summary>Các chỉ số kiểu ô (cellXfs) có định dạng ngày/giờ.</summary>
-    private static HashSet<int> DateStyleIndexes(XDocument? styles)
+    internal static HashSet<int> DateStyleIndexes(XDocument? styles)
     {
         var result = new HashSet<int>();
         if (styles?.Root == null) return result;
@@ -246,7 +267,7 @@ public static class TabularReader
     }
 
     /// <summary>"C12" → 2 (cột tính từ 0).</summary>
-    private static int? ColumnIndex(string? cellRef)
+    internal static int? ColumnIndex(string? cellRef)
     {
         if (string.IsNullOrEmpty(cellRef)) return null;
         int col = 0, i = 0;

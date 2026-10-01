@@ -6,7 +6,7 @@ using ScheduleApp.Services.Engine;
 
 namespace ScheduleApp.UI;
 
-internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost
+internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHost
 {
     private const int StopHotkeyId = 0x5AFE;
     private const int MaxLogChars = 200_000;
@@ -16,6 +16,8 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost
     private readonly Scheduler _scheduler;
     private readonly TriggerManager _triggers;
     private readonly UserInputGuard _guard = new();
+    private readonly TelegramBot _bot;
+    private UpdateInfo? _pendingUpdate;
 
     private readonly ListView _list = new()
     {
@@ -77,13 +79,25 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost
 
         _ = Handle; // tạo handle sớm để nhận BeginInvoke / hotkey kể cả khi khởi động ẩn
         _triggers = new TriggerManager(_jobs, _runner, this);
+        _bot = new TelegramBot(this);
         WireEvents();
 
         _scheduler.Start();
         _triggers.Reload();
+        _bot.Restart();
         RefreshList();
-        Log.Info($"ScheduleApp khởi động — {_jobs.Count} công việc. Dữ liệu: {JobStore.DataDir}");
+        Log.Info($"ScheduleApp {UpdateService.Current} khởi động — {_jobs.Count} công việc. Dữ liệu: {JobStore.DataDir}");
         _ = Task.Run(ErrorScreenshots.Cleanup);
+        _ = Task.Run(UpdateService.CleanupOldVersion);
+
+        // Kiểm tra bản mới sau khi khởi động một lúc (không làm chậm lúc đăng nhập Windows).
+        var updateTimer = new System.Windows.Forms.Timer { Interval = 45_000 };
+        updateTimer.Tick += async (_, _) =>
+        {
+            updateTimer.Dispose();
+            await CheckUpdateInBackgroundAsync();
+        };
+        updateTimer.Start();
 
         // Trình kích hoạt "khi khởi động" và lệnh dòng lệnh chạy sau khi giao diện đã sẵn sàng.
         var startup = new System.Windows.Forms.Timer { Interval = 4000 };
@@ -130,6 +144,11 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost
         more.DropDownItems.Add("Mở thư mục log", null, (_, _) => OpenFolder(Log.LogDir));
         more.DropDownItems.Add("Mở thư mục ảnh lỗi", null, (_, _) => OpenFolder(ErrorScreenshots.Dir));
         more.DropDownItems.Add("Mở thư mục dữ liệu", null, (_, _) => OpenFolder(JobStore.DataDir));
+        more.DropDownItems.Add(new ToolStripSeparator());
+        more.DropDownItems.Add("Kiểm tra cập nhật…", null, async (_, _) => await CheckUpdateAsync());
+        more.DropDownItems.Add($"Giới thiệu (phiên bản {UpdateService.Current})", null, (_, _) =>
+            MessageBox.Show(this, $"ScheduleApp {UpdateService.Current}\nĐặt lịch, nhắc nhở & tự động thao tác trên Windows.\n\nDữ liệu: {JobStore.DataDir}",
+                Text, MessageBoxButtons.OK, MessageBoxIcon.Information));
         toolbar.Items.Add(more);
 
         var startup = new ToolStripButton("Khởi động cùng Windows")
@@ -218,6 +237,12 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost
         _tray.ContextMenuStrip = trayMenu;
         _tray.Visible = true;
         _tray.DoubleClick += (_, _) => ShowMain();
+        _tray.BalloonTipClicked += async (_, _) =>
+        {
+            if (_pendingUpdate == null) return;
+            ShowMain();
+            await CheckUpdateAsync();
+        };
     }
 
     private static ToolStripButton Button(string text, EventHandler onClick)
@@ -554,10 +579,109 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost
     private void ShowSettings()
     {
         using var f = new SettingsForm();
-        if (f.ShowDialog(this) != DialogResult.OK) return;
+        var result = f.ShowDialog(this);
+        if (f.ExitForUpdate)
+        {
+            ExitForUpdate();
+            return;
+        }
+        if (result != DialogResult.OK) return;
         _scheduler.RecalculateAll(); // ngày nghỉ có thể đã đổi
+        _triggers.Reload();          // hộp thư có thể đã đổi
+        _bot.Restart();              // bật/tắt nhận lệnh Telegram
         RefreshList();
     }
+
+    // ───────────────────────────── Cập nhật ─────────────────────────────
+
+    private async Task CheckUpdateInBackgroundAsync()
+    {
+        var s = SettingsStore.Current.Update;
+        if (!s.CheckOnStartup || string.IsNullOrWhiteSpace(s.Source)) return;
+        try
+        {
+            var info = await UpdateService.CheckAsync(CancellationToken.None);
+            if (info == null || info.Version.ToString() == s.SkippedVersion) return;
+            _pendingUpdate = info;
+            Log.Info($"Có bản mới ScheduleApp {info.Version} — Thêm → Kiểm tra cập nhật để cài.");
+            _tray.ShowBalloonTip(8000, $"ScheduleApp {info.Version} đã có", "Nhấp vào đây để xem thay đổi và cập nhật.", ToolTipIcon.Info);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Không kiểm tra được bản mới: " + ex.Message);
+        }
+    }
+
+    private async Task CheckUpdateAsync()
+    {
+        try
+        {
+            var info = _pendingUpdate ?? await UpdateService.CheckAsync(CancellationToken.None);
+            if (info == null)
+            {
+                MessageBox.Show(this, $"Bạn đang dùng bản mới nhất ({UpdateService.Current}).", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            using var dlg = new UpdateForm(info);
+            dlg.ShowDialog(this);
+            if (dlg.ExitRequested) ExitForUpdate();
+        }
+        catch (Exception ex)
+        {
+            ShowError("Không kiểm tra được bản mới:\n" + ex.Message + "\n\nNhập nguồn cập nhật trong ⚙ Cài đặt → Chung.");
+        }
+    }
+
+    /// <summary>Thoát để script cập nhật thay file exe (dừng flow đang chạy).</summary>
+    private void ExitForUpdate()
+    {
+        _runner.StopAll();
+        _exiting = true;
+        Close();
+    }
+
+    // ───────────────────────────── Điều khiển từ xa (Telegram) ─────────────────────────────
+
+    /// <summary>Chạy hàm trên luồng UI và lấy kết quả (gọi từ luồng của bot).</summary>
+    private T OnUi<T>(Func<T> f) => InvokeRequired ? (T)Invoke(f) : f();
+
+    private List<Job> OrderedJobs() => _jobs.OrderBy(j => j.Group, StringComparer.CurrentCultureIgnoreCase).ThenBy(j => j.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+
+    string IRemoteHost.ListJobs() => OnUi(() =>
+    {
+        var jobs = OrderedJobs();
+        if (jobs.Count == 0) return "Chưa có công việc nào.";
+        return string.Join("\n", jobs.Select((j, i) =>
+            $"{i + 1}. {(j.Enabled ? "" : "(tắt) ")}{j.Name}" + (j.NextRun is DateTime n ? $" — lần tới {n:HH:mm dd/MM}" : "")));
+    });
+
+    string IRemoteHost.Run(string nameOrNumber) => OnUi(() =>
+    {
+        var jobs = OrderedJobs();
+        Job? job = int.TryParse(nameOrNumber, out int n) && n >= 1 && n <= jobs.Count ? jobs[n - 1]
+            : jobs.FirstOrDefault(j => j.Name.Equals(nameOrNumber, StringComparison.CurrentCultureIgnoreCase))
+              ?? (jobs.Where(j => j.Name.Contains(nameOrNumber, StringComparison.CurrentCultureIgnoreCase)).ToList() is { Count: 1 } one ? one[0] : null);
+        if (job == null) return $"Không tìm thấy công việc \"{nameOrNumber}\" (hoặc có nhiều công việc trùng tên) — xem /list.";
+        if (job.Steps.Count(s => s.Enabled) == 0) return $"\"{job.Name}\" chưa có bước nào được bật.";
+        RunJob(job, "Telegram");
+        return $"▶ Đã đưa \"{job.Name}\" vào hàng đợi. Kết quả sẽ có trong /history" +
+               (NotificationService.AnyChannelEnabled && job.NotifyMode != NotifyMode.Never ? " và thông báo." : ".");
+    });
+
+    string IRemoteHost.Stop() => OnUi(() =>
+    {
+        if (!_runner.IsBusy) return "Không có flow nào đang chạy.";
+        _runner.StopAll();
+        return "■ Đã yêu cầu dừng flow đang chạy.";
+    });
+
+    string IRemoteHost.Status() => OnUi(() =>
+    {
+        var lines = new List<string> { $"💻 {Environment.MachineName} — ScheduleApp {UpdateService.Current}", _runner.IsBusy ? "⏳ " + _status.Text : "✅ Rảnh" };
+        var next = _jobs.Where(j => j.Enabled && j.NextRun != null).OrderBy(j => j.NextRun).Take(5).ToList();
+        if (next.Count > 0) lines.Add("Sắp chạy:\n" + string.Join("\n", next.Select(j => $"  {j.NextRun:HH:mm dd/MM} {j.Name}")));
+        return string.Join("\n", lines);
+    });
 
     /// <summary>Tạo shortcut .lnk trên Desktop chạy công việc đang chọn (ScheduleApp.exe --run "Tên").</summary>
     private void CreateShortcut()
@@ -687,6 +811,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost
         _uiTimer.Stop();
         _scheduler.Dispose();
         _triggers.Dispose();
+        _bot.Dispose();
         _guard.Dispose();
         _tray.Visible = false;
         _tray.Dispose();

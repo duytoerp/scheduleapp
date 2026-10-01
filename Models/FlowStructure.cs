@@ -99,9 +99,10 @@ public sealed class FlowStructure
                     }
                     break;
 
-                case StepType.BreakLoop:
+                case StepType.BreakLoop or StepType.ContinueLoop:
                     fs.Depth[i] = stack.Count;
-                    if (!stack.Any(b => steps[b].Type == StepType.Loop)) Fail(i, "\"Thoát vòng lặp\" nằm ngoài vòng lặp.");
+                    if (!stack.Any(b => steps[b].Type == StepType.Loop))
+                        Fail(i, $"\"{ActionStep.TypeNames[s.Type]}\" nằm ngoài vòng lặp.");
                     break;
 
                 case StepType.Label:

@@ -14,12 +14,23 @@
     <AssemblyName>ScheduleApp</AssemblyName>
     <RootNamespace>ScheduleApp</RootNamespace>
     <Product>ScheduleApp</Product>
-    <Version>2.0.0</Version>
+    <Version>2.1.0</Version>
+    <!-- Project kiểm thử và bộ cài nằm trong cùng thư mục — không biên dịch vào ứng dụng -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);tests/**;installer/**;publish/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
     <!-- Mẫu công việc nhúng sẵn cho mục "Mẫu có sẵn…" -->
     <EmbeddedResource Include="Samples/*.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Đọc email IMAP cho trình kích hoạt "Có email mới" -->
+    <PackageReference Include="MailKit" Version="4.18.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ScheduleApp.Tests" />
   </ItemGroup>
 
 </Project>

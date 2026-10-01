@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using ScheduleApp.Models;
 using ScheduleApp.Recording;
 using ScheduleApp.Services;
@@ -75,6 +76,14 @@ internal sealed class JobEditorForm : BaseForm
     private readonly Button _btnStepMode = new() { Text = "⏭ Chạy từng bước", AutoSize = true };
     private readonly CheckBox _chkBreakpoints = new() { Text = "Dừng ở điểm dừng (F9)", AutoSize = true, Checked = true, Margin = new Padding(6, 2, 3, 2) };
     private bool _testing;
+
+    // Hoàn tác / làm lại thay đổi trên danh sách bước (ảnh chụp JSON sau mỗi thay đổi).
+    private const int MaxUndo = 100;
+    private readonly List<string> _history = [];
+    private int _historyPos = -1;
+    private bool _restoring;
+    private readonly Button _btnUndo = new() { Text = "↶ Hoàn tác", AutoSize = true, Enabled = false };
+    private readonly Button _btnRedo = new() { Text = "↷ Làm lại", AutoSize = true, Enabled = false };
 
     public Job Job => _job;
 
@@ -157,6 +166,8 @@ internal sealed class JobEditorForm : BaseForm
         buttons.Controls.Add(SideButton("Xóa bước", (_, _) => _designer.DeleteSelected()));
         buttons.Controls.Add(SideButton("▲ Lên", (_, _) => _designer.MoveSelected(-1)));
         buttons.Controls.Add(SideButton("▼ Xuống", (_, _) => _designer.MoveSelected(1)));
+        _btnUndo.Click += (_, _) => Undo();
+        _btnRedo.Click += (_, _) => Redo();
         _btnTest.Margin = new Padding(3, 18, 3, 3);
         foreach (var b in new[] { _btnTest, _btnRunFrom, _btnStepMode }) b.MinimumSize = new Size(150, 0);
         _btnTest.Click += async (_, _) => await TestRunAsync(new RunOptions { UseBreakpoints = _chkBreakpoints.Checked });
@@ -178,7 +189,7 @@ internal sealed class JobEditorForm : BaseForm
         hints.Controls.Add(new Label
         {
             Text = "Kéo thẻ để sắp xếp  ·  Nhấp đúp để sửa  ·  Chuột phải để xem thêm  ·  " +
-                   "↑↓ chọn, Ctrl+↑↓ di chuyển, Space bật/tắt, F9 điểm dừng, Ctrl+C/V sao chép, Delete xóa",
+                   "↑↓ chọn, Ctrl+↑↓ di chuyển, Space bật/tắt, F9 điểm dừng, Ctrl+C/V sao chép, Delete xóa, Ctrl+Z/Y hoàn tác/làm lại",
             AutoSize = true,
             ForeColor = UiText.Muted,
             Margin = new Padding(0, 2, 0, 0)
@@ -191,14 +202,27 @@ internal sealed class JobEditorForm : BaseForm
         grpSteps.Controls.Add(stepsLayout);
         root.Controls.Add(grpSteps);
 
-        // OK / Hủy
-        var bottom = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, Margin = new Padding(0, 8, 0, 0) };
+        // Hoàn tác / phiên bản (trái) · Lưu / Hủy (phải)
+        var bottom = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 2, Margin = new Padding(0, 8, 0, 0) };
+        bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        bottom.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        var history = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+        var btnVersions = new Button { Text = "Phiên bản cũ…", AutoSize = true, Margin = new Padding(12, 3, 3, 3) };
+        btnVersions.Click += (_, _) => ShowVersions();
+        history.Controls.AddRange([_btnUndo, _btnRedo, btnVersions]);
+        var actions = new FlowLayoutPanel { AutoSize = true, WrapContents = false, FlowDirection = FlowDirection.RightToLeft, Margin = new Padding(0) };
         var btnCancel = new Button { Text = "Hủy", AutoSize = true, MinimumSize = new Size(90, 0), DialogResult = DialogResult.Cancel };
         var btnOk = new Button { Text = "Lưu", AutoSize = true, MinimumSize = new Size(90, 0) };
         btnOk.Click += (_, _) => Save();
-        bottom.Controls.Add(btnCancel);
-        bottom.Controls.Add(btnOk);
+        actions.Controls.Add(btnCancel);
+        actions.Controls.Add(btnOk);
+        bottom.Controls.Add(history, 0, 0);
+        bottom.Controls.Add(actions, 1, 0);
         root.Controls.Add(bottom);
+        var tips = new ToolTip();
+        tips.SetToolTip(_btnUndo, "Hoàn tác thay đổi trên danh sách bước (Ctrl+Z)");
+        tips.SetToolTip(_btnRedo, "Làm lại (Ctrl+Y)");
+        tips.SetToolTip(btnVersions, "Xem và khôi phục các bản đã lưu trước đây của công việc này");
         CancelButton = btnCancel;
 
         Controls.Add(root);
@@ -206,7 +230,11 @@ internal sealed class JobEditorForm : BaseForm
         _designer.EditRequested += EditStep;
         _designer.AddRequested += AddStep;
         _designer.RunFromRequested += async i => await RunFromAsync(i);
-        _designer.StepsChanged += (_, _) => UpdateStepCount();
+        _designer.StepsChanged += (_, _) =>
+        {
+            UpdateStepCount();
+            Snapshot();
+        };
         _toolbox.ItemActivated += type => AddStep(type, _designer.SelectedIndex >= 0 ? _designer.SelectedIndex + 1 : _designer.StepCount);
     }
 
@@ -423,6 +451,87 @@ internal sealed class JobEditorForm : BaseForm
         _designer.SetSteps(_job.Steps);
         UpdateStepCount();
         UpdateScheduleUi();
+        Snapshot();
+    }
+
+    // ───────────────────────────── Hoàn tác / phiên bản ─────────────────────────────
+
+    /// <summary>Lưu trạng thái danh sách bước hiện tại vào lịch sử hoàn tác (bỏ qua nếu không đổi).</summary>
+    private void Snapshot()
+    {
+        if (_restoring) return;
+        var json = JsonSerializer.Serialize(_job.Steps, JsonDefaults.Options);
+        if (_historyPos >= 0 && _history[_historyPos] == json) return;
+        _history.RemoveRange(_historyPos + 1, _history.Count - _historyPos - 1);
+        _history.Add(json);
+        if (_history.Count > MaxUndo) _history.RemoveAt(0);
+        _historyPos = _history.Count - 1;
+        UpdateUndoButtons();
+    }
+
+    private void Undo()
+    {
+        if (_historyPos <= 0) return;
+        RestoreSteps(--_historyPos);
+    }
+
+    private void Redo()
+    {
+        if (_historyPos >= _history.Count - 1) return;
+        RestoreSteps(++_historyPos);
+    }
+
+    private void RestoreSteps(int position)
+    {
+        var steps = JsonSerializer.Deserialize<List<ActionStep>>(_history[position], JsonDefaults.Options) ?? [];
+        int selected = _designer.SelectedIndex;
+        _restoring = true;
+        try
+        {
+            _job.Steps.Clear();
+            _job.Steps.AddRange(steps);
+            _designer.SetSteps(_job.Steps);
+            _designer.SelectStep(Math.Min(selected, steps.Count - 1));
+        }
+        finally
+        {
+            _restoring = false;
+        }
+        UpdateStepCount();
+        UpdateUndoButtons();
+    }
+
+    private void UpdateUndoButtons()
+    {
+        _btnUndo.Enabled = _historyPos > 0;
+        _btnRedo.Enabled = _historyPos < _history.Count - 1;
+    }
+
+    /// <summary>Xem các phiên bản đã lưu trước đây của công việc và khôi phục một bản (có thể hoàn tác).</summary>
+    private void ShowVersions()
+    {
+        var versions = JobVersions.List(_job.Id);
+        if (versions.Count == 0)
+        {
+            MessageBox.Show(this, "Chưa có phiên bản cũ nào. Mỗi lần bạn lưu thay đổi, bản trước đó sẽ được giữ lại (tối đa " +
+                                  $"{JobVersions.Keep} bản) để khôi phục khi cần.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        using var dlg = new VersionPickerForm(versions);
+        if (dlg.ShowDialog(this) != DialogResult.OK || dlg.Selected is not { } v) return;
+
+        var old = v.Job;
+        old.Id = _job.Id;
+        old.LastRun = _job.LastRun;
+        old.LastResult = _job.LastResult;
+        // Chép toàn bộ nội dung bản cũ vào công việc đang soạn rồi nạp lại giao diện (bước khôi phục vẫn hoàn tác được).
+        foreach (var p in typeof(Job).GetProperties().Where(p => p.CanRead && p.CanWrite && p.Name != nameof(Job.Steps)))
+            p.SetValue(_job, p.GetValue(old));
+        _job.Steps.Clear();
+        _job.Steps.AddRange(old.Steps);
+        _gridVars.Rows.Clear();
+        LoadJob();
+        Log.Info($"Đã khôi phục \"{_job.Name}\" về bản lúc {v.SavedAt:HH:mm dd/MM/yyyy} (bấm Lưu để áp dụng).");
     }
 
     private void RefreshTriggers()
@@ -563,9 +672,16 @@ internal sealed class JobEditorForm : BaseForm
         names.AddRange(ReadVariables().Select(v => v.Name));
         foreach (var s in _job.Steps)
         {
-            if (s.Type is StepType.SetVariable or StepType.RunCommand or StepType.Browser && s.Variable.Trim().Length > 0) names.Add(s.Variable.Trim());
+            if (s.Type is StepType.SetVariable or StepType.RunCommand or StepType.Browser or StepType.HttpRequest or StepType.AskAi
+                && s.Variable.Trim().Length > 0) names.Add(s.Variable.Trim());
             if (s.Type == StepType.Loop && s.LoopKind is LoopKind.Rows or LoopKind.Lines or LoopKind.Files) names.Add(s.LoopVar);
+            if (s.Type == StepType.Loop && s.LoopKind == LoopKind.Rows) names.Add(s.LoopVar + ".rowNumber");
+            if (s.Type == StepType.HttpRequest) names.AddRange(["http.status", "http.body"]);
+            if (s.Type == StepType.AskAi) names.Add("ai.answer");
+            if (s.Type == StepType.WriteData) names.Add("lastRow");
         }
+        if (_job.Triggers.Any(t => t.Type == TriggerType.EmailReceived))
+            names.AddRange(["email.subject", "email.from", "email.body", "email.attachments", "email.attachmentDir"]);
         names.AddRange(["loop.index", "lastOutput", "lastError", "job.name", "today", "now", "clipboard"]);
         return names.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
@@ -574,7 +690,7 @@ internal sealed class JobEditorForm : BaseForm
     private void AddStep(StepType type, int index)
     {
         // Bước đánh dấu không có gì để soạn → chèn luôn.
-        if (type is StepType.Else or StepType.EndIf or StepType.EndLoop or StepType.BreakLoop)
+        if (type is StepType.Else or StepType.EndIf or StepType.EndLoop or StepType.BreakLoop or StepType.ContinueLoop)
         {
             _designer.InsertStep(index, ActionStep.CreateDefault(type));
             _designer.Focus();
@@ -594,7 +710,7 @@ internal sealed class JobEditorForm : BaseForm
     private void EditStep(int index)
     {
         if (index < 0 || index >= _job.Steps.Count) return;
-        if (_job.Steps[index].Type is StepType.Else or StepType.EndIf or StepType.EndLoop or StepType.BreakLoop) return;
+        if (_job.Steps[index].Type is StepType.Else or StepType.EndIf or StepType.EndLoop or StepType.BreakLoop or StepType.ContinueLoop) return;
         using var editor = new StepEditorForm(_job.Steps[index].Clone(), EditorContext());
         if (editor.ShowDialog(this) != DialogResult.OK) return;
         _designer.ReplaceStep(index, editor.Step);
@@ -639,10 +755,13 @@ internal sealed class JobEditorForm : BaseForm
         foreach (var step in recorded) _designer.InsertStep(index++, step);
         _designer.Focus();
         bool hasSecret = recorded.Any(s => s.Text.Contains("{{secret:"));
+        int elementClicks = recorded.Count(s => s.Type == StepType.ClickElement);
+        int pointClicks = recorded.Count(s => s.Type is StepType.MouseClick or StepType.MouseDrag);
         MessageBox.Show(this,
             $"Đã thêm {recorded.Count} bước từ thao tác vừa ghi.\n\n" +
-            "Đã tự chèn bước \"Chờ cửa sổ\" khi chuyển sang cửa sổ khác. Nên xem lại: thay các click quan trọng bằng " +
-            "\"Click phần tử UI\" hoặc \"Click vào hình ảnh\" để chạy ổn định hơn." +
+            (elementClicks > 0 ? $"✔ {elementClicks} click được ghi theo phần tử UI (không phụ thuộc vị trí cửa sổ / độ phân giải).\n" : "") +
+            "Đã tự chèn bước \"Chờ cửa sổ\" khi chuyển sang cửa sổ khác." +
+            (pointClicks > 0 ? $" Còn {pointClicks} thao tác theo tọa độ — nên xem lại, thay click quan trọng bằng \"Click vào hình ảnh\" nếu cần." : "") +
             (hasSecret ? "\n\n🔑 Phát hiện ô mật khẩu: chữ gõ vào đó được thay bằng {{secret:MatKhau}} — hãy thêm bí mật \"MatKhau\" trong mục 🔑 Bí mật." : ""),
             Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
@@ -726,6 +845,23 @@ internal sealed class JobEditorForm : BaseForm
         {
             e.Handled = true;
             _ = TestRunAsync(new RunOptions { UseBreakpoints = _chkBreakpoints.Checked });
+            return;
         }
+        // Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z) cho danh sách bước — ô nhập chữ vẫn giữ hoàn tác riêng của nó.
+        bool undo = e.Control && e.KeyCode == Keys.Z && !e.Shift;
+        bool redo = e.Control && (e.KeyCode == Keys.Y || (e.KeyCode == Keys.Z && e.Shift));
+        if ((undo || redo) && FocusedLeaf() is not (TextBoxBase or ComboBox or DataGridView or DataGridViewTextBoxEditingControl or NumericUpDown or DateTimePicker))
+        {
+            e.Handled = e.SuppressKeyPress = true;
+            if (undo) Undo();
+            else Redo();
+        }
+    }
+
+    private Control? FocusedLeaf()
+    {
+        Control? c = ActiveControl;
+        while (c is ContainerControl { ActiveControl: { } inner }) c = inner;
+        return c;
     }
 }

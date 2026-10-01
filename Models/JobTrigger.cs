@@ -15,7 +15,9 @@ public enum TriggerType
     /// <summary>Mở khóa màn hình Windows.</summary>
     SessionUnlock,
     /// <summary>Khi ScheduleApp khởi động (thường là lúc đăng nhập Windows).</summary>
-    AppStartup
+    AppStartup,
+    /// <summary>Có email mới chưa đọc (Value = tiêu đề chứa, Value2 = người gửi chứa, Minutes = chu kỳ kiểm tra).</summary>
+    EmailReceived
 }
 
 /// <summary>Một điều kiện kích hoạt công việc ngoài lịch chạy.</summary>
@@ -35,7 +37,8 @@ public sealed class JobTrigger
         [TriggerType.ProcessExited] = "Ứng dụng vừa đóng",
         [TriggerType.Idle] = "Máy rảnh (không dùng chuột/phím)",
         [TriggerType.SessionUnlock] = "Mở khóa màn hình",
-        [TriggerType.AppStartup] = "ScheduleApp khởi động / đăng nhập Windows"
+        [TriggerType.AppStartup] = "ScheduleApp khởi động / đăng nhập Windows",
+        [TriggerType.EmailReceived] = "Có email mới (Outlook / IMAP)"
     };
 
     public string Describe() => (Enabled ? "" : "(tắt) ") + Type switch
@@ -47,6 +50,10 @@ public sealed class JobTrigger
         TriggerType.Idle => $"Rảnh {Minutes} phút",
         TriggerType.SessionUnlock => "Khi mở khóa màn hình",
         TriggerType.AppStartup => "Khi ScheduleApp khởi động",
+        TriggerType.EmailReceived => "Email mới" +
+                                     (string.IsNullOrWhiteSpace(Value) ? "" : $" tiêu đề chứa \"{Value}\"") +
+                                     (string.IsNullOrWhiteSpace(Value2) ? "" : $" từ \"{Value2}\"") +
+                                     $" (kiểm tra mỗi {Math.Max(1, Minutes)} phút)",
         _ => Type.ToString()
     };
 }

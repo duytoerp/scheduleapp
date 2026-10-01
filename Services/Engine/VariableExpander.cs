@@ -106,7 +106,17 @@ public sealed partial class VariableExpander(Dictionary<string, string> vars)
         return value.ToString(format, Vi);
     }
 
-    /// <summary>Định dạng giá trị biến: upper, lower, trim, len, số (N0, 0.00…) hoặc ngày (dd/MM/yyyy…).</summary>
+    [GeneratedRegex(@"^(item|join)\((.*)\)$", RegexOptions.IgnoreCase)]
+    private static partial Regex ListFunction();
+
+    /// <summary>Các phần tử (dòng không rỗng) của biến danh sách.</summary>
+    public static List<string> ListItems(string value) =>
+        value.Replace("\r\n", "\n").Split('\n').Select(l => l.TrimEnd()).Where(l => l.Length > 0).ToList();
+
+    /// <summary>
+    /// Định dạng giá trị biến: upper, lower, trim, len, url, json, số (N0, 0.00…), ngày (dd/MM/yyyy…),
+    /// danh sách (count, first, last, item(2), join(, ), sort, unique).
+    /// </summary>
     public static string ApplyFormat(string value, string format)
     {
         switch (format.ToLowerInvariant())
@@ -117,6 +127,23 @@ public sealed partial class VariableExpander(Dictionary<string, string> vars)
             case "len": return value.Length.ToString(CultureInfo.InvariantCulture);
             case "url": return Uri.EscapeDataString(value);
             case "nodiacritics": return Vision.ScreenOcr.RemoveDiacritics(value);
+            // Chuỗi đặt được vào giữa dấu nháy của JSON: "ten": "{{ten:json}}".
+            case "json": return System.Text.Json.JsonSerializer.Serialize(value, Models.JsonDefaults.Options)[1..^1];
+            case "count": return ListItems(value).Count.ToString(CultureInfo.InvariantCulture);
+            case "first": return ListItems(value).FirstOrDefault() ?? "";
+            case "last": return ListItems(value).LastOrDefault() ?? "";
+            case "sort": return string.Join("\n", ListItems(value).Order(StringComparer.Create(Vi, true)));
+            case "unique": return string.Join("\n", ListItems(value).Distinct(StringComparer.CurrentCultureIgnoreCase));
+        }
+        var fn = ListFunction().Match(format);
+        if (fn.Success)
+        {
+            var items = ListItems(value);
+            if (fn.Groups[1].Value.Equals("join", StringComparison.OrdinalIgnoreCase)) return string.Join(fn.Groups[2].Value, items);
+            // item(1) = phần tử đầu, item(-1) = phần tử cuối.
+            if (!int.TryParse(fn.Groups[2].Value.Trim(), out int n) || n == 0) throw new InvalidOperationException($"item({fn.Groups[2].Value}) không hợp lệ — dùng item(1), item(2)… hoặc item(-1).");
+            int index = n > 0 ? n - 1 : items.Count + n;
+            return index >= 0 && index < items.Count ? items[index] : "";
         }
         if (TryParseNumber(value, out var number)) return number.ToString(format, Vi);
         if (DateTime.TryParse(value, Vi, DateTimeStyles.None, out var d) || DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out d))

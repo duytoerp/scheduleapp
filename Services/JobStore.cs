@@ -19,7 +19,9 @@ public static class JobStore
         if (!File.Exists(FilePath)) return SampleJobs();
         try
         {
-            return ReadFile(FilePath);
+            var jobs = ReadFile(FilePath);
+            JobVersions.Remember(jobs);
+            return jobs;
         }
         catch (Exception ex)
         {
@@ -32,10 +34,12 @@ public static class JobStore
 
     public static void Save(IEnumerable<Job> jobs)
     {
+        var list = jobs.ToList();
         Directory.CreateDirectory(DataDir);
         var tmp = FilePath + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(jobs.ToList(), JsonDefaults.Options));
+        File.WriteAllText(tmp, JsonSerializer.Serialize(list, JsonDefaults.Options));
         File.Move(tmp, FilePath, true);
+        JobVersions.Track(list);
     }
 
     public static void Export(string path, IEnumerable<Job> jobs) =>
@@ -98,4 +102,87 @@ public static class JobStore
             ]
         }
     ];
+}
+
+/// <summary>
+/// Lịch sử phiên bản của từng công việc: mỗi lần nội dung công việc thay đổi (sửa bước, lịch, biến…), bản trước đó được lưu vào
+/// versions\&lt;id&gt;\ để khôi phục khi sửa nhầm. Giữ <see cref="Keep"/> bản gần nhất. Lần chạy (LastRun) không tính là thay đổi.
+/// </summary>
+public static class JobVersions
+{
+    public const int Keep = 30;
+
+    private static readonly object Sync = new();
+    private static readonly Dictionary<Guid, string> LastSaved = [];
+
+    public sealed record Version(string Path, DateTime SavedAt, Job Job);
+
+    private static string Dir => Path.Combine(JobStore.DataDir, "versions");
+
+    /// <summary>Ghi nhớ nội dung hiện tại (lúc mở ứng dụng) làm mốc so sánh.</summary>
+    public static void Remember(IEnumerable<Job> jobs)
+    {
+        lock (Sync)
+            foreach (var j in jobs) LastSaved[j.Id] = Normalize(j);
+    }
+
+    /// <summary>Gọi sau khi lưu: công việc nào đổi nội dung thì lưu bản cũ thành một phiên bản.</summary>
+    public static void Track(IEnumerable<Job> jobs)
+    {
+        lock (Sync)
+        {
+            foreach (var j in jobs)
+            {
+                var now = Normalize(j);
+                if (LastSaved.TryGetValue(j.Id, out var before) && before != now)
+                {
+                    try { Write(j.Id, before); }
+                    catch (Exception ex) { Log.Warn($"Không lưu được phiên bản cũ của \"{j.Name}\": {ex.Message}"); }
+                }
+                LastSaved[j.Id] = now;
+            }
+        }
+    }
+
+    public static List<Version> List(Guid jobId)
+    {
+        var dir = Path.Combine(Dir, jobId.ToString("N"));
+        if (!Directory.Exists(dir)) return [];
+        var result = new List<Version>();
+        foreach (var file in Directory.GetFiles(dir, "*.json").OrderDescending())
+        {
+            try
+            {
+                var job = JsonSerializer.Deserialize<Job>(File.ReadAllText(file), JsonDefaults.Options);
+                if (job != null) result.Add(new Version(file, File.GetLastWriteTime(file), job));
+            }
+            catch (Exception ex) when (ex is JsonException or IOException) { }
+        }
+        return result;
+    }
+
+    private static void Write(Guid id, string json)
+    {
+        var dir = Path.Combine(Dir, id.ToString("N"));
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, $"{DateTime.Now:yyyyMMdd-HHmmss-fff}.json"), json);
+        foreach (var old in Directory.GetFiles(dir, "*.json").OrderDescending().Skip(Keep))
+            try { File.Delete(old); } catch (IOException) { }
+    }
+
+    /// <summary>Nội dung công việc bỏ các trường thay đổi mỗi lần chạy.</summary>
+    private static string Normalize(Job job)
+    {
+        var (lastRun, lastResult) = (job.LastRun, job.LastResult);
+        try
+        {
+            job.LastRun = null;
+            job.LastResult = null;
+            return JsonSerializer.Serialize(job, JsonDefaults.Options);
+        }
+        finally
+        {
+            (job.LastRun, job.LastResult) = (lastRun, lastResult);
+        }
+    }
 }

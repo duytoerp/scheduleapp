@@ -30,6 +30,7 @@ internal sealed class StepEditorForm : BaseForm
     private static readonly VarSource[] VarSources = Enum.GetValues<VarSource>();
     private static readonly BrowserAction[] BrowserActions = Enum.GetValues<BrowserAction>();
     private static readonly ErrorAction[] ErrorActions = Enum.GetValues<ErrorAction>();
+    private static readonly DataAction[] DataActions = Enum.GetValues<DataAction>();
 
     private readonly ActionStep _step;
     private readonly StepEditorContext _ctx;
@@ -59,6 +60,18 @@ internal sealed class StepEditorForm : BaseForm
     private readonly NumericUpDown _numCount = Num(-100_000, 1_000_000, 100);
     private readonly Label _lblJob = Caption("Công việc:");
     private readonly ComboBox _cboJob = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+
+    // Gọi API
+    private readonly Label _lblHttp = Caption("Phương thức:");
+    private readonly FlowLayoutPanel _pnlHttp = Row();
+    private readonly ComboBox _cboMethod = new() { DropDownStyle = ComboBoxStyle.DropDown, Width = 90 };
+    private readonly ComboBox _cboConnection = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 300 };
+    private readonly Label _lblHeaders = Caption("Header thêm\n(mỗi dòng Tên: giá trị):");
+    private readonly TextBox _txtHeaders = new() { Dock = DockStyle.Fill, Multiline = true, Height = 54, ScrollBars = ScrollBars.Vertical, AcceptsReturn = true };
+
+    // Ghi Excel / CSV
+    private readonly Label _lblRowRef = Caption("Dòng cần sửa:");
+    private readonly ComboBox _cboRowRef = new() { DropDownStyle = ComboBoxStyle.DropDown, Dock = DockStyle.Fill };
 
     private readonly CheckBox _chkRelative = new() { Text = "Tọa độ tương đối theo cửa sổ (click đúng kể cả khi cửa sổ bị di chuyển)", AutoSize = true };
     private readonly Label _lblXY = Caption("Tọa độ X, Y:");
@@ -184,10 +197,17 @@ internal sealed class StepEditorForm : BaseForm
 
         AddRow(Caption("Loại thao tác:"), _cboType);
         AddRow(_lblSub, _cboSub);
+        _cboMethod.Items.AddRange(ActionStep.HttpMethods);
+        _cboConnection.Items.Add("(không — nhập URL đầy đủ)");
+        foreach (var c in SettingsStore.Current.ApiConnections) _cboConnection.Items.Add(c.Name);
+        _pnlHttp.Controls.AddRange([_cboMethod, Small("Kết nối:"), _cboConnection]);
+        AddRow(_lblHttp, _pnlHttp, span: true);
         _pnlCondition.Controls.AddRange([_cboCondition, _chkNegate]);
         AddRow(_lblCondition, _pnlCondition, span: true);
         AddRow(_lblTarget, _cboTarget, _btnTargetAction);
         AddRow(_lblCompare, _cboCompare);
+        AddRow(_lblRowRef, _cboRowRef);
+        AddRow(_lblHeaders, _txtHeaders);
         AddRow(_lblText, _txtText, _btnTextAction);
         AddRow(_lblArgs, _cboArgs);
         AddRow(_lblVariable, _cboVariable);
@@ -254,7 +274,7 @@ internal sealed class StepEditorForm : BaseForm
             if (_cboTarget.SelectedItem is WindowInfo w)
                 BeginInvoke(new MethodInvoker(() => _cboTarget.Text = w.Title));
         };
-        _cboTarget.Leave += (_, _) => { if (CurrentType == StepType.Loop && CurrentLoop == LoopKind.Rows) LoadSheetNames(); };
+        _cboTarget.Leave += (_, _) => { if (UsesTable) LoadSheetNames(); };
         _chkRelative.CheckedChanged += (_, _) => { if (!_loading) OnTypeChanged(resetSub: false); };
         _btnCapture.Click += async (_, _) => await CaptureAsync(_numX, _numY);
         _btnCapture2.Click += async (_, _) => await CaptureAsync(_numX2, _numY2);
@@ -268,9 +288,13 @@ internal sealed class StepEditorForm : BaseForm
     private LoopKind CurrentLoop => LoopKinds[Math.Clamp(_cboSub.SelectedIndex, 0, LoopKinds.Length - 1)];
     private VarSource CurrentSource => VarSources[Math.Clamp(_cboSub.SelectedIndex, 0, VarSources.Length - 1)];
     private BrowserAction CurrentBrowser => BrowserActions[Math.Clamp(_cboSub.SelectedIndex, 0, BrowserActions.Length - 1)];
+    private DataAction CurrentData => DataActions[Math.Clamp(_cboSub.SelectedIndex, 0, DataActions.Length - 1)];
     private ConditionKind CurrentCondition => Conditions[Math.Max(0, _cboCondition.SelectedIndex)];
     private CompareOp CurrentCompare => CompareOps[Math.Max(0, _cboCompare.SelectedIndex)];
     private ErrorAction CurrentOnError => ErrorActions[Math.Max(0, _cboOnError.SelectedIndex)];
+
+    /// <summary>Bước hiện tại đọc/ghi bảng Excel / CSV (có ô chọn sheet).</summary>
+    private bool UsesTable => (CurrentType == StepType.Loop && CurrentLoop == LoopKind.Rows) || CurrentType == StepType.WriteData;
 
     /// <summary>Bước hiện tại dùng điều kiện (Nếu, hoặc Lặp khi).</summary>
     private bool UsesCondition => CurrentType == StepType.If || (CurrentType == StepType.Loop && CurrentLoop == LoopKind.While);
@@ -287,8 +311,19 @@ internal sealed class StepEditorForm : BaseForm
             StepType.Loop => Array.IndexOf(LoopKinds, _step.LoopKind),
             StepType.SetVariable => Array.IndexOf(VarSources, _step.VarSource),
             StepType.Browser => Array.IndexOf(BrowserActions, _step.BrowserAction),
+            StepType.WriteData => Array.IndexOf(DataActions, _step.DataAction),
             _ => -1
         };
+        _cboMethod.Text = string.IsNullOrWhiteSpace(_step.Method) ? "GET" : _step.Method.ToUpperInvariant();
+        _cboConnection.SelectedIndex = Math.Max(0, _cboConnection.Items.IndexOf(_step.Connection.Trim()));
+        if (_step.Connection.Trim().Length > 0 && _cboConnection.SelectedIndex == 0)
+        {
+            // Kết nối đã bị xóa trong Cài đặt — vẫn giữ tên để người dùng thấy.
+            _cboConnection.Items.Add(_step.Connection.Trim());
+            _cboConnection.SelectedIndex = _cboConnection.Items.Count - 1;
+        }
+        _txtHeaders.Text = _step.Headers.Replace("\r\n", "\n").Replace("\n", "\r\n");
+        _cboRowRef.Text = _step.RowRef;
         _cboCondition.SelectedIndex = Array.IndexOf(Conditions, _step.Condition);
         _chkNegate.Checked = _step.Negate;
         _cboCompare.SelectedIndex = Array.IndexOf(CompareOps, _step.CompareOp);
@@ -326,7 +361,7 @@ internal sealed class StepEditorForm : BaseForm
         _cboErrorLabel.Visible = _step.OnError == ErrorAction.GotoLabel;
         _loading = false;
         OnTypeChanged(resetSub: false);
-        if (_step.Type == StepType.Loop && _step.LoopKind == LoopKind.Rows) LoadSheetNames();
+        if ((_step.Type == StepType.Loop && _step.LoopKind == LoopKind.Rows) || _step.Type == StepType.WriteData) LoadSheetNames();
     }
 
     /// <summary>Tạo bước từ nội dung đang nhập (không kiểm tra hợp lệ).</summary>
@@ -348,6 +383,11 @@ internal sealed class StepEditorForm : BaseForm
         s.LoopKind = type == StepType.Loop ? CurrentLoop : LoopKind.Count;
         s.VarSource = type == StepType.SetVariable ? CurrentSource : VarSource.Value;
         s.BrowserAction = type == StepType.Browser ? CurrentBrowser : BrowserAction.Navigate;
+        s.DataAction = type == StepType.WriteData ? CurrentData : DataAction.AppendRow;
+        s.RowRef = type == StepType.WriteData && CurrentData == DataAction.UpdateRow ? _cboRowRef.Text.Trim() : "";
+        s.Method = type == StepType.HttpRequest ? (_cboMethod.Text.Trim().Length == 0 ? "GET" : _cboMethod.Text.Trim().ToUpperInvariant()) : "GET";
+        s.Connection = type == StepType.HttpRequest && _cboConnection.SelectedIndex > 0 ? (string)_cboConnection.SelectedItem! : "";
+        s.Headers = type == StepType.HttpRequest ? _txtHeaders.Text.Replace("\r\n", "\n").Trim() : "";
         s.Condition = UsesCondition ? CurrentCondition : ConditionKind.Compare;
         s.Negate = UsesCondition && _chkNegate.Checked;
         s.CompareOp = CurrentCompare;
@@ -406,6 +446,8 @@ internal sealed class StepEditorForm : BaseForm
             StepType.MouseClick or StepType.MouseDrag => _chkRelative.Checked,
             StepType.SetVariable => s.VarSource is VarSource.Command or VarSource.File,
             StepType.Loop => s.LoopKind is LoopKind.Rows or LoopKind.Lines or LoopKind.Files,
+            StepType.WriteData => true,
+            StepType.HttpRequest => s.Connection.Length == 0,
             _ when UsesCondition => s.Condition is ConditionKind.Compare or ConditionKind.WindowExists or ConditionKind.ProcessRunning or ConditionKind.FileExists,
             _ => false
         };
@@ -432,7 +474,24 @@ internal sealed class StepEditorForm : BaseForm
                 if (s.VarSource == VarSource.Calc && s.Text.Trim().Length == 0) return ("Hãy nhập phép tính.", _txtText);
                 if (s.VarSource == VarSource.Element) return SelectorError(s.Text);
                 if (s.VarSource == VarSource.AskUser && s.Text.Trim().Length == 0) return ("Hãy nhập câu hỏi.", _txtText);
+                if (s.VarSource == VarSource.JsonPath && s.Text.Trim().Length == 0) return ("Hãy nhập nội dung JSON, vd {{http.body}}.", _txtText);
                 break;
+            case StepType.WriteData:
+                if (s.Text.Trim().Length == 0) return ("Hãy nhập các ô cần ghi, mỗi dòng dạng TênCột=giá trị.", _txtText);
+                try { TabularWriter.ParseAssignments(s.Text, x => x); }
+                catch (FormatException ex) { return (ex.Message, _txtText); }
+                if (s.DataAction == DataAction.UpdateRow && s.RowRef.Length == 0)
+                    return ("Hãy nhập dòng cần sửa: số dòng (vd {{row.rowNumber}} trong vòng lặp Excel) hoặc Cột=giá trị.", _cboRowRef);
+                break;
+            case StepType.HttpRequest:
+                if (!System.Text.RegularExpressions.Regex.IsMatch(s.Method, "^[A-Z]+$")) return ("Phương thức HTTP không hợp lệ (GET, POST, PATCH…).", _cboMethod);
+                try { _ = ApiClient.ParseHeaders(s.Headers).ToList(); }
+                catch (FormatException ex) { return (ex.Message, _txtHeaders); }
+                break;
+            case StepType.AskAi when s.Text.Trim().Length == 0:
+                return ("Hãy nhập yêu cầu cho AI.", _txtText);
+            case StepType.Notify when s.Text.Trim().Length == 0:
+                return ("Hãy nhập nội dung thông báo.", _txtText);
             case StepType.Loop when s.LoopKind == LoopKind.Count && s.Count < 0:
                 return ("Số lần lặp phải ≥ 0.", _numCount);
             case StepType.CallJob when s.JobRef == null:
@@ -502,6 +561,9 @@ internal sealed class StepEditorForm : BaseForm
             case StepType.Browser:
                 foreach (var b in BrowserActions) _cboSub.Items.Add(ActionStep.BrowserActionNames[b]);
                 break;
+            case StepType.WriteData:
+                foreach (var d in DataActions) _cboSub.Items.Add(ActionStep.DataActionNames[d]);
+                break;
         }
         _cboSub.EndUpdate();
     }
@@ -528,6 +590,8 @@ internal sealed class StepEditorForm : BaseForm
         var loop = CurrentLoop;
         var src = CurrentSource;
         var br = CurrentBrowser;
+        var data = CurrentData;
+        bool http = t == StepType.HttpRequest;
 
         bool image = t is StepType.ClickImage or StepType.WaitForImage || (cond && ck == ConditionKind.ImageOnScreen);
         bool text = t is StepType.ClickText or StepType.WaitForText || (cond && ck == ConditionKind.TextOnScreen);
@@ -541,16 +605,26 @@ internal sealed class StepEditorForm : BaseForm
         SuspendLayout();
 
         // Kiểu con (kiểu lặp / nguồn giá trị / hành động trình duyệt)
-        SetVisible(t is StepType.Loop or StepType.SetVariable or StepType.Browser, _lblSub, _cboSub);
-        _lblSub.Text = t switch { StepType.Loop => "Kiểu lặp:", StepType.SetVariable => "Lấy giá trị từ:", _ => "Hành động:" };
+        SetVisible(t is StepType.Loop or StepType.SetVariable or StepType.Browser or StepType.WriteData, _lblSub, _cboSub);
+        _lblSub.Text = t switch
+        {
+            StepType.Loop => "Kiểu lặp:",
+            StepType.SetVariable => "Lấy giá trị từ:",
+            StepType.WriteData => "Cách ghi:",
+            _ => "Hành động:"
+        };
         SetVisible(cond, _lblCondition, _pnlCondition);
+        SetVisible(http, _lblHttp, _pnlHttp, _lblHeaders, _txtHeaders);
+        SetVisible(t == StepType.WriteData && data == DataAction.UpdateRow, _lblRowRef, _cboRowRef);
+        if (_cboRowRef.Items.Count == 0) _cboRowRef.Items.AddRange(["{{row.rowNumber}}", "MaKH={{row.MaKH}}", "{{lastRow}}"]);
 
         // Ô "Target"
         bool showTarget = t switch
         {
             StepType.Wait or StepType.LogMessage or StepType.Else or StepType.EndIf or StepType.EndLoop or StepType.BreakLoop
-                or StepType.StopFlow or StepType.CallJob => false,
-            StepType.SetVariable => src is not (VarSource.Value or VarSource.Calc or VarSource.Clipboard),
+                or StepType.ContinueLoop or StepType.StopFlow or StepType.CallJob => false,
+            StepType.SetVariable => src is not (VarSource.Value or VarSource.Calc or VarSource.Clipboard or VarSource.ListAdd
+                or VarSource.Split or VarSource.JsonPath),
             StepType.Loop => loop != LoopKind.Count,
             StepType.If => ck != ConditionKind.LastStepFailed,
             _ => true
@@ -575,6 +649,10 @@ internal sealed class StepEditorForm : BaseForm
                 VarSource.AskUser => "Tiêu đề hộp thoại:",
                 _ => "Cửa sổ (trống = cửa sổ\nđang chọn / cả màn hình):"
             },
+            StepType.WriteData => "File Excel / CSV\n(chưa có sẽ tự tạo):",
+            StepType.HttpRequest => "URL (hoặc phần sau\nURL gốc của kết nối):",
+            StepType.AskAi => "Cửa sổ chụp ảnh\n(trống = cả màn hình):",
+            StepType.Notify => "Tiêu đề (tùy chọn):",
             StepType.Loop when loop == LoopKind.Rows => "File Excel / CSV:",
             StepType.Loop when loop == LoopKind.Lines => "File hoặc {{biến}}:",
             StepType.Loop when loop == LoopKind.Files => "Thư mục:",
@@ -590,10 +668,10 @@ internal sealed class StepEditorForm : BaseForm
             _ => "Cửa sổ (tiêu đề/tiến trình):"
         };
 
-        bool fileTarget = t == StepType.LaunchApp || (t == StepType.Loop && loop != LoopKind.While && loop != LoopKind.Count)
+        bool fileTarget = t is StepType.LaunchApp or StepType.WriteData || (t == StepType.Loop && loop != LoopKind.While && loop != LoopKind.Count)
                           || (t == StepType.SetVariable && src == VarSource.File) || (cond && ck == ConditionKind.FileExists);
         bool windowTarget = t is StepType.WaitForWindow or StepType.FocusWindow or StepType.MouseClick or StepType.TypeText or StepType.KeyPress
-                                or StepType.MouseScroll or StepType.MouseDrag
+                                or StepType.MouseScroll or StepType.MouseDrag or StepType.AskAi
                             || vision || element || (t == StepType.SetVariable && src == VarSource.ScreenText)
                             || (cond && ck is ConditionKind.WindowExists);
         _btnTargetAction.Visible = showTarget && (fileTarget || windowTarget || t == StepType.CloseApp || (cond && ck == ConditionKind.ProcessRunning));
@@ -604,8 +682,8 @@ internal sealed class StepEditorForm : BaseForm
         SetVisible(cond && ck == ConditionKind.Compare, _lblCompare, _cboCompare);
         bool args = t switch
         {
-            StepType.LaunchApp or StepType.SetElementText => true,
-            StepType.SetVariable => src is not (VarSource.Value or VarSource.Calc),
+            StepType.LaunchApp or StepType.SetElementText or StepType.WriteData or StepType.HttpRequest => true,
+            StepType.SetVariable => src is not (VarSource.Value or VarSource.Calc or VarSource.ListAdd),
             StepType.Loop => loop is LoopKind.Rows or LoopKind.Files,
             StepType.Browser => br == BrowserAction.SetValue,
             _ => cond && ck == ConditionKind.Compare && CurrentCompare is not (CompareOp.IsEmpty or CompareOp.IsNotEmpty)
@@ -615,32 +693,48 @@ internal sealed class StepEditorForm : BaseForm
         {
             StepType.LaunchApp => "Tham số:",
             StepType.SetElementText or StepType.Browser => "Giá trị cần nhập:",
-            StepType.SetVariable => src == VarSource.AskUser ? "Giá trị mặc định:" : "Trích bằng regex\n(tùy chọn):",
+            StepType.WriteData => "Sheet (trống = sheet đầu):",
+            StepType.HttpRequest => "Trích từ JSON trả về\n(vd value[0].name, tùy chọn):",
+            StepType.SetVariable => src switch
+            {
+                VarSource.AskUser => "Giá trị mặc định:",
+                VarSource.Split => "Dấu phân cách\n(trống = dấu phẩy, \\n = xuống dòng):",
+                VarSource.JsonPath => "Đường dẫn\n(vd value[0].name, items[*].id):",
+                _ => "Trích bằng regex\n(tùy chọn):"
+            },
             StepType.Loop => loop == LoopKind.Rows ? "Sheet (trống = sheet đầu):" : "Mẫu tên file (vd *.pdf;*.xlsx):",
             _ => "So với:"
         };
-        if (!(t == StepType.Loop && loop == LoopKind.Rows)) _cboArgs.Items.Clear();
+        if (!((t == StepType.Loop && loop == LoopKind.Rows) || t == StepType.WriteData)) _cboArgs.Items.Clear();
 
         // Ô văn bản
         bool showText = t switch
         {
             StepType.Reminder or StepType.TypeText or StepType.KeyPress or StepType.LogMessage or StepType.StopFlow => true,
-            StepType.SetVariable => src is VarSource.Value or VarSource.Calc or VarSource.Element or VarSource.AskUser,
+            StepType.WriteData or StepType.HttpRequest or StepType.AskAi or StepType.Notify => true,
+            StepType.SetVariable => src is VarSource.Value or VarSource.Calc or VarSource.Element or VarSource.AskUser
+                or VarSource.ListAdd or VarSource.Split or VarSource.JsonPath,
             StepType.Browser => true,
             _ => text || element
         };
         SetVisible(showText, _lblText, _txtText);
         _lblText.Text = t switch
         {
-            StepType.Reminder => "Nội dung:",
+            StepType.Reminder or StepType.Notify => "Nội dung:",
             StepType.KeyPress => "Phím:",
             StepType.LogMessage => "Nội dung ghi log:",
             StepType.StopFlow => "Lý do (tùy chọn):",
+            StepType.WriteData => "Các ô cần ghi\n(mỗi dòng Cột=giá trị):",
+            StepType.HttpRequest => "Nội dung gửi (body)\n— POST/PATCH/PUT:",
+            StepType.AskAi => "Yêu cầu cho AI:",
             StepType.SetVariable => src switch
             {
                 VarSource.Calc => "Phép tính:",
                 VarSource.Element => "Bộ chọn phần tử:",
                 VarSource.AskUser => "Câu hỏi:",
+                VarSource.ListAdd => "Phần tử thêm vào:",
+                VarSource.Split => "Chuỗi cần tách:",
+                VarSource.JsonPath => "Nội dung JSON\n(vd {{http.body}}):",
                 _ => "Giá trị:"
             },
             StepType.Browser => br switch
@@ -655,7 +749,7 @@ internal sealed class StepEditorForm : BaseForm
             _ => "Văn bản:"
         };
         bool singleLine = t is StepType.KeyPress or StepType.StopFlow || text || element
-                          || (t == StepType.SetVariable && src is VarSource.Calc)
+                          || (t == StepType.SetVariable && src is VarSource.Calc or VarSource.ListAdd)
                           || (t == StepType.Browser && br != BrowserAction.RunScript);
         _txtText.Multiline = !singleLine;
         _txtText.Height = singleLine ? _cboArgs.Height : LogicalToDeviceUnits(90);
@@ -664,7 +758,7 @@ internal sealed class StepEditorForm : BaseForm
         // Biến nhận kết quả
         bool variable = t switch
         {
-            StepType.SetVariable or StepType.RunCommand => true,
+            StepType.SetVariable or StepType.RunCommand or StepType.HttpRequest or StepType.AskAi => true,
             StepType.Loop => loop is LoopKind.Rows or LoopKind.Lines or LoopKind.Files,
             StepType.Browser => br is BrowserAction.ReadText or BrowserAction.RunScript,
             _ => false
@@ -672,9 +766,11 @@ internal sealed class StepEditorForm : BaseForm
         SetVisible(variable, _lblVariable, _cboVariable);
         _lblVariable.Text = t switch
         {
-            StepType.SetVariable => "Tên biến:",
+            StepType.SetVariable => src == VarSource.ListAdd ? "Tên biến danh sách:" : "Tên biến:",
             StepType.Loop => "Tên biến (tiền tố):",
             StepType.RunCommand => "Lưu output vào biến\n(tùy chọn):",
+            StepType.HttpRequest => "Lưu kết quả vào biến\n(tùy chọn):",
+            StepType.AskAi => "Lưu câu trả lời vào biến:",
             _ => "Lưu vào biến:"
         };
 
@@ -709,6 +805,7 @@ internal sealed class StepEditorForm : BaseForm
         }
 
         bool delay = vision || element || t is StepType.Wait or StepType.WaitForWindow or StepType.FocusWindow or StepType.RunCommand or StepType.Browser
+                         or StepType.HttpRequest or StepType.AskAi
                      || (t == StepType.SetVariable && src is VarSource.Command or VarSource.Element)
                      || (cond && ck is not (ConditionKind.Compare or ConditionKind.LastStepFailed));
         SetVisible(delay, _lblDelay, _numDelay);
@@ -717,12 +814,16 @@ internal sealed class StepEditorForm : BaseForm
                        : "Timeout (ms):";
 
         SetVisible(t == StepType.Reminder, _chkWaitUser);
-        bool force = t is StepType.CloseApp or StepType.StopFlow || (t == StepType.SetVariable && src == VarSource.AskUser);
+        bool force = t is StepType.CloseApp or StepType.StopFlow or StepType.HttpRequest or StepType.AskAi or StepType.Notify
+                     || (t == StepType.SetVariable && src == VarSource.AskUser);
         SetVisible(force, _chkForce);
         _chkForce.Text = t switch
         {
             StepType.CloseApp => "Buộc đóng (kill tiến trình, không hỏi lưu)",
             StepType.StopFlow => "Tính là thất bại (gửi thông báo lỗi, chạy công việc xử lý lỗi)",
+            StepType.HttpRequest => "Không báo lỗi khi API trả mã lỗi (≥ 400) — tự kiểm tra {{http.status}}",
+            StepType.AskAi => "Gửi kèm ảnh chụp màn hình (cửa sổ ở trên hoặc cả màn hình) cho AI đọc",
+            StepType.Notify => "Gửi kèm ảnh chụp màn hình hiện tại",
             _ => "Ẩn ký tự khi nhập (mật khẩu) — không ghi giá trị vào log"
         };
 
@@ -747,7 +848,8 @@ internal sealed class StepEditorForm : BaseForm
     }
 
     private static bool TestableType(StepType t) => t is StepType.SetVariable or StepType.ClickElement or StepType.SetElementText
-        or StepType.WaitForElement or StepType.Browser or StepType.RunCommand or StepType.LogMessage or StepType.Loop;
+        or StepType.WaitForElement or StepType.Browser or StepType.RunCommand or StepType.LogMessage or StepType.Loop
+        or StepType.WriteData or StepType.HttpRequest or StepType.AskAi or StepType.Notify;
 
     private static string Hint(StepType t, VarSource src, LoopKind loop, BrowserAction br, ConditionKind ck) => t switch
     {
@@ -783,6 +885,11 @@ internal sealed class StepEditorForm : BaseForm
             VarSource.Element => "Đọc giá trị ô nhập / nhãn qua UI Automation. Bấm \"Bắt phần tử\" và trỏ chuột vào phần tử cần đọc.",
             VarSource.AskUser => "Hiện hộp thoại hỏi người dùng nhập (flow tạm dừng chờ). Bấm Hủy = bước lỗi.",
             VarSource.File => "Đọc nội dung file văn bản (UTF-8). Regex (tùy chọn) để trích một phần.",
+            VarSource.ListAdd => "Danh sách = mỗi phần tử một dòng. Thêm phần tử vào cuối (biến chưa có thì tạo mới). Dùng lại bằng " +
+                                 "Lặp \"Mỗi dòng văn bản\" với {{ds}}, hoặc {{ds:count}}, {{ds:first}}, {{ds:last}}, {{ds:item(2)}}, {{ds:join(, )}}, {{ds:sort}}, {{ds:unique}}.",
+            VarSource.Split => "Tách chuỗi thành danh sách (mỗi phần tử một dòng), vd \"a@x.com; b@y.com\" với dấu phân cách ; .",
+            VarSource.JsonPath => "Trích giá trị từ JSON, vd {{http.body}} với đường dẫn value[0].name · data.items[*].id (mọi phần tử) · " +
+                                  "value[0][\"@odata.etag\"] (khóa có dấu chấm) · value.length (số phần tử).",
             _ => ""
         },
         StepType.LogMessage => "Ghi một dòng vào nhật ký — tiện để xem giá trị biến khi gỡ lỗi, vd: Đang xử lý {{row.MaKH}}.",
@@ -810,6 +917,22 @@ internal sealed class StepEditorForm : BaseForm
         StepType.ClickElement or StepType.SetElementText or StepType.WaitForElement =>
             "Tìm phần tử bằng Windows UI Automation — không phụ thuộc vị trí, độ phân giải hay zoom. Bấm \"Bắt phần tử\" rồi trỏ chuột vào nút / ô nhập. " +
             "Bộ chọn: AutomationId=…; Name=…; ControlType=Button/Edit/…; Index=2; Name~=một phần tên.",
+        StepType.ContinueLoop => "Bỏ qua các bước còn lại của lần lặp hiện tại, sang lần kế tiếp (vd dòng Excel đã xử lý rồi). Thường đặt trong khối \"Nếu\".",
+        StepType.WriteData =>
+            "Ghi vào .xlsx / .csv mà không cần mở Excel — giữ nguyên định dạng và các sheet khác. Mỗi dòng một ô: TrangThai=Đã nhập, MaDon={{maDon}}, " +
+            "NgayNhap={{now:dd/MM/yyyy HH:mm}}. Cột chưa có sẽ được thêm vào cuối. Sửa dòng: dùng {{row.rowNumber}} trong vòng lặp \"Mỗi dòng Excel\" " +
+            "để ghi kết quả vào đúng dòng đang xử lý, hoặc MaKH=KH001 để tìm theo cột khóa. Excel khóa file khi đang mở — đóng file trước khi chạy. " +
+            "Số dòng vừa ghi có trong {{lastRow}}.",
+        StepType.HttpRequest =>
+            "Gọi REST API: kết quả trong {{http.body}}, mã trả về trong {{http.status}}. Trích một giá trị bằng đường dẫn JSON, vd value[0].accountid, " +
+            "value[*].name (mọi phần tử, mỗi dòng một giá trị), value.length. Dynamics 365: tạo kết nối loại \"Microsoft Entra ID\" với URL gốc " +
+            "https://<org>.crm5.dynamics.com/api/data/v9.2/ rồi nhập accounts?$select=name&$filter=… · body JSON dùng {{biến:json}} để thoát dấu nháy. " +
+            "Header Prefer: return=representation để POST trả về bản ghi vừa tạo.",
+        StepType.AskAi =>
+            "Gửi yêu cầu cho Claude, câu trả lời lưu vào biến (và {{ai.answer}}). Vd: \"Trích số hóa đơn, ngày, tổng tiền từ đoạn sau, trả về JSON: {{noiDung}}\" " +
+            "rồi dùng \"Gán biến → Trích từ JSON\". Bật gửi kèm ảnh để AI đọc màn hình (vd đọc số tiền trên phần mềm không copy được chữ). " +
+            "Nhập khóa API trong ⚙ Cài đặt → Tích hợp. Lưu ý: nội dung và ảnh được gửi tới Anthropic.",
+        StepType.Notify => "Gửi tin qua các kênh đã bật trong ⚙ Cài đặt → Thông báo (Telegram / email / webhook), vd báo đã xử lý xong {{loop.count}} dòng.",
         StepType.Browser => br switch
         {
             BrowserAction.Launch => "Mở Chrome/Edge với hồ sơ riêng của ScheduleApp ở chế độ cho phép điều khiển (lần đầu cần đăng nhập lại các trang web). " +
@@ -857,7 +980,7 @@ internal sealed class StepEditorForm : BaseForm
         }
         else if (t is StepType.WaitForWindow or StepType.FocusWindow or StepType.MouseClick or StepType.TypeText or StepType.KeyPress
                      or StepType.ClickImage or StepType.WaitForImage or StepType.ClickText or StepType.WaitForText
-                     or StepType.ClickElement or StepType.SetElementText or StepType.WaitForElement or StepType.MouseScroll or StepType.MouseDrag
+                     or StepType.ClickElement or StepType.SetElementText or StepType.WaitForElement or StepType.MouseScroll or StepType.MouseDrag or StepType.AskAi
                  || (t == StepType.SetVariable && CurrentSource is VarSource.ScreenText or VarSource.Element)
                  || (cond && CurrentCondition is ConditionKind.WindowExists or ConditionKind.ImageOnScreen or ConditionKind.TextOnScreen or ConditionKind.ElementExists))
         {
@@ -875,7 +998,7 @@ internal sealed class StepEditorForm : BaseForm
     {
         var t = CurrentType;
         bool folder = t == StepType.Loop && CurrentLoop == LoopKind.Files;
-        bool file = t == StepType.LaunchApp || (t == StepType.Loop && CurrentLoop is LoopKind.Rows or LoopKind.Lines)
+        bool file = t is StepType.LaunchApp or StepType.WriteData || (t == StepType.Loop && CurrentLoop is LoopKind.Rows or LoopKind.Lines)
                     || (t == StepType.SetVariable && CurrentSource == VarSource.File) || (UsesCondition && CurrentCondition == ConditionKind.FileExists);
 
         if (folder)
@@ -889,13 +1012,14 @@ internal sealed class StepEditorForm : BaseForm
             using var dlg = new OpenFileDialog
             {
                 Title = "Chọn file",
+                CheckFileExists = t != StepType.WriteData,
                 Filter = t == StepType.LaunchApp ? "Ứng dụng (*.exe;*.bat;*.cmd;*.lnk)|*.exe;*.bat;*.cmd;*.lnk|Tất cả file (*.*)|*.*"
-                       : t == StepType.Loop && CurrentLoop == LoopKind.Rows ? "Excel / CSV (*.xlsx;*.xlsm;*.csv)|*.xlsx;*.xlsm;*.csv;*.tsv|Tất cả file (*.*)|*.*"
+                       : UsesTable ? "Excel / CSV (*.xlsx;*.xlsm;*.csv)|*.xlsx;*.xlsm;*.csv;*.tsv|Tất cả file (*.*)|*.*"
                        : "Tất cả file (*.*)|*.*"
             };
             if (dlg.ShowDialog(this) != DialogResult.OK) return;
             _cboTarget.Text = dlg.FileName;
-            if (t == StepType.Loop && CurrentLoop == LoopKind.Rows) LoadSheetNames();
+            if (UsesTable) LoadSheetNames();
             return;
         }
         FillTargetList();
@@ -915,8 +1039,15 @@ internal sealed class StepEditorForm : BaseForm
                 _cboArgs.Items.AddRange([.. TabularReader.SheetNames(path)]);
             _cboArgs.Text = text;
             var table = TabularReader.Read(path, string.IsNullOrWhiteSpace(text) ? null : text);
+            if (CurrentType == StepType.WriteData)
+            {
+                ShowInfo($"✔ {table.Rows.Count} dòng dữ liệu (dòng cuối: {(table.RowNumbers.Count > 0 ? table.RowNumbers[^1] : table.HeaderRowNumber)}). " +
+                         "Cột: " + string.Join(", ", table.Headers.Take(15)), true);
+                return;
+            }
             var prefix = string.IsNullOrWhiteSpace(_cboVariable.Text) ? "row" : _cboVariable.Text.Trim();
-            ShowInfo($"✔ {table.Rows.Count} dòng. Cột: " + string.Join("  ", table.Headers.Take(10).Select(h => "{{" + prefix + "." + h + "}}")), true);
+            ShowInfo($"✔ {table.Rows.Count} dòng. Cột: " + string.Join("  ", table.Headers.Take(10).Select(h => "{{" + prefix + "." + h + "}}")) +
+                     $"  · số dòng Excel: {{{{{prefix}.rowNumber}}}}", true);
         }
         catch (Exception ex)
         {

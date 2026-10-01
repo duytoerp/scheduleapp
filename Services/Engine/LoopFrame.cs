@@ -78,8 +78,9 @@ internal sealed class LoopFrame
         Log.Info($"      Đọc {table.Rows.Count} dòng × {table.Headers.Count} cột: {string.Join(", ", table.Headers.Take(12))}{(table.Headers.Count > 12 ? "…" : "")}");
 
         var items = new List<Dictionary<string, string>>(table.Rows.Count);
-        foreach (var row in table.Rows)
+        for (int r = 0; r < table.Rows.Count; r++)
         {
+            var row = table.Rows[r];
             var vars = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             for (int c = 0; c < table.Headers.Count; c++)
             {
@@ -87,6 +88,8 @@ internal sealed class LoopFrame
                 vars[$"{prefix}.{c + 1}"] = row[c];
             }
             vars[prefix] = string.Join("\t", row);
+            // Số dòng thật trong file (như Excel hiển thị) — dùng cho bước "Ghi Excel / CSV" để ghi kết quả vào đúng dòng này.
+            vars[$"{prefix}.rowNumber"] = table.RowNumbers[r].ToString(CultureInfo.InvariantCulture);
             items.Add(vars);
         }
         return items;

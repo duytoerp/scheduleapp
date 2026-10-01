@@ -1,6 +1,6 @@
 [
   {
-    "Id": "8533cb5f-9896-4d92-a925-b568c44422f1",
+    "Id": "fa352bfc-d720-4512-b990-3afc7097507a",
     "Name": "A1 · Đăng nhập Dynamics 365 (dùng chung — được gọi từ công việc khác)",
     "Group": "Mẫu nâng cao",
     "Enabled": true,
@@ -62,7 +62,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Browser",
@@ -100,7 +105,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Continue",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "If",
@@ -138,7 +148,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "LogMessage",
@@ -176,7 +191,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Else",
@@ -214,7 +234,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Browser",
@@ -252,7 +277,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Browser",
@@ -290,7 +320,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Browser",
@@ -328,7 +363,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Browser",
@@ -366,7 +406,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Browser",
@@ -404,7 +449,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "EndIf",
@@ -442,7 +492,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Browser",
@@ -480,7 +535,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       }
     ],
     "Triggers": [],
@@ -499,7 +559,7 @@
     "LastResult": null
   },
   {
-    "Id": "3df6ebb1-3b60-4952-8f02-9f7cca002ae7",
+    "Id": "7f0d6fcb-4350-4cc9-9de5-01d49950809e",
     "Name": "A2 · Nhập liệu hàng loạt từ Excel vào form web",
     "Group": "Mẫu nâng cao",
     "Enabled": true,
@@ -555,13 +615,18 @@
         "Negate": false,
         "LoopKind": "Count",
         "Count": 1,
-        "JobRef": "8533cb5f-9896-4d92-a925-b568c44422f1",
+        "JobRef": "fa352bfc-d720-4512-b990-3afc7097507a",
         "BrowserAction": "Navigate",
         "Retries": 0,
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Loop",
@@ -599,7 +664,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "If",
@@ -637,7 +707,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "LogMessage",
@@ -675,7 +750,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Else",
@@ -713,7 +793,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Browser",
@@ -751,7 +836,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Browser",
@@ -789,7 +879,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Browser",
@@ -827,7 +922,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Browser",
@@ -865,7 +965,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "KeyPress",
@@ -903,7 +1008,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "SetVariable",
@@ -941,7 +1051,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "LogMessage",
@@ -979,7 +1094,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "EndIf",
@@ -1017,7 +1137,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "EndLoop",
@@ -1055,7 +1180,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Reminder",
@@ -1093,7 +1223,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       }
     ],
     "Triggers": [],
@@ -1116,7 +1251,7 @@
     "LastResult": null
   },
   {
-    "Id": "dc60331a-7ce0-43cd-a45c-9f4db96ae9ef",
+    "Id": "19cad9ff-f0af-426f-b299-385a5c5f35b9",
     "Name": "A3 · Cảnh báo ổ C sắp đầy (T2–T6 9:00, bỏ qua ngày lễ)",
     "Group": "Mẫu nâng cao",
     "Enabled": false,
@@ -1178,7 +1313,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "If",
@@ -1216,7 +1356,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Reminder",
@@ -1254,7 +1399,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "StopFlow",
@@ -1292,7 +1442,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "EndIf",
@@ -1330,7 +1485,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "LogMessage",
@@ -1368,7 +1528,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       }
     ],
     "Triggers": [],
@@ -1382,7 +1547,7 @@
     "LastResult": null
   },
   {
-    "Id": "130827aa-4076-4e69-a0ca-1bceb72ec28d",
+    "Id": "460c977d-2018-4919-9719-8fbf588f7569",
     "Name": "A4 · Tự chuyển hóa đơn PDF mới tải về vào thư mục theo tháng",
     "Group": "Mẫu nâng cao",
     "Enabled": false,
@@ -1444,7 +1609,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "RunCommand",
@@ -1482,7 +1652,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Reminder",
@@ -1520,7 +1695,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       }
     ],
     "Triggers": [
@@ -1542,7 +1722,7 @@
     "LastResult": null
   },
   {
-    "Id": "b67587ff-11ac-4da2-923f-b4a322ac37bd",
+    "Id": "029ebb94-960d-463d-9b94-20d34917f4f8",
     "Name": "A5 · Ghi chú nhanh bằng phím tắt Ctrl+Alt+N",
     "Group": "Mẫu nâng cao",
     "Enabled": false,
@@ -1604,7 +1784,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "RunCommand",
@@ -1642,7 +1827,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       }
     ],
     "Triggers": [
@@ -1664,7 +1854,7 @@
     "LastResult": null
   },
   {
-    "Id": "50eaff41-40cd-45ef-8f9d-aafb0a11439e",
+    "Id": "aa22ac80-5a6c-4376-b7a6-070c70a4bce1",
     "Name": "A6 · Đánh số thứ tự các file ảnh trong thư mục",
     "Group": "Mẫu nâng cao",
     "Enabled": true,
@@ -1726,7 +1916,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Loop",
@@ -1764,7 +1959,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "RunCommand",
@@ -1802,7 +2002,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "EndLoop",
@@ -1840,7 +2045,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       }
     ],
     "Triggers": [],
@@ -1854,7 +2064,7 @@
     "LastResult": null
   },
   {
-    "Id": "9c6a0d98-c8d4-467e-90ba-eb2466b91bc3",
+    "Id": "dce6be17-0aca-437e-8fd9-7715ad6152de",
     "Name": "A7 · Mở lại Outlook và Teams khi mở khóa máy",
     "Group": "Mẫu nâng cao",
     "Enabled": false,
@@ -1916,7 +2126,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "LaunchApp",
@@ -1954,7 +2169,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "EndIf",
@@ -1992,7 +2212,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "If",
@@ -2030,7 +2255,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "LaunchApp",
@@ -2068,7 +2298,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "EndIf",
@@ -2106,7 +2341,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       }
     ],
     "Triggers": [
@@ -2128,7 +2368,7 @@
     "LastResult": null
   },
   {
-    "Id": "c95b80b1-c26a-49b4-8b11-ed416daacdde",
+    "Id": "e3594ed4-87b9-4617-9e36-6fed35d50413",
     "Name": "A8 · Chờ có mạng rồi mới đồng bộ (thử lại + nhảy nhãn khi lỗi)",
     "Group": "Mẫu nâng cao",
     "Enabled": true,
@@ -2190,7 +2430,12 @@
         "RetryDelayMs": 10000,
         "OnError": "GotoLabel",
         "ErrorLabel": "MatMang",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "RunCommand",
@@ -2228,7 +2473,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "StopFlow",
@@ -2266,7 +2516,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Label",
@@ -2304,7 +2559,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "Reminder",
@@ -2342,7 +2602,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "StopFlow",
@@ -2380,7 +2645,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       }
     ],
     "Triggers": [],
@@ -2394,7 +2664,7 @@
     "LastResult": null
   },
   {
-    "Id": "10cfe5ee-a758-4b1b-bc39-20963b22826c",
+    "Id": "2d7fdcf8-88e1-458e-b1fb-29417cbe074e",
     "Name": "A9 · Gõ vào Notepad bằng UI Automation (không cần tọa độ)",
     "Group": "Mẫu nâng cao",
     "Enabled": true,
@@ -2456,7 +2726,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "WaitForWindow",
@@ -2494,7 +2769,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "SetElementText",
@@ -2532,7 +2812,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Continue",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "If",
@@ -2570,7 +2855,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "LogMessage",
@@ -2608,7 +2898,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "TypeText",
@@ -2646,7 +2941,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "EndIf",
@@ -2684,7 +2984,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       }
     ],
     "Triggers": [],
@@ -2698,7 +3003,7 @@
     "LastResult": null
   },
   {
-    "Id": "b5d2e33e-df5a-4056-8208-730a0adfa3bd",
+    "Id": "5c3cc356-57f2-4eab-84af-ae744ae31162",
     "Name": "A10 · Ngày làm việc cuối tháng 16:00: nhắc chốt sổ + mở file Excel",
     "Group": "Mẫu nâng cao",
     "Enabled": false,
@@ -2760,7 +3065,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       },
       {
         "Type": "LaunchApp",
@@ -2798,7 +3108,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       }
     ],
     "Triggers": [],
@@ -2812,7 +3127,7 @@
     "LastResult": null
   },
   {
-    "Id": "9f37c815-b37f-4dba-8837-73d9afa33d08",
+    "Id": "f60e3d20-02c3-474c-9990-425b23240d2c",
     "Name": "A11 · Mỗi 30 phút trong giờ hành chính: nhắc uống nước",
     "Group": "Mẫu nâng cao",
     "Enabled": false,
@@ -2874,7 +3189,12 @@
         "RetryDelayMs": 1000,
         "OnError": "Default",
         "ErrorLabel": "",
-        "Breakpoint": false
+        "Breakpoint": false,
+        "DataAction": "AppendRow",
+        "RowRef": "",
+        "Method": "GET",
+        "Headers": "",
+        "Connection": ""
       }
     ],
     "Triggers": [],

@@ -38,26 +38,29 @@ public static class NotificationService
         }
     }
 
-    /// <summary>Gửi qua mọi kênh đang bật. Lỗi được ghi log, không ném ra ngoài.</summary>
-    public static async Task SendAsync(string title, string body, string? screenshot)
+    /// <summary>Gửi qua mọi kênh đang bật. Lỗi được ghi log và trả về (không ném ra ngoài).</summary>
+    public static async Task<List<string>> SendAsync(string title, string body, string? screenshot)
     {
         var s = SettingsStore.Current;
-        var tasks = new List<Task>();
+        var tasks = new List<Task<string?>>();
         if (s.Telegram.Enabled) tasks.Add(Guard("Telegram", () => SendTelegramAsync(s.Telegram, title, body, screenshot)));
         if (s.Email.Enabled) tasks.Add(Guard("Email", () => SendEmailAsync(s.Email, title, body, screenshot)));
         if (s.Webhook.Enabled) tasks.Add(Guard("Webhook", () => SendWebhookAsync(s.Webhook, title, body)));
-        await Task.WhenAll(tasks);
+        var results = await Task.WhenAll(tasks);
+        return results.OfType<string>().ToList();
     }
 
-    private static async Task Guard(string channel, Func<Task> send)
+    private static async Task<string?> Guard(string channel, Func<Task> send)
     {
         try
         {
             await send();
+            return null;
         }
         catch (Exception ex)
         {
             Log.Error($"Không gửi được thông báo {channel}: {ex.Message}");
+            return $"{channel}: {ex.Message}";
         }
     }
 

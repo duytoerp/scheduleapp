@@ -21,8 +21,9 @@ internal static class StepVisuals
         ("Phần tử UI (ổn định nhất)", [StepType.ClickElement, StepType.SetElementText, StepType.WaitForElement]),
         ("Trình duyệt web", [StepType.Browser]),
         ("Nhận dạng màn hình", [StepType.ClickImage, StepType.WaitForImage, StepType.ClickText, StepType.WaitForText]),
-        ("Biến & dữ liệu", [StepType.SetVariable, StepType.LogMessage]),
-        ("Điều kiện & lặp", [StepType.If, StepType.Else, StepType.Loop, StepType.BreakLoop, StepType.Label, StepType.Goto]),
+        ("Biến & dữ liệu", [StepType.SetVariable, StepType.WriteData, StepType.LogMessage]),
+        ("Tích hợp", [StepType.HttpRequest, StepType.AskAi, StepType.Notify]),
+        ("Điều kiện & lặp", [StepType.If, StepType.Else, StepType.Loop, StepType.BreakLoop, StepType.ContinueLoop, StepType.Label, StepType.Goto]),
         ("Điều khiển luồng", [StepType.Wait, StepType.Reminder, StepType.CallJob, StepType.StopFlow])
     ];
 
@@ -35,7 +36,8 @@ internal static class StepVisuals
         StepType.ClickImage or StepType.WaitForImage or StepType.ClickText or StepType.WaitForText => Color.FromArgb(0, 137, 123),
         StepType.ClickElement or StepType.SetElementText or StepType.WaitForElement => Color.FromArgb(180, 50, 160),
         StepType.Browser => Color.FromArgb(0, 90, 158),
-        StepType.SetVariable or StepType.LogMessage => Color.FromArgb(92, 92, 190),
+        StepType.SetVariable or StepType.LogMessage or StepType.WriteData => Color.FromArgb(92, 92, 190),
+        StepType.HttpRequest or StepType.AskAi or StepType.Notify => Color.FromArgb(0, 128, 96),
         _ => Color.FromArgb(16, 124, 16)
     };
 
@@ -76,6 +78,11 @@ internal static class StepVisuals
         StepType.Browser => "\uE774",
         StepType.MouseScroll => "\uE74B",
         StepType.MouseDrag => "\uE7C2",
+        StepType.ContinueLoop => "\uE893",
+        StepType.WriteData => "\uE74E",
+        StepType.HttpRequest => "\uE71B",
+        StepType.AskAi => "\uE82F",
+        StepType.Notify => "\uE715",
         _ => ""
     };
 
