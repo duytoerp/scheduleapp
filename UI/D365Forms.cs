@@ -10,7 +10,8 @@ internal enum D365PickKind
     Field,
     Fields,
     Tab,
-    Command
+    Command,
+    Subgrid
 }
 
 /// <summary>
@@ -53,6 +54,7 @@ internal sealed class D365PickerForm : BaseForm
             D365PickKind.Fields => "Tạo bước Kiểm tra từ form Dynamics 365",
             D365PickKind.Tab => "Chọn tab của form",
             D365PickKind.Command => "Chọn nút trên thanh lệnh",
+            D365PickKind.Subgrid => "Chọn subgrid trên form",
             _ => "Chọn field từ form Dynamics 365"
         };
         StartPosition = FormStartPosition.CenterParent;
@@ -71,6 +73,12 @@ internal sealed class D365PickerForm : BaseForm
             _list.Columns.Add("Kiểu", 110);
             _list.Columns.Add("Giá trị hiện tại", 220);
             _list.Columns.Add("Trạng thái", 130);
+        }
+        else if (kind == D365PickKind.Subgrid)
+        {
+            _list.Columns.Add("Nhãn subgrid", 260);
+            _list.Columns.Add("Tên control", 200);
+            _list.Columns.Add("Bảng của các dòng", 180);
         }
         else
         {
@@ -180,6 +188,11 @@ internal sealed class D365PickerForm : BaseForm
                 foreach (var c in _form.Commands)
                     if (Match(c)) _list.Items.Add(new ListViewItem(c) { Tag = c });
                 if (_form.Commands.Count == 0) _info.Text = "Không thấy nút nào trên thanh lệnh — nút trong menu \"…\" có thể gõ tay theo nhãn.";
+                break;
+            case D365PickKind.Subgrid:
+                foreach (var (name, label, entity) in _form.Subgrids)
+                    if (Match(name, label, entity)) _list.Items.Add(new ListViewItem([label.Length > 0 ? label : name, name, entity]) { Tag = name });
+                if (_form.Subgrids.Count == 0) _info.Text = "Form đang mở không có subgrid nào.";
                 break;
         }
         _list.EndUpdate();

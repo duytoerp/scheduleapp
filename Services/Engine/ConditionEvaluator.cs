@@ -105,6 +105,48 @@ public static class ConditionEvaluator
                     return Compare(n.ToString(System.Globalization.CultureInfo.InvariantCulture), s.CompareOp, s.Arguments);
                 }, s.DelayMs, ct);
 
+            case ConditionKind.D365SubgridCount:
+                return await PollD365Async(async () =>
+                {
+                    var (total, _) = await D365Client.SubgridAsync(s.Target, s.Text, ct);
+                    ctx.ConditionDetail = $"số dòng: {total}";
+                    return Compare(total.ToString(System.Globalization.CultureInfo.InvariantCulture), s.CompareOp, s.Arguments);
+                }, s.DelayMs, ct);
+
+            case ConditionKind.D365SubgridRow:
+                return await PollD365Async(async () =>
+                {
+                    var (total, rows) = await D365Client.SubgridAsync(s.Target, s.Text, ct);
+                    ctx.ConditionDetail = rows.Count == 0
+                        ? "subgrid không có dòng nào"
+                        : $"{total} dòng: " + Short(string.Join(" | ", rows.Take(10).Select(r => r.Name.Length > 0 ? r.Name : string.Join(", ", r.Cells.Values))));
+                    return rows.Any(r => D365Client.RowContains(r, s.Arguments));
+                }, s.DelayMs, ct);
+
+            case ConditionKind.D365Command:
+                return await PollD365Async(async () =>
+                {
+                    var st = await D365Client.CommandStateAsync(s.Target, s.Text, ct);
+                    ctx.ConditionDetail = st["visible"] == "false" ? "không thấy nút trên thanh lệnh (kể cả menu …)"
+                        : st["disabled"] == "true" ? "nút đang hiện nhưng bị mờ" : "nút đang hiện và bấm được";
+                    return D365Client.HasCommandState(st, s.Arguments);
+                }, s.DelayMs, ct);
+
+            case ConditionKind.D365CurrentForm:
+                return await PollD365Async(async () =>
+                {
+                    var form = await D365Client.CurrentFormAsync(s.Target, ct);
+                    ctx.ConditionDetail = $"form đang mở: \"{form}\"";
+                    return Compare(form, s.CompareOp, s.Arguments);
+                }, s.DelayMs, ct);
+
+            case ConditionKind.D365UserRole:
+            {
+                var user = await D365Client.UserAsync(s.Target, ct);
+                ctx.ConditionDetail = $"{user.Name} có vai trò: {(user.Roles.Count == 0 ? "(không có / không đọc được)" : string.Join(", ", user.Roles))}";
+                return D365Client.HasRole(user, s.Text);
+            }
+
             case ConditionKind.WindowExists:
                 return await PollAsync(() => Task.FromResult(WindowHelper.Find(s.Target) != IntPtr.Zero), s.DelayMs, ct);
 

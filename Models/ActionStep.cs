@@ -97,7 +97,17 @@ public enum ConditionKind
     /// <summary>Form Dynamics 365 đang hiện thông báo / lỗi (có chứa chữ).</summary>
     D365Notification,
     /// <summary>Số bản ghi trả về từ truy vấn Web API (dùng phiên đăng nhập của trình duyệt).</summary>
-    D365RecordCount
+    D365RecordCount,
+    /// <summary>Số dòng của subgrid trên form.</summary>
+    D365SubgridCount,
+    /// <summary>Subgrid có dòng chứa chữ (ở bất kỳ cột nào).</summary>
+    D365SubgridRow,
+    /// <summary>Nút trên thanh lệnh đang hiện / bấm được / bị mờ.</summary>
+    D365Command,
+    /// <summary>Tên form đang mở (form selector).</summary>
+    D365CurrentForm,
+    /// <summary>Người dùng đang đăng nhập có vai trò bảo mật (security role).</summary>
+    D365UserRole
 }
 
 public enum CompareOp
@@ -187,8 +197,22 @@ public enum D365Action
     GetNotifications,
     WebApi,
     Cleanup,
-    RunScript
+    RunScript,
+
+    // Subgrid trên form, danh sách (view), tạo nhanh
+    SubgridOpenRow,
+    SubgridGetValue,
+    SubgridNew,
+    SubgridRefresh,
+    ViewQuery,
+    ViewOpenRecord,
+    QuickCreate,
+
+    // Đăng nhập & người dùng
+    Login,
+    GetUser
 }
+
 
 /// <summary>Xử lý khi bước bị lỗi (sau khi đã thử lại hết số lần).</summary>
 public enum ErrorAction
@@ -283,6 +307,9 @@ public sealed class ActionStep
 
     public D365Action D365Action { get; set; } = D365Action.SetField;
 
+    /// <summary>Dynamics 365 — mở form: tên hoặc Id form chính cần mở (trống = form mặc định của người dùng).</summary>
+    public string Form { get; set; } = "";
+
     /// <summary>Kiểm tra (Assert): mô tả hiện trong báo cáo kiểm thử (trống = tự mô tả theo điều kiện).</summary>
     public string Message { get; set; } = "";
 
@@ -372,7 +399,20 @@ public sealed class ActionStep
         [ConditionKind.D365FieldValue] = "D365: giá trị field",
         [ConditionKind.D365FieldState] = "D365: trạng thái field (bắt buộc / khóa / hiện)",
         [ConditionKind.D365Notification] = "D365: form có thông báo / lỗi",
-        [ConditionKind.D365RecordCount] = "D365: số bản ghi (truy vấn Web API)"
+        [ConditionKind.D365RecordCount] = "D365: số bản ghi (truy vấn Web API)",
+        [ConditionKind.D365SubgridCount] = "D365: số dòng của subgrid",
+        [ConditionKind.D365SubgridRow] = "D365: subgrid có dòng chứa chữ",
+        [ConditionKind.D365Command] = "D365: nút trên thanh lệnh (hiện / bấm được)",
+        [ConditionKind.D365CurrentForm] = "D365: form đang mở là",
+        [ConditionKind.D365UserRole] = "D365: người dùng có vai trò (security role)"
+    };
+
+    /// <summary>Trạng thái nút cho điều kiện <see cref="ConditionKind.D365Command"/> (lưu trong <see cref="Arguments"/>).</summary>
+    public static readonly Dictionary<string, string> D365CommandStates = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["visible"] = "đang hiện (trên thanh lệnh hoặc trong menu …)",
+        ["enabled"] = "hiện và bấm được",
+        ["disabled"] = "hiện nhưng bị mờ (không bấm được)"
     };
 
     /// <summary>Trạng thái field cho điều kiện <see cref="ConditionKind.D365FieldState"/> (lưu trong <see cref="Arguments"/>).</summary>
@@ -462,7 +502,16 @@ public sealed class ActionStep
         [D365Action.GetNotifications] = "Đọc thông báo / lỗi trên form vào biến",
         [D365Action.WebApi] = "Gọi Web API (phiên đăng nhập trình duyệt)",
         [D365Action.Cleanup] = "Xóa dữ liệu test đã tạo",
-        [D365Action.RunScript] = "Chạy JavaScript với formContext / Xrm"
+        [D365Action.RunScript] = "Chạy JavaScript với formContext / Xrm",
+        [D365Action.SubgridOpenRow] = "Subgrid: mở bản ghi của một dòng",
+        [D365Action.SubgridGetValue] = "Subgrid: đọc giá trị một ô vào biến",
+        [D365Action.SubgridNew] = "Subgrid: tạo bản ghi liên quan mới (+ Mới)",
+        [D365Action.SubgridRefresh] = "Subgrid: làm mới",
+        [D365Action.ViewQuery] = "Danh sách (view): đọc các bản ghi vào biến",
+        [D365Action.ViewOpenRecord] = "Danh sách (view): tìm và mở bản ghi",
+        [D365Action.QuickCreate] = "Tạo nhanh (quick create) bản ghi",
+        [D365Action.Login] = "Đăng nhập Microsoft (tài khoản test, MFA mã TOTP)",
+        [D365Action.GetUser] = "Đọc người dùng & vai trò vào biến"
     };
 
     public static readonly Dictionary<ErrorAction, string> ErrorActionNames = new()
@@ -615,7 +664,8 @@ public sealed class ActionStep
         StepType.Notify => $"Gửi: {Short(Text)}" + (Force ? " + ảnh màn hình" : ""),
         StepType.Dynamics => "D365: " + D365Action switch
         {
-            D365Action.OpenForm => $"mở form {Short(Text)}" + (string.IsNullOrWhiteSpace(Arguments) ? " (mới)" : $" [{Short(Arguments)}]"),
+            D365Action.OpenForm => $"mở form {Short(Text)}" + (string.IsNullOrWhiteSpace(Arguments) ? " (mới)" : $" [{Short(Arguments)}]") +
+                                   (string.IsNullOrWhiteSpace(Form) ? "" : $" · form \"{Short(Form)}\""),
             D365Action.OpenView => $"mở danh sách {Short(Text)}" + (string.IsNullOrWhiteSpace(Arguments) ? "" : $" [view {Short(Arguments)}]"),
             D365Action.WaitForm => $"chờ form tải xong (tối đa {FormatMs(DelayMs)})",
             D365Action.SetField => $"{Short(Text)} = \"{Short(Arguments)}\"",
@@ -631,6 +681,15 @@ public sealed class ActionStep
             D365Action.WebApi => $"{(string.IsNullOrWhiteSpace(Method) ? "GET" : Method.ToUpperInvariant())} {Short(Arguments)}" + IntoVar(),
             D365Action.Cleanup => "xóa dữ liệu test đã tạo ({{d365.created}})",
             D365Action.RunScript => $"JS: {Short(Text)}" + IntoVar(),
+            D365Action.SubgridOpenRow => $"subgrid {Short(Text)} → mở dòng {RowName()}",
+            D365Action.SubgridGetValue => $"subgrid {Short(Text)} dòng {RowName()} · cột {(string.IsNullOrWhiteSpace(Arguments) ? "tên" : Short(Arguments))}" + IntoVar(),
+            D365Action.SubgridNew => $"subgrid {Short(Text)} → + Mới",
+            D365Action.SubgridRefresh => $"làm mới subgrid {Short(Text)}",
+            D365Action.ViewQuery => $"đọc view {ViewName()} của {Short(Text)}" + SearchText() + IntoVar(),
+            D365Action.ViewOpenRecord => $"mở bản ghi trong view {ViewName()} của {Short(Text)}" + SearchText(),
+            D365Action.QuickCreate => $"tạo nhanh {Short(Arguments)}: {Short(string.Join(", ", Text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)))}" + IntoVar(),
+            D365Action.Login => $"đăng nhập Microsoft \"{Short(Text)}\"" + (string.IsNullOrWhiteSpace(RowRef) ? "" : " + mã MFA (TOTP)"),
+            D365Action.GetUser => "đọc người dùng & vai trò" + IntoVar(),
             _ => ""
         } + InTab(),
         StepType.Assert => "Kiểm tra: " + (string.IsNullOrWhiteSpace(Message) ? DescribeCondition() : Short(Message)),
@@ -665,9 +724,20 @@ public sealed class ActionStep
             ConditionKind.D365FieldState => $"field {Short(Text)} " + (D365FieldStates.TryGetValue(Arguments.Trim(), out var st) ? st : Short(Arguments)),
             ConditionKind.D365Notification => string.IsNullOrWhiteSpace(Text) ? "form có thông báo / lỗi" : $"form có thông báo chứa \"{Short(Text)}\"",
             ConditionKind.D365RecordCount => $"số bản ghi của {Short(Text)} {CompareNames[CompareOp]} {Short(Arguments)}",
+            ConditionKind.D365SubgridCount => $"số dòng subgrid {Short(Text)} {CompareNames[CompareOp]} {Short(Arguments)}",
+            ConditionKind.D365SubgridRow => $"subgrid {Short(Text)} có dòng chứa \"{Short(Arguments)}\"",
+            ConditionKind.D365Command => $"nút \"{Short(Text)}\" " + (D365CommandStates.TryGetValue(Arguments.Trim(), out var cs) ? cs : Short(Arguments)),
+            ConditionKind.D365CurrentForm => $"form đang mở {CompareNames[CompareOp]} \"{Short(Arguments)}\"",
+            ConditionKind.D365UserRole => $"người dùng có vai trò \"{Short(Text)}\"",
             _ => ""
         };
     }
+
+    private string RowName() => string.IsNullOrWhiteSpace(RowRef) ? "1" : Short(RowRef);
+
+    private string ViewName() => string.IsNullOrWhiteSpace(Arguments) ? "mặc định" : $"\"{Short(Arguments)}\"";
+
+    private string SearchText() => string.IsNullOrWhiteSpace(RowRef) ? "" : $" · tìm \"{Short(RowRef)}\"";
 
     private string ClickName() => DoubleClick ? "Double-click" : "Click";
 

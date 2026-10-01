@@ -19,8 +19,8 @@ internal static class D365Client
     /// <summary>Tên biến danh sách các bản ghi do flow tạo ra (mỗi dòng "entityset(id)") — dùng để dọn dữ liệu test.</summary>
     public const string CreatedVar = "d365.created";
 
-    /// <summary>Tab Dynamics 365 mặc định khi bước không ghi tab: URL chứa main.aspx (Unified Interface) hoặc dynamics.com.</summary>
-    private static readonly string[] PreferredTabs = ["main.aspx", ".dynamics.com", ".crm"];
+    /// <summary>Tab Dynamics 365 mặc định khi bước không ghi tab: URL chứa main.aspx (Unified Interface) hoặc dynamics.com; cuối cùng là tab đang ở trang đăng nhập (phiên hết hạn — để báo lỗi rõ ràng).</summary>
+    private static readonly string[] PreferredTabs = ["main.aspx", ".dynamics.com", ".crm", "login.microsoftonline.com", "/adfs/ls"];
 
     private static Task<string> TabAsync(string target, CancellationToken ct) => BrowserClient.PreferTabAsync(target, PreferredTabs, ct);
 
@@ -36,20 +36,24 @@ internal static class D365Client
             {
                 var entity = Required(s.Text, "tên bảng (logical name, vd account, contact)").ToLowerInvariant();
                 var id = NormalizeId(s.Arguments);
-                await EvalAsync(tab, Script($$"""
+                var formId = await EvalAsync(tab, Script($$"""
                     const X = window.Xrm;
-                    if (!X || !X.Navigation) throw new Error('Trang không phải Dynamics 365 (không có Xrm.Navigation) — mở app trước bằng bước Trình duyệt.');
+                    if (!X || !X.Navigation) throw new Error(__noXrm());
                     const cur = X.Page && X.Page.data && X.Page.data.entity;
                     window.__saPrev = cur || null;
                     const o = { entityName: {{Js(entity)}} };
+                    const formId = await __formId({{Js(entity)}}, {{Js(s.Form)}});
+                    if (formId) o.formId = formId;
                     if ({{Js(id)}}) {
-                      if (cur && cur.getEntityName() === o.entityName && __id(cur.getId()) === {{Js(id)}}) { window.__saPrev = null; return 'same'; }
+                      if (cur && cur.getEntityName() === o.entityName && __id(cur.getId()) === {{Js(id)}} && (!formId || __formNow(X.Page).id === formId)) {
+                        window.__saPrev = null; return formId;
+                      }
                       o.entityId = {{Js(id)}};
                     }
                     X.Navigation.openForm(o);
-                    return 'ok';
+                    return formId;
                     """), ct);
-                await WaitFormAsync(tab, entity, id, newForm: id.Length == 0, timeout, ct);
+                await WaitFormAsync(tab, entity, id, newForm: id.Length == 0, timeout, ct, formId: formId);
                 break;
             }
 
@@ -59,7 +63,7 @@ internal static class D365Client
                 var viewId = NormalizeId(s.Arguments);
                 await EvalAsync(tab, Script($$"""
                     const X = window.Xrm;
-                    if (!X || !X.Navigation) throw new Error('Trang không phải Dynamics 365 (không có Xrm.Navigation).');
+                    if (!X || !X.Navigation) throw new Error(__noXrm());
                     const p = { pageType: 'entitylist', entityName: {{Js(entity)}} };
                     if ({{Js(viewId)}}) { p.viewId = {{Js(viewId)}}; p.viewType = 'savedquery'; }
                     X.Navigation.navigateTo(p);
@@ -140,17 +144,13 @@ internal static class D365Client
                 var label = Required(s.Text, "nhãn nút hoặc command id");
                 await WaitFormAsync(tab, "", "", false, timeout, ct, requireForm: false);
                 var clicked = await PollAsync(tab, Script($$"""
-                    const want = __norm({{Js(label)}}), raw = {{Js(label)}}.toLowerCase();
-                    const textOf = e => __norm(e.getAttribute('aria-label') || e.getAttribute('title') || e.innerText || '');
-                    const all = Array.from(document.querySelectorAll('button, [role=menuitem], [role=button], [role=menuitemcheckbox]')).filter(__visible);
-                    const hit = all.find(e => textOf(e) === want) || all.find(e => __norm(e.innerText || '') === want)
-                             || all.find(e => (e.getAttribute('data-id') || '').toLowerCase().includes(raw) && raw.length > 3);
-                    if (hit) { hit.scrollIntoView({ block: 'center' }); hit.click(); return textOf(hit) || raw; }
-                    const more = all.find(e => /overflowbutton|moreCommands/i.test(e.getAttribute('data-id') || '')
-                                             || /^(more commands|thêm lệnh|more)$/i.test((e.getAttribute('aria-label') || '').trim()));
+                    const hit = __cmdFind({{Js(label)}});
+                    if (hit && !__cmdDisabled(hit)) { hit.scrollIntoView({ block: 'center' }); hit.click(); return __cmdText(hit) || {{Js(label)}}; }
+                    if (hit) return ''; // nút đang mờ — chờ enable rule tính xong
+                    const more = __cmdMore();
                     if (more && more.getAttribute('aria-expanded') !== 'true') more.click();
                     return '';
-                    """), timeout, $"Không thấy nút \"{label}\" trên thanh lệnh", ct);
+                    """), timeout, $"Không thấy nút \"{label}\" trên thanh lệnh (hoặc nút đang bị mờ, không bấm được)", ct);
                 Log.Info($"      Đã bấm \"{clicked}\".");
                 break;
             }
@@ -248,8 +248,503 @@ internal static class D365Client
                 SetVar(ctx, s.Variable, value);
                 break;
             }
+
+            case D365Action.SubgridOpenRow:
+            {
+                var grid = Required(s.Text, "tên subgrid");
+                await WaitFormAsync(tab, "", "", false, timeout, ct);
+                var json = await PollAsync(tab, Script($$"""
+                    const r = __gridRow(__gridRows(__grid({{Js(grid)}})), {{Js(s.RowRef)}});
+                    if (!r) return '';
+                    window.__saPrev = Xrm.Page.data.entity;
+                    Xrm.Navigation.openForm({ entityName: r.entity, entityId: r.id });
+                    return JSON.stringify(r);
+                    """), timeout, $"Subgrid \"{grid}\" không có dòng \"{RowLabel(s.RowRef)}\"", ct);
+                var row = GridRow.Parse(json);
+                Log.Info($"      Mở dòng {row.Index}: {row.Entity} \"{Short(row.Name)}\"");
+                await WaitFormAsync(tab, row.Entity, row.Id, false, timeout, ct);
+                break;
+            }
+
+            case D365Action.SubgridGetValue:
+            {
+                var grid = Required(s.Text, "tên subgrid");
+                await WaitFormAsync(tab, "", "", false, timeout, ct);
+                var json = await PollAsync(tab, Script($$"""
+                    const r = __gridRow(__gridRows(__grid({{Js(grid)}})), {{Js(s.RowRef)}});
+                    if (!r) return '';
+                    const col = {{Js(s.Arguments.Trim())}};
+                    if (!col) return JSON.stringify({ v: r.name });
+                    if (!(col in r.cells)) throw new Error('Subgrid "' + {{Js(grid)}} + '" không có cột "' + col + '". Có: ' + Object.keys(r.cells).join(', '));
+                    return JSON.stringify({ v: r.cells[col] });
+                    """), timeout, $"Subgrid \"{grid}\" không có dòng \"{RowLabel(s.RowRef)}\"", ct);
+                using var doc = JsonDocument.Parse(json);
+                var value = doc.RootElement.GetProperty("v").GetString() ?? "";
+                Log.Info($"      = \"{Short(value)}\"");
+                SetVar(ctx, s.Variable, value);
+                break;
+            }
+
+            case D365Action.SubgridNew:
+            {
+                var grid = Required(s.Text, "tên subgrid");
+                await WaitFormAsync(tab, "", "", false, timeout, ct);
+                var related = await EvalAsync(tab, Script($$"""
+                    const fc = __need(), c = __grid({{Js(grid)}});
+                    const id = __id(fc.data.entity.getId());
+                    if (!id) throw new Error('Bản ghi chưa lưu — thêm bước Lưu trước khi tạo bản ghi liên quan từ subgrid.');
+                    const rel = c.getEntityName();
+                    window.__saPrev = fc.data.entity;
+                    Xrm.Navigation.openForm({ entityName: rel, createFromEntity: {
+                      entityType: fc.data.entity.getEntityName(), id, name: String(fc.data.entity.getPrimaryAttributeValue() ?? '') } });
+                    return rel;
+                    """), ct);
+                await WaitFormAsync(tab, related, "", newForm: true, timeout, ct);
+                break;
+            }
+
+            case D365Action.SubgridRefresh:
+            {
+                var grid = Required(s.Text, "tên subgrid");
+                await WaitFormAsync(tab, "", "", false, timeout, ct);
+                await EvalAsync(tab, Script($"__grid({Js(grid)}).refresh(); return 'ok';"), ct);
+                break;
+            }
+
+            case D365Action.ViewQuery or D365Action.ViewOpenRecord:
+            {
+                var entity = Required(s.Text, "tên bảng (logical name, vd account)").ToLowerInvariant();
+                var result = await ViewQueryAsync(tab, entity, s.Arguments, s.RowRef, timeout, ct);
+                ctx.Vars["view.count"] = result.Rows.Count.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                ctx.Vars["view.ids"] = string.Join("\n", result.Rows.Select(r => r.Id));
+                ctx.Vars["view.names"] = string.Join("\n", result.Rows.Select(r => r.Name));
+                Log.Info($"      View \"{result.View}\": {result.Rows.Count} bản ghi" +
+                         (result.Rows.Count > 0 ? $" ({Short(string.Join(", ", result.Rows.Take(5).Select(r => r.Name)))}{(result.Rows.Count > 5 ? ", …" : "")})" : ""));
+                if (s.D365Action == D365Action.ViewQuery)
+                {
+                    SetVar(ctx, s.Variable, ctx.Vars["view.count"]);
+                    break;
+                }
+                if (result.Rows.Count == 0)
+                    throw new InvalidOperationException($"View \"{result.View}\" của {entity} không có bản ghi nào" +
+                                                        (string.IsNullOrWhiteSpace(s.RowRef) ? "." : $" chứa \"{s.RowRef.Trim()}\"."));
+                var first = result.Rows[0];
+                await EvalAsync(tab, Script($$"""
+                    window.__saPrev = Xrm.Page && Xrm.Page.data ? Xrm.Page.data.entity : null;
+                    Xrm.Navigation.openForm({ entityName: {{Js(entity)}}, entityId: {{Js(first.Id)}} });
+                    return 'ok';
+                    """), ct);
+                await WaitFormAsync(tab, entity, first.Id, false, timeout, ct);
+                break;
+            }
+
+            case D365Action.QuickCreate:
+                await QuickCreateAsync(s, tab, timeout, ctx);
+                break;
+
+            case D365Action.Login:
+                await LoginAsync(s, timeout, ctx);
+                break;
+
+            case D365Action.GetUser:
+            {
+                var user = await UserAsync(tab, ct);
+                ctx.Vars["d365.user"] = user.Name;
+                ctx.Vars["d365.userId"] = user.Id;
+                ctx.Vars["d365.roles"] = string.Join("\n", user.Roles);
+                Log.Info($"      Người dùng: {user.Name} · vai trò: {(user.Roles.Count == 0 ? "(không đọc được)" : string.Join(", ", user.Roles))}");
+                SetVar(ctx, s.Variable, user.Name);
+                break;
+            }
         }
     }
+
+    private static string RowLabel(string rowRef) => string.IsNullOrWhiteSpace(rowRef) ? "1" : rowRef.Trim();
+
+    /// <summary>Một dòng của subgrid: thứ tự (từ 1), bảng, Id, giá trị cột chính và các ô.</summary>
+    internal sealed record GridRow(int Index, string Entity, string Id, string Name, IReadOnlyDictionary<string, string> Cells)
+    {
+        public static GridRow Parse(string json)
+        {
+            using var doc = JsonDocument.Parse(json);
+            return From(doc.RootElement);
+        }
+
+        public static GridRow From(JsonElement r) => new(
+            r.GetProperty("index").GetInt32(),
+            r.GetProperty("entity").GetString() ?? "",
+            r.GetProperty("id").GetString() ?? "",
+            r.GetProperty("name").GetString() ?? "",
+            r.GetProperty("cells").EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString() ?? "", StringComparer.OrdinalIgnoreCase));
+    }
+
+    // ───────────────────────────── Subgrid, view, form, nút, người dùng (cho điều kiện / kiểm tra) ─────────────────────────────
+
+    /// <summary>Các dòng đang tải của subgrid và tổng số bản ghi (theo view của subgrid, không giới hạn theo trang).</summary>
+    public static async Task<(int Total, List<GridRow> Rows)> SubgridAsync(string target, string grid, CancellationToken ct)
+    {
+        var tab = await TabAsync(target, ct);
+        var json = await EvalAsync(tab, Script($$"""
+            const c = __grid({{Js(Required(grid, "tên subgrid"))}});
+            const g = c.getGrid();
+            const rows = __gridRows(c);
+            let total = g.getTotalRecordCount ? g.getTotalRecordCount() : -1;
+            if (typeof total !== 'number' || total < rows.length) total = rows.length;
+            return JSON.stringify({ total, rows });
+            """), ct);
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        return (root.GetProperty("total").GetInt32(), root.GetProperty("rows").EnumerateArray().Select(GridRow.From).ToList());
+    }
+
+    /// <summary>Dòng subgrid chứa <paramref name="text"/> (cột chính hoặc bất kỳ ô nào, không phân biệt hoa thường / dấu).</summary>
+    internal static bool RowContains(GridRow row, string text)
+    {
+        var want = Fold(text);
+        return want.Length == 0 || Fold(row.Name).Contains(want) || row.Cells.Values.Any(v => Fold(v).Contains(want));
+    }
+
+    private static string Fold(string s) => Vision.ScreenOcr.RemoveDiacritics(s ?? "").Replace('đ', 'd').Replace('Đ', 'D').Trim().ToLowerInvariant();
+
+    /// <summary>Tên form chính đang mở (theo form selector), hoặc trống nếu không đọc được.</summary>
+    public static async Task<string> CurrentFormAsync(string target, CancellationToken ct)
+    {
+        var tab = await TabAsync(target, ct);
+        return await EvalAsync(tab, Script("return __formNow(__need()).label;"), ct);
+    }
+
+    /// <summary>Người dùng đang đăng nhập.</summary>
+    public sealed record UserInfo(string Name, string Id, IReadOnlyList<string> Roles);
+
+    public static async Task<UserInfo> UserAsync(string target, CancellationToken ct)
+    {
+        var tab = await TabAsync(target, ct);
+        var json = await EvalAsync(tab, Script("""
+            const X = window.Xrm;
+            if (!X || !X.Utility) throw new Error(__noXrm());
+            const us = X.Utility.getGlobalContext().userSettings;
+            let roles = [];
+            const r = us.roles;
+            if (r) roles = (typeof r.get === 'function' ? r.get() : Array.from(r)).map(x => String((x && (x.name || x.text)) || x));
+            return JSON.stringify({ name: us.userName || '', id: __id(us.userId), roles });
+            """), ct);
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        return new UserInfo(root.GetProperty("name").GetString() ?? "", root.GetProperty("id").GetString() ?? "",
+            root.GetProperty("roles").EnumerateArray().Select(x => x.GetString() ?? "").ToList());
+    }
+
+    /// <summary>Người dùng có vai trò <paramref name="role"/> (so tên không phân biệt hoa thường / dấu).</summary>
+    internal static bool HasRole(UserInfo user, string role) => user.Roles.Any(r => Fold(r) == Fold(role));
+
+    /// <summary>
+    /// Trạng thái nút trên thanh lệnh: { visible, enabled, disabled }. Không thấy trên thanh lệnh thì mở menu "Thêm lệnh (…)" để tìm,
+    /// xong thì đóng lại.
+    /// </summary>
+    public static async Task<Dictionary<string, string>> CommandStateAsync(string target, string label, CancellationToken ct)
+    {
+        Required(label, "nhãn nút hoặc command id");
+        var tab = await TabAsync(target, ct);
+        bool opened = false;
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            while (true)
+            {
+                var r = await EvalAsync(tab, Script($$"""
+                    if (!document.querySelector('[data-id*="CommandBar" i], [data-lp-id*="commandbar" i], [role=menubar]')) throw new Error('Thanh lệnh chưa tải xong.');
+                    const b = __cmdFind({{Js(label)}});
+                    if (b) return JSON.stringify({ found: true, disabled: __cmdDisabled(b) });
+                    const m = __cmdMore();
+                    if (m && m.getAttribute('aria-expanded') !== 'true') { m.click(); return 'opened'; }
+                    return m ? 'open' : 'none';
+                    """), ct);
+                if (r == "opened")
+                {
+                    opened = true;
+                    sw.Restart();
+                }
+                // Menu "…" vừa mở: các mục hiện ra sau một chút — chờ tối đa 2 giây rồi mới kết luận là không có nút.
+                if (r is "opened" or "open" && sw.ElapsedMilliseconds < 2000)
+                {
+                    await Task.Delay(PollMs, ct);
+                    continue;
+                }
+                bool found = r.StartsWith('{'), disabled = found && r.Contains("\"disabled\":true", StringComparison.Ordinal);
+                return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["visible"] = found ? "true" : "false",
+                    ["enabled"] = found && !disabled ? "true" : "false",
+                    ["disabled"] = disabled ? "true" : "false"
+                };
+            }
+        }
+        finally
+        {
+            if (opened)
+            {
+                try { await EvalAsync(tab, Script("const m = __cmdMore(); if (m && m.getAttribute('aria-expanded') === 'true') m.click(); return 'ok';"), ct); }
+                catch (InvalidOperationException) { }
+            }
+        }
+    }
+
+    /// <summary>Đúng nếu nút ở trạng thái <paramref name="state"/> (visible, enabled, disabled).</summary>
+    public static bool HasCommandState(IReadOnlyDictionary<string, string> st, string state) =>
+        ActionStep.D365CommandStates.ContainsKey(state.Trim())
+            ? st.GetValueOrDefault(state.Trim().ToLowerInvariant()) == "true"
+            : throw new InvalidOperationException($"Trạng thái nút \"{state}\" không hợp lệ — dùng: {string.Join(", ", ActionStep.D365CommandStates.Keys)}.");
+
+    // ───────────────────────────── Danh sách (view) qua Web API ─────────────────────────────
+
+    /// <summary>Kết quả đọc view: tên view và các bản ghi (Id, giá trị cột chính) theo đúng bộ lọc / sắp xếp của view.</summary>
+    public sealed record ViewResult(string View, IReadOnlyList<(string Id, string Name)> Rows);
+
+    /// <summary>
+    /// Đọc bản ghi của một view (savedquery hoặc view cá nhân userquery) bằng FetchXML của chính view đó — kiểm tra được view
+    /// lọc đúng dữ liệu. <paramref name="view"/>: tên hoặc Id (trống = view mặc định của bảng); <paramref name="search"/>: lọc thêm
+    /// theo cột chính (chứa chữ), như ô tìm nhanh.
+    /// </summary>
+    private static async Task<ViewResult> ViewQueryAsync(string tab, string entity, string view, string search, int timeoutMs, CancellationToken ct)
+    {
+        var json = await EvalAsync(tab, Script($$"""
+            const X = window.Xrm;
+            if (!X || !X.WebApi) throw new Error(__noXrm());
+            const E = {{Js(entity)}}, want = {{Js(view.Trim())}}, search = {{Js(search.Trim())}};
+            const md = await X.Utility.getEntityMetadata(E, []);
+            const lit = s => encodeURIComponent("'" + s.replace(/'/g, "''") + "'");
+            const sel = '?$select=name,fetchxml';
+            const find = async (table, filter) => (await X.WebApi.retrieveMultipleRecords(table, sel + '&$filter=' + filter + '&$top=1')).entities[0] || null;
+            let v = null;
+            if (/^\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?$/i.test(want)) {
+              const id = __id(want);
+              try { v = await X.WebApi.retrieveRecord('savedquery', id, sel); } catch (e) { }
+              if (!v) { try { v = await X.WebApi.retrieveRecord('userquery', id, sel); } catch (e) { } }
+            } else if (want) {
+              v = await find('savedquery', "returnedtypecode eq '" + E + "' and querytype eq 0 and name eq " + lit(want))
+                || await find('userquery', "returnedtypecode eq '" + E + "' and name eq " + lit(want));
+            } else {
+              v = await find('savedquery', "returnedtypecode eq '" + E + "' and querytype eq 0 and isdefault eq true");
+            }
+            if (!v) throw new Error('Không tìm thấy view ' + (want ? '"' + want + '"' : 'mặc định') + ' của bảng ' + E + '.');
+            const doc = new DOMParser().parseFromString(v.fetchxml, 'text/xml');
+            const ent = doc.querySelector('fetch > entity');
+            if (!ent) throw new Error('FetchXML của view "' + v.name + '" không đọc được.');
+            const kids = n => Array.from(ent.children).filter(c => c.tagName === n);
+            const ensure = n => { if (!kids('all-attributes').length && !kids('attribute').some(a => a.getAttribute('name') === n)) { const a = doc.createElement('attribute'); a.setAttribute('name', n); ent.appendChild(a); } };
+            ensure(md.PrimaryIdAttribute);
+            ensure(md.PrimaryNameAttribute);
+            if (search) {
+              // Gói bộ lọc của view và điều kiện tìm vào một filter "and" (giữ nguyên ý nghĩa bộ lọc gốc).
+              const and = doc.createElement('filter');
+              and.setAttribute('type', 'and');
+              kids('filter').forEach(f => and.appendChild(f));
+              const c = doc.createElement('condition');
+              c.setAttribute('attribute', md.PrimaryNameAttribute);
+              c.setAttribute('operator', 'like');
+              c.setAttribute('value', '%' + search + '%');
+              and.appendChild(c);
+              ent.appendChild(and);
+            }
+            const xml = new XMLSerializer().serializeToString(doc);
+            const r = await X.WebApi.retrieveMultipleRecords(E, '?fetchXml=' + encodeURIComponent(xml));
+            return JSON.stringify({ view: v.name, rows: r.entities.map(e => ({ id: __id(e[md.PrimaryIdAttribute]), name: String(e[md.PrimaryNameAttribute] ?? '') })) });
+            """), ct, timeoutMs);
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        return new ViewResult(root.GetProperty("view").GetString() ?? "",
+            root.GetProperty("rows").EnumerateArray().Select(r => (r.GetProperty("id").GetString() ?? "", r.GetProperty("name").GetString() ?? "")).ToList());
+    }
+
+    // ───────────────────────────── Tạo nhanh (quick create) ─────────────────────────────
+
+    /// <summary>
+    /// Mở form tạo nhanh với giá trị điền sẵn (mỗi dòng field=giá trị; lookup = bảng:guid), bấm "Lưu và đóng" rồi lấy Id bản ghi
+    /// từ kết quả của Xrm.Navigation.openForm.
+    /// </summary>
+    private static async Task QuickCreateAsync(ActionStep s, string tab, int timeout, FlowContext ctx)
+    {
+        var ct = ctx.Ct;
+        var entity = Required(s.Arguments, "tên bảng (logical name) cần tạo nhanh").ToLowerInvariant();
+        var lines = s.Text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var set = await EvalAsync(tab, Script($$"""
+            const X = window.Xrm;
+            if (!X || !X.Navigation) throw new Error(__noXrm());
+            const E = {{Js(entity)}}, params = {};
+            for (const line of {{JsonSerializer.Serialize(lines)}}) {
+              const i = line.indexOf('=');
+              if (i <= 0) throw new Error('Dòng "' + line + '" không đúng dạng field=giá trị.');
+              const k = line.slice(0, i).trim(), v = line.slice(i + 1).trim();
+              const m = v.match(/^([a-z0-9_]+)\s*:\s*\{?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}?$/i);
+              if (m) {
+                const t = m[1].toLowerCase(), md = await X.Utility.getEntityMetadata(t, []);
+                let name = '';
+                try { name = (await X.WebApi.retrieveRecord(t, m[2], '?$select=' + md.PrimaryNameAttribute))[md.PrimaryNameAttribute] || ''; }
+                catch (e) { throw new Error('Không tìm thấy bản ghi ' + t + ' ' + m[2] + ': ' + (e.message || e)); }
+                params[k] = m[2].toLowerCase(); params[k + 'name'] = name; params[k + 'type'] = t;
+              } else params[k] = v;
+            }
+            window.__saQc = { done: false };
+            window.__saQcAt = 0;
+            X.Navigation.openForm({ entityName: E, useQuickCreateForm: true }, params).then(r => {
+              const ref = r && r.savedEntityReference && r.savedEntityReference[0];
+              window.__saQc = { done: true, id: ref ? __id(ref.id) : '', name: ref ? String(ref.name || '') : '' };
+            }, e => { window.__saQc = { done: true, error: String((e && (e.message || e.description)) || e) }; });
+            let set = '';
+            try { set = (await X.Utility.getEntityMetadata(E, [])).EntitySetName || ''; } catch (e) { }
+            return set;
+            """), ct);
+
+        var json = await PollAsync(tab, Script("""
+            const q = window.__saQc || {};
+            if (q.done) return JSON.stringify(q);
+            const b = Array.from(document.querySelectorAll('button')).filter(__visible)
+              .find(x => /quickCreateSaveAndCloseBtn/i.test((x.id || '') + ' ' + (x.getAttribute('data-id') || '')));
+            if (b && !window.__saQcAt) { window.__saQcAt = Date.now(); b.click(); return ''; }
+            if (window.__saQcAt && Date.now() - window.__saQcAt > 3000) {
+              const notes = __notifications();
+              if (notes.length) throw new Error('Tạo nhanh không lưu được: ' + notes.join(' | '));
+            }
+            return '';
+            """), timeout, $"Form tạo nhanh {entity} chưa lưu xong (không thấy nút \"Lưu và đóng\" của form tạo nhanh?)", ct);
+        using var doc = JsonDocument.Parse(json);
+        var r = doc.RootElement;
+        if (r.TryGetProperty("error", out var err)) throw new InvalidOperationException("Tạo nhanh không thành công: " + err.GetString());
+        var id = r.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
+        if (id.Length == 0) throw new InvalidOperationException("Form tạo nhanh đã đóng nhưng không có bản ghi nào được lưu.");
+        ctx.Vars["d365.lastId"] = id;
+        if (set.Length > 0) TrackCreated(ctx, $"{set}({id})");
+        Log.Info($"      Đã tạo nhanh {entity} \"{Short(r.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "")}\" ({id}).");
+        SetVar(ctx, s.Variable, id);
+    }
+
+    // ───────────────────────────── Đăng nhập Microsoft (Entra ID) ─────────────────────────────
+
+    /// <summary>Tab ưu tiên khi đăng nhập: trang đăng nhập Microsoft, rồi tới tab Dynamics 365.</summary>
+    private static readonly string[] LoginTabs = ["login.microsoftonline.com", "login.live.com", "login.windows.net", "/adfs/ls", "main.aspx", ".dynamics.com", ".crm"];
+
+    /// <summary>Trạng thái trang đăng nhập (xem <see cref="LoginAsync"/>).</summary>
+    private const string LoginProbe = """
+        const vis = sel => { const e = document.querySelector(sel); return e && __visible(e) ? e : null; };
+        if (!__onLogin() && window.Xrm && Xrm.Utility && Xrm.Utility.getGlobalContext) return 'app';
+        if (document.readyState !== 'complete') return 'loading';
+        const err = ['#usernameError', '#passwordError', '#idTD_Error', '#errorText', '.alert-error'].map(vis).find(e => e && (e.innerText || '').trim());
+        if (err) return 'error:' + err.innerText.replace(/\s+/g, ' ').trim();
+        if (vis('input[name=DontShowAgain]') || vis('#KmsiCheckboxField')) return 'kmsi';
+        if (vis('input[name=otc]')) return 'otp';
+        if (vis('[data-value="PhoneAppOTP"]')) return 'chooseotp';
+        if (vis('#idDiv_SAOTCAS_Title') || vis('#idRichContext_DisplaySign')) return 'push';
+        if (vis('input[name=passwd]')) return 'password';
+        if (vis('input[name=loginfmt]')) return 'user';
+        if (vis('#otherTile') || Array.from(document.querySelectorAll('[data-test-id]')).some(__visible)) return 'pick';
+        return 'other:' + location.href;
+        """;
+
+    /// <summary>
+    /// Đăng nhập trang Microsoft (login.microsoftonline.com) bằng tài khoản test: email → mật khẩu → mã TOTP (nếu tài khoản có MFA
+    /// bằng ứng dụng xác thực) → "Duy trì đăng nhập". Xong khi trang Dynamics 365 tải được Xrm. Đã đăng nhập sẵn thì không làm gì.
+    /// </summary>
+    private static async Task LoginAsync(ActionStep s, int timeout, FlowContext ctx)
+    {
+        var ct = ctx.Ct;
+        var user = Required(s.Text, "tài khoản đăng nhập (email)");
+        var password = s.Arguments;
+        var totpSecret = s.RowRef.Trim();
+        if (totpSecret.Length > 0) Totp.DecodeBase32(totpSecret); // báo lỗi khóa sai ngay từ đầu
+        var sw = Stopwatch.StartNew();
+        string last = "";
+        int repeats = 0;
+        while (true)
+        {
+            string state;
+            try
+            {
+                var tab = await BrowserClient.PreferTabAsync(s.Target, LoginTabs, ct);
+                state = await EvalAsync(tab, Script(LoginProbe), ct);
+                if (state == "app")
+                {
+                    Log.Info(sw.ElapsedMilliseconds < 1500 ? "      Đã đăng nhập sẵn." : $"      Đăng nhập xong ({ActionStep.FormatMs((int)sw.ElapsedMilliseconds)}).");
+                    return;
+                }
+                if (state.StartsWith("error:", StringComparison.Ordinal))
+                    throw new InvalidOperationException("Trang đăng nhập báo lỗi: " + state[6..]);
+                if (state == "push")
+                    throw new InvalidOperationException("Tài khoản đang đòi duyệt đăng nhập trên điện thoại (Authenticator push) — với tài khoản test, " +
+                                                        "hãy thêm phương thức \"ứng dụng xác thực\" và nhập khóa TOTP vào bước Đăng nhập.");
+
+                // Cùng một bước lặp lại nhiều lần (vd mật khẩu bị từ chối mà trang không báo lỗi) → dừng thay vì gửi mãi.
+                repeats = state == last ? repeats + 1 : 0;
+                last = state;
+                if (repeats >= 6 && state is "user" or "password" or "otp")
+                    throw new InvalidOperationException($"Trang đăng nhập không chuyển sang bước tiếp sau khi nhập {LoginStepName(state)}.");
+
+                string? action = state switch
+                {
+                    "user" => $"__fill('input[name=loginfmt]', {Js(user)}); __press('#idSIButton9', 'input[type=submit]');",
+                    "password" => password.Length == 0
+                        ? throw new InvalidOperationException("Trang đăng nhập hỏi mật khẩu — nhập mật khẩu (nên dùng {{secret:Tên}}).")
+                        : $"__fill('input[name=passwd]', {Js(password)}); __press('#idSIButton9', 'input[type=submit]');",
+                    "otp" => totpSecret.Length == 0
+                        ? throw new InvalidOperationException("Trang đăng nhập hỏi mã xác thực (MFA) — nhập khóa TOTP của tài khoản test vào bước Đăng nhập.")
+                        : $"__fill('input[name=otc]', {Js(await FreshCodeAsync(totpSecret, ct))}); __press('#idSubmit_SAOTCC_Continue', '#idSIButton9', 'input[type=submit]');",
+                    "chooseotp" => "__press('[data-value=\"PhoneAppOTP\"]');",
+                    "kmsi" => "__press('#idSIButton9', 'input[type=submit]');",
+                    "pick" => $$"""
+                        const t = Array.from(document.querySelectorAll('[data-test-id]')).find(e => (e.getAttribute('data-test-id') || '').toLowerCase() === {{Js(user.ToLowerInvariant())}});
+                        if (t) t.click(); else __press('#otherTile');
+                        """,
+                    _ => null
+                };
+                if (action != null)
+                {
+                    await EvalAsync(tab, Script(LoginActions + action + "\nreturn 'ok';"), ct);
+                    Log.Info($"      Đăng nhập: {LoginStepName(state)}");
+                }
+            }
+            catch (InvalidOperationException ex) when (IsTransient(ex.Message))
+            {
+                state = "loading"; // trang đang chuyển
+            }
+            if (sw.ElapsedMilliseconds >= timeout)
+                throw new TimeoutException($"Chưa đăng nhập xong sau {ActionStep.FormatMs(timeout)} (bước cuối: {LoginStepName(last)}" +
+                                           (last.StartsWith("other:", StringComparison.Ordinal) ? $", trang đang mở: {last[6..]}" : "") + "). " +
+                                           "Trang đăng nhập của tổ chức có thể khác trang Microsoft chuẩn (ADFS, SSO riêng) — đăng nhập tay một lần trong hồ sơ trình duyệt.");
+            await Task.Delay(state is "loading" || state.StartsWith("other", StringComparison.Ordinal) ? 500 : 1500, ct);
+        }
+    }
+
+    private static string LoginStepName(string state) => state switch
+    {
+        "user" => "tài khoản",
+        "password" => "mật khẩu",
+        "otp" => "mã xác thực",
+        "chooseotp" => "chọn cách xác thực bằng mã",
+        "kmsi" => "duy trì đăng nhập",
+        "pick" => "chọn tài khoản",
+        "" => "chưa có",
+        _ => "chờ trang tải"
+    };
+
+    /// <summary>Mã TOTP còn hạn ít nhất 5 giây (tránh gửi mã sắp hết hạn).</summary>
+    private static async Task<string> FreshCodeAsync(string secret, CancellationToken ct)
+    {
+        int left = Totp.SecondsLeft(DateTimeOffset.UtcNow);
+        if (left < 5) await Task.Delay(TimeSpan.FromSeconds(left + 1), ct);
+        return Totp.Code(secret, DateTimeOffset.UtcNow);
+    }
+
+    private const string LoginActions = """
+        const __fill = (sel, v) => {
+          const e = document.querySelector(sel);
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(e, v);
+          e.dispatchEvent(new Event('input', { bubbles: true }));
+          e.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        const __press = (...sels) => {
+          for (const s of sels) { const b = document.querySelector(s); if (b && __visible(b)) { b.click(); return true; } }
+          return false;
+        };
+        """;
 
     // ───────────────────────────── Đọc trạng thái (dùng cho điều kiện / kiểm tra) ─────────────────────────────
 
@@ -323,7 +818,8 @@ internal static class D365Client
 
     /// <summary>Form đang mở: bảng, Id, field, tab và các nút đang hiện trên thanh lệnh.</summary>
     public sealed record FormInfo(string Entity, string Id, bool IsNew, IReadOnlyList<FieldInfo> Fields,
-        IReadOnlyList<(string Name, string Label)> Tabs, IReadOnlyList<string> Commands);
+        IReadOnlyList<(string Name, string Label)> Tabs, IReadOnlyList<string> Commands,
+        IReadOnlyList<(string Name, string Label, string Entity)> Subgrids);
 
     /// <summary>Đọc form Dynamics 365 đang mở trong trình duyệt điều khiển.</summary>
     public static async Task<FormInfo> DescribeFormAsync(string target, CancellationToken ct)
@@ -353,7 +849,9 @@ internal static class D365Client
               const t = (b.getAttribute('aria-label') || b.innerText || '').replace(/\s+/g, ' ').trim();
               if (t && !commands.includes(t)) commands.push(t);
             });
-            return JSON.stringify({ entity: fc.data.entity.getEntityName(), id: __id(fc.data.entity.getId()), isNew: fc.ui.getFormType() === 1, fields, tabs, commands });
+            const subgrids = (fc.ui.controls ? fc.ui.controls.get() : []).filter(c => c.getGrid)
+              .map(c => ({ name: c.getName(), label: (c.getLabel && c.getLabel()) || '', entity: (c.getEntityName && c.getEntityName()) || '' }));
+            return JSON.stringify({ entity: fc.data.entity.getEntityName(), id: __id(fc.data.entity.getId()), isNew: fc.ui.getFormType() === 1, fields, tabs, commands, subgrids });
             """), ct);
         using var doc = JsonDocument.Parse(json);
         var r = doc.RootElement;
@@ -371,8 +869,10 @@ internal static class D365Client
         var tabs = r.GetProperty("tabs").EnumerateArray()
             .Select(t => (t.GetProperty("name").GetString() ?? "", t.GetProperty("label").GetString() ?? "")).ToList();
         var commands = r.GetProperty("commands").EnumerateArray().Select(c => c.GetString() ?? "").ToList();
+        var subgrids = r.GetProperty("subgrids").EnumerateArray()
+            .Select(g => (g.GetProperty("name").GetString() ?? "", g.GetProperty("label").GetString() ?? "", g.GetProperty("entity").GetString() ?? "")).ToList();
         return new FormInfo(r.GetProperty("entity").GetString() ?? "", r.GetProperty("id").GetString() ?? "", r.GetProperty("isNew").GetBoolean(),
-            fields, tabs, commands);
+            fields, tabs, commands, subgrids);
     }
 
     // ───────────────────────────── Ghi thao tác trên Dynamics 365 ─────────────────────────────
@@ -635,9 +1135,10 @@ internal static class D365Client
     /// và đúng bảng / Id (hoặc là form tạo mới).
     /// </summary>
     private static async Task WaitFormAsync(string tab, string entity, string id, bool newForm, int timeoutMs, CancellationToken ct,
-        bool requireForm = true)
+        bool requireForm = true, string formId = "")
     {
         var probe = Script($$"""
+            if (__onLogin()) throw new Error(__noXrm());
             if (document.readyState !== 'complete') return '';
             const fc = __fc();
             if (!fc) return {{Js(requireForm)}} ? '' : 'ok';
@@ -646,6 +1147,7 @@ internal static class D365Client
             if ({{Js(entity)}} && name !== {{Js(entity)}}) return '';
             if ({{Js(id)}} && id !== {{Js(id)}}) return '';
             if ({{Js(newForm)}} && fc.ui.getFormType() !== 1) return '';
+            if ({{Js(formId)}} && __formNow(fc).id && __formNow(fc).id !== {{Js(formId)}}) return '';
             window.__saPrev = null;
             return 'ok';
             """);
@@ -716,10 +1218,68 @@ internal static class D365Client
     /// <summary>Hàm trợ giúp chạy trong trang: lấy formContext, đọc/đổi giá trị theo kiểu field, đọc thông báo.</summary>
     private const string Helpers = """
         const __fc = () => { const X = window.Xrm; return X && X.Page && X.Page.data && X.Page.data.entity && X.Page.ui ? X.Page : null; };
-        const __need = () => { const fc = __fc(); if (!fc) throw new Error('Trang hiện tại không phải form Dynamics 365 (chưa có Xrm.Page) — mở form bằng bước "Mở form bản ghi" hoặc chờ form tải xong.'); return fc; };
+        const __onLogin = () => /\/\/(login\.microsoftonline\.com|login\.live\.com|login\.windows\.net)\//i.test(location.href + '/') || /\/adfs\/ls/i.test(location.href);
+        const __noXrm = () => __onLogin()
+          ? 'Phiên đăng nhập Dynamics 365 đã hết — trình duyệt đang ở trang đăng nhập Microsoft. Thêm bước "Đăng nhập Microsoft" (tài khoản test) trước bước này, hoặc đăng nhập lại trong hồ sơ trình duyệt.'
+          : 'Trang không phải Dynamics 365 (không có Xrm) — mở app trước bằng bước Trình duyệt.';
+        const __need = () => { const fc = __fc(); if (!fc) throw new Error(__onLogin() ? __noXrm() : 'Trang hiện tại không phải form Dynamics 365 (chưa có Xrm.Page) — mở form bằng bước "Mở form bản ghi" hoặc chờ form tải xong.'); return fc; };
         const __norm = s => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D').replace(/\s+/g, ' ').trim().toLowerCase();
         const __visible = e => !!e && (e.offsetParent !== null || getComputedStyle(e).position === 'fixed');
         const __id = v => String(v ?? '').replace(/[{}]/g, '').toLowerCase();
+        const __formNow = fc => {
+          const fs = fc && fc.ui && fc.ui.formSelector;
+          const it = fs && fs.getCurrentItem ? fs.getCurrentItem() : null;
+          return it ? { id: __id(it.getId()), label: String(it.getLabel() || '') } : { id: '', label: '' };
+        };
+        const __formId = async (entity, form) => {
+          form = String(form ?? '').trim();
+          if (!form) return '';
+          if (/^\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?$/i.test(form)) return __id(form);
+          const q = "?$select=formid,name&$filter=objecttypecode eq '" + entity + "' and type eq 2";
+          const forms = (await Xrm.WebApi.retrieveMultipleRecords('systemform', q)).entities;
+          const f = forms.find(x => x.name === form) || forms.find(x => __norm(x.name) === __norm(form));
+          if (!f) throw new Error('Bảng ' + entity + ' không có form chính "' + form + '". Có: ' + (forms.map(x => x.name).join(', ') || '(không đọc được danh sách form)'));
+          return __id(f.formid);
+        };
+        const __grid = name => {
+          const fc = __need();
+          const all = fc.ui.controls ? fc.ui.controls.get() : [];
+          const c = fc.getControl(String(name).trim()) || all.find(x => x.getGrid && x.getLabel && __norm(x.getLabel()) === __norm(name));
+          if (c && c.getGrid) return c;
+          const grids = all.filter(x => x.getGrid).map(x => x.getName() + (x.getLabel && x.getLabel() ? ' (' + x.getLabel() + ')' : ''));
+          throw new Error('Form không có subgrid "' + name + '". Có: ' + (grids.join(', ') || '(không có subgrid nào)'));
+        };
+        const __cellText = v => {
+          if (v === null || v === undefined) return '';
+          if (Array.isArray(v)) return v.map(x => (x && typeof x === 'object') ? String(x.name || x.text || x.id || '') : String(x)).join('; ');
+          if (v instanceof Date) return __fmtDate(v, v.getHours() || v.getMinutes());
+          if (typeof v === 'object') return String(v.name || v.text || v.id || '');
+          return String(v);
+        };
+        const __gridRows = c => c.getGrid().getRows().get().map((r, i) => {
+          const e = r.getData().getEntity();
+          const cells = {};
+          const attrs = e.attributes ? (typeof e.attributes.get === 'function' ? e.attributes.get() : Array.from(e.attributes)) : [];
+          attrs.forEach(a => { try { cells[a.getName()] = __cellText(a.getValue()); } catch (x) { } });
+          return { index: i + 1, entity: e.getEntityName(), id: __id(e.getId()), name: String(e.getPrimaryAttributeValue() ?? ''), cells };
+        });
+        const __gridRow = (rows, ref) => {
+          ref = String(ref ?? '').trim() || '1';
+          if (/^\d+$/.test(ref)) return rows[parseInt(ref, 10) - 1] || null;
+          const n = __norm(ref);
+          return rows.find(r => __norm(r.name) === n) || rows.find(r => __norm(r.name).includes(n))
+              || rows.find(r => Object.values(r.cells).some(v => __norm(v).includes(n))) || null;
+        };
+        const __cmdText = e => __norm(e.getAttribute('aria-label') || e.getAttribute('title') || e.innerText || '');
+        const __cmdAll = () => Array.from(document.querySelectorAll('button, [role=menuitem], [role=button], [role=menuitemcheckbox]')).filter(__visible);
+        const __cmdFind = label => {
+          const want = __norm(label), raw = String(label).trim().toLowerCase(), all = __cmdAll();
+          return all.find(e => __cmdText(e) === want) || all.find(e => __norm(e.innerText || '') === want)
+              || all.find(e => (e.getAttribute('data-id') || '').toLowerCase().includes(raw) && raw.length > 3) || null;
+        };
+        const __cmdMore = () => __cmdAll().find(e => /overflowbutton|moreCommands/i.test(e.getAttribute('data-id') || '')
+          || /^(more commands|thêm lệnh|more)$/i.test((e.getAttribute('aria-label') || '').trim())) || null;
+        const __cmdDisabled = e => !!e.disabled || e.getAttribute('aria-disabled') === 'true';
         const __attr = name => {
           const a = __need().getAttribute(String(name).trim());
           if (!a) throw new Error('Form không có field "' + name + '" (dùng tên logic, vd name, telephone1, parentcustomerid).');

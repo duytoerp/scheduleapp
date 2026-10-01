@@ -112,6 +112,7 @@ public sealed class FlowContext
         copy.RowRef = Expand(s.RowRef);
         copy.Headers = Expand(s.Headers);
         copy.Message = Expand(s.Message);
+        copy.Form = Expand(s.Form);
         return copy;
     }
 
