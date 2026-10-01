@@ -69,6 +69,23 @@ public sealed class Job
     /// <summary>Sau khi chạy, xóa các bản ghi Dynamics 365 mà flow đã tạo (danh sách trong {{d365.created}}).</summary>
     public bool CleanupTestData { get; set; }
 
+    /// <summary>Tag của kịch bản kiểm thử, cách nhau dấu phẩy (vd "smoke, regression") — chọn bộ chạy bằng --tag.</summary>
+    public string Tags { get; set; } = "";
+
+    /// <summary>Mã test case / yêu cầu bên ngoài (vd Azure DevOps Test Plans 1234) — ghi vào báo cáo và junit.xml.</summary>
+    public string TestCaseId { get; set; } = "";
+
+    /// <summary>Kiểm thử theo dữ liệu: file Excel / CSV, mỗi dòng chạy kịch bản một lần (biến {{row.TênCột}}) và là một test case riêng.</summary>
+    public string DataFile { get; set; } = "";
+
+    /// <summary>Sheet của <see cref="DataFile"/> (trống = sheet đầu).</summary>
+    public string DataSheet { get; set; } = "";
+
+    /// <summary>Danh sách tag đã tách và bỏ khoảng trắng.</summary>
+    [JsonIgnore]
+    public IReadOnlyList<string> TagList =>
+        Tags.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
     public DateTime? LastRun { get; set; }
     public string? LastResult { get; set; }
 

@@ -640,7 +640,7 @@ public sealed class ActionStep
         StepType.WaitForElement => $"Chờ phần tử [{Short(Text)}] (tối đa {FormatMs(DelayMs)})" + SearchArea(),
         StepType.Browser => BrowserAction switch
         {
-            BrowserAction.Launch => $"Mở {(string.IsNullOrWhiteSpace(Target) ? "Chrome" : Target)} chế độ điều khiển" +
+            BrowserAction.Launch => $"Mở {(string.IsNullOrWhiteSpace(Target) ? "Chrome" : Target)} chế độ điều khiển{(Force ? " (ẩn)" : "")}" +
                                     (string.IsNullOrWhiteSpace(Arguments) ? "" : $" · hồ sơ \"{Short(Arguments)}\"") +
                                     (string.IsNullOrWhiteSpace(Text) ? "" : $" → {Short(Text)}"),
             BrowserAction.Navigate => $"Mở {Short(Text)}" + InTab(),

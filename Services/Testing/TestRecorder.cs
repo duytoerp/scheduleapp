@@ -41,21 +41,53 @@ public sealed class TestCaseResult
     public string Message { get; init; } = "";
     public List<StepRecord> Steps { get; init; } = [];
 
+    /// <summary>Tag của kịch bản (smoke, regression…).</summary>
+    public IReadOnlyList<string> Tags { get; init; } = [];
+
+    /// <summary>Mã test case bên ngoài (Azure DevOps Test Plans…).</summary>
+    public string TestCaseId { get; init; } = "";
+
+    /// <summary>Dòng dữ liệu (kiểm thử theo dữ liệu), vd "dòng 3: KH001"; null nếu không chạy theo dữ liệu.</summary>
+    public string? DataLabel { get; init; }
+
+    /// <summary>Số lần đã chạy (1 = đạt / không đạt ngay lần đầu; &gt; 1 = có chạy lại).</summary>
+    public int Attempts { get; init; } = 1;
+
+    /// <summary>Lỗi của lần chạy đầu khi kịch bản chỉ đạt sau khi chạy lại (kịch bản chập chờn).</summary>
+    public string? FirstFailure { get; init; }
+
+    /// <summary>Đạt nhưng phải chạy lại mới đạt.</summary>
+    public bool Flaky => Ok && Attempts > 1;
+
+    /// <summary>Lỗi chính: bước lỗi đầu tiên kèm chi tiết (giá trị thực tế), không có thì thông điệp của lần chạy.</summary>
+    public string FailureSummary => Steps.FirstOrDefault(s => !s.Ok) is { } f
+        ? $"bước {f.Number} \"{f.Description}\"{(f.Detail.Length > 0 ? " — " + f.Detail : "")}"
+        : Message;
+
     public double Seconds => (End - Start).TotalSeconds;
     public int AssertsPassed => Steps.Count(s => s.IsAssert && s.Ok);
     public int AssertsFailed => Steps.Count(s => s.IsAssert && !s.Ok);
 
-    public static TestCaseResult Create(Job job, DateTime start, DateTime end, FlowResult? result, TestRecorder recorder) => new()
+    internal static TestCaseResult Create(Job job, DateTime start, DateTime end, FlowResult? result, TestRecorder recorder,
+        TestRun? run = null, int attempts = 1, string? firstFailure = null) => new()
     {
         JobId = job.Id,
-        Name = job.Name,
+        Name = run?.Name ?? job.Name,
         Group = job.Group,
         Start = start,
         End = end,
         Ok = result?.Ok == true,
         Message = result?.Message ?? "Không chạy (đang chạy sẵn hoặc bị hủy trong hàng đợi)",
-        Steps = recorder.Steps
+        Steps = recorder.Steps,
+        Tags = job.TagList,
+        TestCaseId = job.TestCaseId.Trim(),
+        DataLabel = run?.DataLabel,
+        Attempts = attempts,
+        FirstFailure = firstFailure
     };
+
+    public static TestCaseResult Create(Job job, DateTime start, DateTime end, FlowResult? result, TestRecorder recorder) =>
+        Create(job, start, end, result, recorder, null);
 }
 
 /// <summary>

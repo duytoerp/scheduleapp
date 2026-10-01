@@ -47,6 +47,22 @@ public sealed class FlowRunner
     /// <summary>Đưa công việc vào hàng đợi; task hoàn thành khi flow chạy xong. Null nếu bị bỏ qua / hủy trong hàng đợi.</summary>
     public async Task<FlowResult?> EnqueueAsync(Job job, string trigger, RunOptions? options = null)
     {
+        string? envName = null;
+        if (job.IsTestCase && options?.Recorder == null)
+        {
+            // Kịch bản kiểm thử chạy riêng lẻ (theo lịch, nút Chạy…): dùng biến của môi trường đang chọn (biến truyền vào vẫn được ưu tiên).
+            var env = TestEnvironments.Current();
+            envName = env?.Name;
+            if (env != null) options = (options ?? RunOptions.Default).WithVariables(TestEnvironments.Merge(TestEnvironments.Variables(env), options?.Variables));
+            if (!string.IsNullOrWhiteSpace(job.DataFile) && options?.StepMode != true && options?.StartIndex is null or 0)
+            {
+                // Kiểm thử theo dữ liệu: mỗi dòng một lần chạy, chung một báo cáo.
+                var suite = await TestSuite.RunAsync(this, [job], job.Name, null,
+                    new SuiteOptions { Environment = env?.Name, Variables = options?.Variables });
+                return new FlowResult(suite.Ok, TestReport.Summary(suite.Cases));
+            }
+        }
+
         CancellationToken stopToken;
         lock (_sync)
         {
@@ -83,7 +99,7 @@ public sealed class FlowRunner
             {
                 try
                 {
-                    report = TestReport.Write(reportFolder, job.Name, [TestCaseResult.Create(job, started, DateTime.Now, result, options.Recorder!)]);
+                    report = TestReport.Write(reportFolder, job.Name, [TestCaseResult.Create(job, started, DateTime.Now, result, options.Recorder!)], envName);
                     Log.Info($"   📄 Báo cáo kiểm thử: {report}");
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

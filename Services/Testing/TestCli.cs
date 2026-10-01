@@ -1,12 +1,86 @@
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
+using ScheduleApp.Automation;
+using ScheduleApp.Models;
 using ScheduleApp.Services.Engine;
 
 namespace ScheduleApp.Services.Testing;
 
+/// <summary>Tham số dòng lệnh của chế độ chạy kiểm thử.</summary>
+internal sealed record TestCliOptions
+{
+    /// <summary>Tên nhóm / tên công việc / "*" (trống = mọi kịch bản, thường dùng cùng --tag).</summary>
+    public string Query { get; init; } = "";
+    public string? Tags { get; init; }
+    public string? Environment { get; init; }
+    public string? TestDir { get; init; }
+    public string? ReportDir { get; init; }
+    public string? Shard { get; init; }
+    public int Retries { get; init; }
+    public bool Headless { get; init; }
+    public bool ListOnly { get; init; }
+
+    public const string Usage =
+        "Cách dùng: ScheduleApp.exe --test \"Nhóm hoặc tên công việc\" [--tag smoke] [--env UAT] [--test-dir \"thư mục kịch bản\"]\n" +
+        "                           [--retry 1] [--shard 1/3] [--headless] [--report \"thư mục báo cáo\"] [--list]\n" +
+        "  \"*\" hoặc bỏ trống tên = mọi kịch bản kiểm thử. Mã thoát: 0 = đạt, 1 = có kịch bản không đạt, 2 = không có kịch bản / tham số sai.";
+
+    /// <summary>Đọc tham số; sai cú pháp thì báo <see cref="FormatException"/>.</summary>
+    public static TestCliOptions Parse(string[] args)
+    {
+        string? Value(string name)
+        {
+            int i = Array.FindIndex(args, a => a.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (i < 0) return null;
+            if (i + 1 >= args.Length || args[i + 1].StartsWith("--", StringComparison.Ordinal))
+                return name == "--test" ? "" : throw new FormatException($"Thiếu giá trị sau {name}.");
+            return args[i + 1].Trim().Trim('"');
+        }
+        bool Flag(string name) => args.Any(a => a.Equals(name, StringComparison.OrdinalIgnoreCase));
+
+        int retries = 0;
+        if (Value("--retry") is { } r && (!int.TryParse(r, NumberStyles.Integer, CultureInfo.InvariantCulture, out retries) || retries is < 0 or > 5))
+            throw new FormatException($"--retry \"{r}\" không hợp lệ — dùng số từ 0 tới 5.");
+        var shard = Value("--shard");
+        if (shard != null) TestSuite.ParseShard(shard);
+        return new TestCliOptions
+        {
+            Query = Value("--test") ?? "",
+            Tags = Value("--tag"),
+            Environment = Value("--env"),
+            TestDir = Value("--test-dir") is { } d ? Path.GetFullPath(System.Environment.ExpandEnvironmentVariables(d)) : null,
+            ReportDir = Value("--report") is { } rep ? Path.GetFullPath(System.Environment.ExpandEnvironmentVariables(rep)) : null,
+            Shard = shard,
+            Retries = retries,
+            Headless = Flag("--headless"),
+            ListOnly = Flag("--list")
+        };
+    }
+
+    /// <summary>Chọn kịch bản: theo tên nhóm / tên, rồi lọc tag, rồi chia shard.</summary>
+    public List<Job> Select(IEnumerable<Job> jobs)
+    {
+        var selected = TestSuite.WithTags(TestSuite.Select(jobs, Query), Tags);
+        return Shard == null ? selected : TestSuite.Shard(selected, Shard);
+    }
+
+    /// <summary>Tên bộ kiểm thử trong báo cáo.</summary>
+    public string SuiteName(IReadOnlyList<Job> selected)
+    {
+        var q = Query.Trim();
+        var name = selected.Count == 1 && !selected[0].Group.Equals(q, StringComparison.CurrentCultureIgnoreCase) && q is not ("" or "*")
+            ? selected[0].Name
+            : q is "" or "*" ? "Tất cả kịch bản" : q;
+        if (!string.IsNullOrWhiteSpace(Tags)) name += $" [tag {Tags.Trim()}]";
+        if (Shard != null) name += $" (phần {Shard})";
+        return name;
+    }
+}
+
 /// <summary>
 /// Chạy bộ kiểm thử từ dòng lệnh (CI / Azure DevOps / Task Scheduler), không mở giao diện:
-///   ScheduleApp.exe --test "Nhóm hoặc tên công việc" [--report "thư mục"]
+///   ScheduleApp.exe --test "Nhóm hoặc tên công việc" [--tag …] [--env …] [--test-dir …] [--retry N] [--shard i/n] [--headless] [--report "thư mục"]
 /// Mã thoát: 0 = mọi kịch bản đạt, 1 = có kịch bản không đạt, 2 = không tìm thấy kịch bản / tham số sai.
 /// </summary>
 internal static class TestCli
@@ -14,7 +88,7 @@ internal static class TestCli
     [DllImport("kernel32.dll")]
     private static extern bool AttachConsole(int processId);
 
-    public static int Run(string query, string? reportRoot)
+    public static int Run(string[] args)
     {
         // ScheduleApp là ứng dụng cửa sổ: gắn vào console của tiến trình gọi để in kết quả.
         AttachConsole(-1);
@@ -24,50 +98,99 @@ internal static class TestCli
             Console.SetOut(new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true });
         }
         catch (IOException) { }
+        return Run(args, Print);
 
-        void Print(string line)
+        static void Print(string line)
         {
             try { Console.WriteLine(line); } catch (IOException) { }
         }
+    }
 
-        if (string.IsNullOrWhiteSpace(query))
+    /// <summary>Chạy với nơi in kết quả tùy chọn (kiểm thử dùng để đọc lại output).</summary>
+    internal static int Run(string[] args, Action<string> print)
+    {
+        TestCliOptions o;
+        List<Job> jobs;
+        List<TestEnvironment> environments;
+        try
         {
-            Print("Cách dùng: ScheduleApp.exe --test \"Nhóm hoặc tên công việc\" [--report \"thư mục báo cáo\"]   (\"*\" = mọi kịch bản kiểm thử)");
+            o = TestCliOptions.Parse(args);
+            jobs = o.TestDir != null ? TestFolder.Load(o.TestDir) : JobStore.Load();
+            // Môi trường: environments.json của thư mục kịch bản (nếu có) ghi đè môi trường cùng tên trong Cài đặt.
+            environments = [.. SettingsStore.Current.Environments];
+            if (o.TestDir != null)
+                foreach (var env in TestFolder.LoadEnvironments(o.TestDir))
+                {
+                    environments.RemoveAll(e => e.Name.Trim().Equals(env.Name.Trim(), StringComparison.CurrentCultureIgnoreCase));
+                    environments.Add(env);
+                }
+        }
+        catch (Exception ex) when (ex is FormatException or IOException or InvalidDataException or UnauthorizedAccessException)
+        {
+            print(ex.Message);
+            print(TestCliOptions.Usage);
             return 2;
         }
 
-        var jobs = JobStore.Load();
-        var selected = TestSuite.Select(jobs, query);
+        TestEnvironment? environment;
+        try { environment = TestEnvironments.Find(environments, o.Environment); }
+        catch (InvalidOperationException ex)
+        {
+            print(ex.Message);
+            return 2;
+        }
+
+        var selected = o.Select(jobs);
         if (selected.Count == 0)
         {
-            Print($"Không tìm thấy kịch bản kiểm thử nào khớp \"{query}\" (tên nhóm, tên công việc, hoặc \"*\").");
+            print($"Không tìm thấy kịch bản kiểm thử nào khớp \"{o.Query}\"" + (o.Tags != null ? $" với tag \"{o.Tags}\"" : "") +
+                  (o.Shard != null ? $" trong phần {o.Shard}" : "") + " (tên nhóm, tên công việc, hoặc \"*\").");
             return 2;
         }
+        if (o.ListOnly)
+        {
+            foreach (var j in selected)
+                print($"{(j.Group.Length > 0 ? j.Group + " › " : "")}{j.Name}" + (j.Tags.Length > 0 ? $"  [{string.Join(", ", j.TagList)}]" : "") +
+                      (j.DataFile.Length > 0 ? $"  (dữ liệu: {j.DataFile})" : ""));
+            print($"{selected.Count} kịch bản.");
+            return 0;
+        }
 
-        Log.Written += Print;
-        var ui = new HeadlessNotifier();
-        var runner = new FlowRunner(ui, id => jobs.FirstOrDefault(j => j.Id == id));
-        Console.CancelKeyPress += (_, e) =>
+        BrowserClient.ForceHeadless = o.Headless;
+        Log.Written += print;
+        var runner = new FlowRunner(new HeadlessNotifier(), id => jobs.FirstOrDefault(j => j.Id == id));
+        ConsoleCancelEventHandler cancel = (_, e) =>
         {
             e.Cancel = true;
             runner.StopAll();
         };
+        Console.CancelKeyPress += cancel;
+        SuiteResult result;
+        try
+        {
+            result = TestSuite.RunAsync(runner, selected, o.SuiteName(selected), o.ReportDir, new SuiteOptions
+            {
+                Environment = environment?.Name,
+                Variables = TestEnvironments.Variables(environment),
+                Retries = o.Retries,
+                BaseDir = o.TestDir
+            }).GetAwaiter().GetResult();
+        }
+        finally
+        {
+            Log.Written -= print;
+            Console.CancelKeyPress -= cancel;
+            BrowserClient.ForceHeadless = false;
+        }
 
-        var name = selected.Count == 1 && !selected[0].Group.Equals(query.Trim().Trim('"'), StringComparison.CurrentCultureIgnoreCase)
-            ? selected[0].Name
-            : query.Trim().Trim('"');
-        var result = TestSuite.RunAsync(runner, selected, name,
-            string.IsNullOrWhiteSpace(reportRoot) ? null : Path.GetFullPath(Environment.ExpandEnvironmentVariables(reportRoot.Trim().Trim('"'))))
-            .GetAwaiter().GetResult();
-        Log.Written -= Print;
-
-        Print("");
+        print("");
         foreach (var c in result.Cases)
-            Print($"{(c.Ok ? "  ✔ ĐẠT      " : "  ✖ KHÔNG ĐẠT")}  {c.Name}  ({TestReport.Duration(c.Seconds)}){(c.Ok ? "" : " — " + c.Message)}");
-        Print("");
-        Print($"{(result.Ok ? "ĐẠT" : "KHÔNG ĐẠT")}: {TestReport.Summary(result.Cases)}");
-        Print($"Báo cáo: {result.ReportPath}");
-        Print($"JUnit:   {Path.Combine(Path.GetDirectoryName(result.ReportPath)!, "junit.xml")}");
+            print($"{(c.Ok ? "  ✔ ĐẠT      " : "  ✖ KHÔNG ĐẠT")}  {c.Name}  ({TestReport.Duration(c.Seconds)})" +
+                  (c.Flaky ? $" — đạt ở lần chạy thứ {c.Attempts}" : c.Ok ? "" : " — " + c.FailureSummary));
+        print("");
+        print($"{(result.Ok ? "ĐẠT" : "KHÔNG ĐẠT")}: {TestReport.Summary(result.Cases)}");
+        print($"Báo cáo: {result.ReportPath}");
+        print($"JUnit:   {Path.Combine(Path.GetDirectoryName(result.ReportPath)!, "junit.xml")}");
         return result.Ok ? 0 : 1;
     }
 }

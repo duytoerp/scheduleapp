@@ -1017,7 +1017,8 @@ internal sealed class StepEditorForm : BaseForm
 
         SetVisible(t == StepType.Reminder, _chkWaitUser);
         bool force = t is StepType.CloseApp or StepType.StopFlow or StepType.HttpRequest or StepType.AskAi or StepType.Notify
-                     || (t == StepType.SetVariable && src == VarSource.AskUser) || (dyn && d is D365Action.SetField or D365Action.WebApi);
+                     || (t == StepType.SetVariable && src == VarSource.AskUser) || (dyn && d is D365Action.SetField or D365Action.WebApi)
+                     || (t == StepType.Browser && br == BrowserAction.Launch);
         SetVisible(force, _chkForce);
         _chkForce.Text = t switch
         {
@@ -1026,6 +1027,7 @@ internal sealed class StepEditorForm : BaseForm
             StepType.HttpRequest => "Không báo lỗi khi API trả mã lỗi (≥ 400) — tự kiểm tra {{http.status}}",
             StepType.Dynamics when d == D365Action.WebApi => "Không báo lỗi khi API trả mã lỗi (≥ 400) — tự kiểm tra {{http.status}}",
             StepType.Dynamics => "Cho phép nhập cả khi field bị khóa / ẩn (người dùng thật không nhập được)",
+            StepType.Browser => "Chạy ẩn (headless) — không hiện cửa sổ, vẫn chụp ảnh khi lỗi được; hồ sơ phải đã đăng nhập sẵn",
             StepType.AskAi => "Gửi kèm ảnh chụp màn hình (cửa sổ ở trên hoặc cả màn hình) cho AI đọc",
             StepType.Notify => "Gửi kèm ảnh chụp màn hình hiện tại",
             _ => "Ẩn ký tự khi nhập (mật khẩu) — không ghi giá trị vào log"

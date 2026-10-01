@@ -18,6 +18,9 @@ internal interface ITestHost
 
     /// <summary>Mở trang Hướng dẫn ở chủ đề <paramref name="topic"/>.</summary>
     void OpenHelp(string topic);
+
+    /// <summary>Nhập công việc đọc từ thư mục kịch bản (cùng Id thì thay, chưa có thì thêm) rồi lưu.</summary>
+    TestFolder.MergeResult ImportTests(IReadOnlyList<Job> jobs);
 }
 
 /// <summary>Trang "Kiểm thử": các kịch bản kiểm thử với kết quả lần chạy gần nhất, chạy một / nhiều / tất cả, báo cáo gần đây.</summary>
@@ -30,6 +33,11 @@ internal sealed class TestDashboard : UserControl
     private readonly StatCard _cardNever = new("Chưa chạy");
     private readonly ListView _cases = NewList(checkBoxes: true);
     private readonly ListView _reports = NewList(checkBoxes: false);
+    private readonly ToolStripComboBox _cboEnv = new() { DropDownStyle = ComboBoxStyle.DropDownList, AutoSize = false, Width = 170, FlatStyle = FlatStyle.Flat };
+    private readonly ToolStripComboBox _cboTag = new() { DropDownStyle = ComboBoxStyle.DropDownList, AutoSize = false, Width = 150, FlatStyle = FlatStyle.Flat };
+    private bool _filling;
+    private const string NoEnvironment = "(không dùng)";
+    private const string AllTags = "(tất cả)";
     private readonly Label _empty = new()
     {
         Text = "Chưa có kịch bản kiểm thử nào.\n\nBấm \"⏺ Ghi kịch bản D365\" rồi thao tác trên form Dynamics 365 — các bước được tạo tự động,\n" +
@@ -56,8 +64,8 @@ internal sealed class TestDashboard : UserControl
         bar.Items.Add(Theme.CommandButton("▶ Chạy tất cả", async (_, _) =>
         {
             var all = TestCases();
-            if (all.Count > 0) await _host.RunTestsAsync(all, "Tất cả kịch bản kiểm thử");
-        }));
+            if (all.Count > 0) await _host.RunTestsAsync(all, SelectedTag is { } tag ? $"Kịch bản tag {tag}" : "Tất cả kịch bản kiểm thử");
+        }, tip: "Chạy mọi kịch bản đang hiện (theo bộ lọc tag)"));
         bar.Items.Add(Theme.CommandButton("✖ Chạy lại các kịch bản lỗi", async (_, _) =>
         {
             var failed = TestCases().Where(j => LastRun(j) is { Ok: false }).ToList();
@@ -76,14 +84,41 @@ internal sealed class TestDashboard : UserControl
         help.Alignment = ToolStripItemAlignment.Right;
         bar.Items.Add(help);
 
+        // Thanh lọc: môi trường, tag, thư mục kịch bản (git)
+        var filter = Theme.CommandBar();
+        filter.Items.Add(new ToolStripLabel("Môi trường:") { ForeColor = Theme.Muted });
+        filter.Items.Add(_cboEnv);
+        filter.Items.Add(Theme.CommandButton("Quản lý…", (_, _) => ManageEnvironments(), tip: "Thêm / sửa môi trường (Dev, Test, UAT…) và biến của từng môi trường"));
+        filter.Items.Add(new ToolStripSeparator());
+        filter.Items.Add(new ToolStripLabel("Tag:") { ForeColor = Theme.Muted });
+        filter.Items.Add(_cboTag);
+        var folder = new ToolStripDropDownButton("🗂 Thư mục kịch bản (git)") { Alignment = ToolStripItemAlignment.Right, ToolTipText = "Lưu kịch bản thành file để đưa vào git, review và chạy CI" };
+        folder.DropDownItems.Add("Xuất kịch bản ra thư mục…", null, (_, _) => ExportFolder());
+        folder.DropDownItems.Add("Nhập / cập nhật từ thư mục…", null, (_, _) => ImportFolder());
+        folder.DropDownItems.Add("Mở thư mục đã dùng", null, (_, _) =>
+        {
+            var dir = SettingsStore.Current.TestFolder;
+            if (Directory.Exists(dir)) Process.Start(new ProcessStartInfo(dir) { UseShellExecute = true });
+            else MessageBox.Show(this, "Chưa xuất / nhập thư mục kịch bản nào.", "Kiểm thử", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        });
+        filter.Items.Add(folder);
+        _cboEnv.SelectedIndexChanged += (_, _) =>
+        {
+            if (_filling) return;
+            SettingsStore.Current.CurrentEnvironment = _cboEnv.SelectedIndex <= 0 ? "" : (string)_cboEnv.SelectedItem!;
+            SettingsStore.Save();
+        };
+        _cboTag.SelectedIndexChanged += (_, _) => { if (!_filling) RefreshData(); };
+
         var cards = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(18, 4, 18, 10), BackColor = Theme.Background, WrapContents = false };
         cards.Controls.AddRange([_cardTotal, _cardPassed, _cardFailed, _cardNever]);
 
         _cases.Columns.Add("Kịch bản", 260);
-        _cases.Columns.Add("Nhóm", 150);
+        _cases.Columns.Add("Nhóm · tag", 150);
         _cases.Columns.Add("Nội dung", 150);
         _cases.Columns.Add("Lần chạy cuối", 130);
         _cases.Columns.Add("Kết quả", 120);
+        _cases.Columns.Add("Ổn định (10 lần)", 100);
         _cases.Columns.Add("Thời lượng", 90);
         _cases.Columns.Add("Chi tiết", 300);
         _cases.DoubleClick += (_, _) => { if (SelectedCase() is { } j) _host.EditJob(j); };
@@ -124,6 +159,7 @@ internal sealed class TestDashboard : UserControl
         splitHost.Controls.Add(split);
         Controls.Add(splitHost);
         Controls.Add(cards);
+        Controls.Add(filter);
         Controls.Add(bar);
         Controls.Add(Theme.PageHeader("Kiểm thử", "Kịch bản kiểm thử tự động (Dynamics 365 và các flow khác) — chạy, xem kết quả, mở báo cáo"));
 
@@ -181,8 +217,124 @@ internal sealed class TestDashboard : UserControl
         return card;
     }
 
-    private List<Job> TestCases() => _host.AllJobs.Where(j => j.IsTestCase)
+    /// <summary>Các kịch bản kiểm thử đang hiện (theo bộ lọc tag).</summary>
+    private List<Job> TestCases() => TestSuite.WithTags(_host.AllJobs.Where(j => j.IsTestCase), SelectedTag)
         .OrderBy(j => j.Group, StringComparer.CurrentCultureIgnoreCase).ThenBy(j => j.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+
+    private string? SelectedTag => _cboTag.SelectedIndex > 0 ? (string)_cboTag.SelectedItem! : null;
+
+    /// <summary>Nạp danh sách môi trường và tag (giữ lựa chọn hiện tại).</summary>
+    private void FillFilters()
+    {
+        _filling = true;
+        try
+        {
+            var envs = SettingsStore.Current.Environments.Select(e => e.Name).ToList();
+            _cboEnv.Items.Clear();
+            _cboEnv.Items.Add(NoEnvironment);
+            foreach (var e in envs) _cboEnv.Items.Add(e);
+            int env = envs.FindIndex(e => e.Equals(SettingsStore.Current.CurrentEnvironment, StringComparison.CurrentCultureIgnoreCase));
+            _cboEnv.SelectedIndex = env + 1;
+
+            var tag = SelectedTag;
+            var tags = _host.AllJobs.Where(j => j.IsTestCase).SelectMany(j => j.TagList)
+                .Distinct(StringComparer.CurrentCultureIgnoreCase).OrderBy(t => t, StringComparer.CurrentCultureIgnoreCase).ToList();
+            _cboTag.Items.Clear();
+            _cboTag.Items.Add(AllTags);
+            foreach (var t in tags) _cboTag.Items.Add(t);
+            _cboTag.SelectedIndex = tag == null ? 0 : Math.Max(0, tags.FindIndex(t => t.Equals(tag, StringComparison.CurrentCultureIgnoreCase)) + 1);
+        }
+        finally
+        {
+            _filling = false;
+        }
+    }
+
+    private void ManageEnvironments()
+    {
+        using var f = new EnvironmentsForm(SettingsStore.Current.Environments);
+        if (f.ShowDialog(this) != DialogResult.OK) return;
+        SettingsStore.Current.Environments = [.. f.Environments];
+        if (!f.Environments.Any(e => e.Name.Equals(SettingsStore.Current.CurrentEnvironment, StringComparison.CurrentCultureIgnoreCase)))
+            SettingsStore.Current.CurrentEnvironment = f.Environments.Count == 1 ? f.Environments[0].Name : "";
+        SettingsStore.Save();
+        FillFilters();
+    }
+
+    private string? PickFolder(string description)
+    {
+        using var dlg = new FolderBrowserDialog { Description = description, UseDescriptionForTitle = true, ShowNewFolderButton = true };
+        if (Directory.Exists(SettingsStore.Current.TestFolder)) dlg.InitialDirectory = SettingsStore.Current.TestFolder;
+        return dlg.ShowDialog(this) == DialogResult.OK ? dlg.SelectedPath : null;
+    }
+
+    /// <summary>Xuất kịch bản (đã tick, hoặc mọi kịch bản đang hiện) kèm công việc dùng chung và môi trường ra thư mục.</summary>
+    private void ExportFolder()
+    {
+        var picked = _cases.CheckedItems.Cast<ListViewItem>().Select(i => (Job)i.Tag!).ToList();
+        var jobs = picked.Count > 0 ? picked : TestCases();
+        if (jobs.Count == 0)
+        {
+            MessageBox.Show(this, "Chưa có kịch bản kiểm thử nào để xuất.", "Kiểm thử", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        var folder = PickFolder($"Chọn thư mục lưu {jobs.Count} kịch bản (vd thư mục tests trong repo git)");
+        if (folder == null) return;
+        try
+        {
+            var r = TestFolder.Export(folder, jobs, _host.AllJobs, SettingsStore.Current.Environments);
+            SettingsStore.Current.TestFolder = folder;
+            SettingsStore.Save();
+            Log.Info($"🗂 Đã xuất {r.Written.Count} file kịch bản ra {folder}.");
+            MessageBox.Show(this,
+                $"Đã ghi {r.Written.Count} file (kịch bản và công việc dùng chung mà chúng gọi tới)" +
+                (SettingsStore.Current.Environments.Count > 0 ? $" và {TestFolder.EnvironmentsFile}" : "") + $" vào:\n{folder}" +
+                (r.Removed.Count > 0 ? $"\n\nĐã xóa {r.Removed.Count} file cũ (kịch bản đổi tên / đổi nhóm)." : "") +
+                $"\n\nĐưa thư mục này vào git để review thay đổi. Chạy trên máy CI:\nScheduleApp.exe --test * --test-dir \"{folder}\"",
+                "Kiểm thử", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, "Không ghi được thư mục kịch bản: " + ex.Message, "Kiểm thử", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    /// <summary>Nhập kịch bản từ thư mục (vd sau khi git pull): cùng Id thì cập nhật, chưa có thì thêm; môi trường cùng tên được cập nhật.</summary>
+    private void ImportFolder()
+    {
+        var folder = PickFolder("Chọn thư mục kịch bản cần nhập");
+        if (folder == null) return;
+        try
+        {
+            var jobs = TestFolder.Load(folder);
+            var envs = TestFolder.LoadEnvironments(folder);
+            if (jobs.Count == 0)
+            {
+                MessageBox.Show(this, "Thư mục không có file kịch bản nào (*.json).", "Kiểm thử", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            var existing = _host.AllJobs.Select(j => j.Id).ToHashSet();
+            int update = jobs.Count(j => existing.Contains(j.Id));
+            if (MessageBox.Show(this,
+                    $"Nhập {jobs.Count} công việc ({jobs.Count(j => j.IsTestCase)} kịch bản kiểm thử) từ thư mục:\n" +
+                    $"• {update} công việc đã có sẽ được thay bằng bản trong thư mục\n• {jobs.Count - update} công việc mới" +
+                    (envs.Count > 0 ? $"\n• {envs.Count} môi trường ({string.Join(", ", envs.Select(e => e.Name))})" : "") + "\n\nTiếp tục?",
+                    "Kiểm thử", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            _host.ImportTests(jobs);
+            foreach (var env in envs)
+            {
+                SettingsStore.Current.Environments.RemoveAll(e => e.Name.Trim().Equals(env.Name.Trim(), StringComparison.CurrentCultureIgnoreCase));
+                SettingsStore.Current.Environments.Add(env);
+            }
+            SettingsStore.Current.TestFolder = folder;
+            SettingsStore.Save();
+            RefreshData();
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, "Không nhập được thư mục kịch bản: " + ex.Message, "Kiểm thử", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
 
     private static RunRecord? LastRun(Job job) => RunHistory.All.LastOrDefault(r => r.JobId == job.Id);
 
@@ -213,6 +365,7 @@ internal sealed class TestDashboard : UserControl
     /// <summary>Nạp lại danh sách kịch bản, kết quả và báo cáo gần đây.</summary>
     public void RefreshData()
     {
+        FillFilters();
         var cases = TestCases();
         var history = RunHistory.All;
         var checkedIds = _cases.CheckedItems.Cast<ListViewItem>().Select(i => ((Job)i.Tag!).Id).ToHashSet();
@@ -226,12 +379,15 @@ internal sealed class TestDashboard : UserControl
             var last = history.LastOrDefault(r => r.JobId == job.Id);
             int asserts = job.Steps.Count(s => s.Enabled && s.Type == StepType.Assert);
             var item = new ListViewItem(job.Name) { Tag = job, Checked = checkedIds.Contains(job.Id), UseItemStyleForSubItems = false };
-            item.SubItems.Add(job.Group);
-            item.SubItems.Add($"{job.Steps.Count(s => s.Enabled)} bước · {asserts} kiểm tra");
+            item.SubItems.Add(job.Group + (job.Tags.Length > 0 ? (job.Group.Length > 0 ? " · " : "") + string.Join(", ", job.TagList) : ""));
+            item.SubItems.Add($"{job.Steps.Count(s => s.Enabled)} bước · {asserts} kiểm tra" + (job.DataFile.Length > 0 ? " · theo dữ liệu" : ""));
             item.SubItems.Add(last?.Start.ToString("HH:mm dd/MM/yyyy") ?? "—");
             var result = item.SubItems.Add(last == null ? "Chưa chạy" : last.Ok ? "✔ ĐẠT" : "✖ KHÔNG ĐẠT");
             result.ForeColor = last == null ? Theme.Muted : last.Ok ? Theme.Success : Theme.Danger;
             result.Font = Theme.BoldFont;
+            var (ok, total) = TestSuite.Stability(history, job.Id);
+            item.SubItems.Add(total == 0 ? "—" : $"{ok}/{total}").ForeColor =
+                total == 0 ? Theme.Muted : ok == total ? Theme.Success : ok == 0 ? Theme.Danger : Theme.Warning;
             item.SubItems.Add(last == null ? "" : TestReport.Duration(last.Duration.TotalSeconds));
             item.SubItems.Add(last == null || last.Ok ? "" : last.Message).ForeColor = Theme.Muted;
             foreach (ListViewItem.ListViewSubItem s in item.SubItems) if (s != result) s.Font = _cases.Font;
@@ -250,7 +406,8 @@ internal sealed class TestDashboard : UserControl
         _cardPassed.SetValue(passed.ToString(), passed > 0 ? Theme.Success : null);
         _cardFailed.SetValue(failed.ToString(), failed > 0 ? Theme.Danger : null);
         _cardNever.SetValue(never.ToString(), never > 0 ? Theme.Muted : null);
-        FailedCount = failed;
+        // Huy hiệu trên thanh điều hướng tính mọi kịch bản, không theo bộ lọc tag.
+        FailedCount = _host.AllJobs.Where(j => j.IsTestCase).Count(j => history.LastOrDefault(r => r.JobId == j.Id) is { Ok: false });
 
         _recent = TestReport.Recent();
         _reports.BeginUpdate();
@@ -269,8 +426,8 @@ internal sealed class TestDashboard : UserControl
 
     private void FitColumns()
     {
-        if (_cases.Columns.Count < 7 || _cases.ClientSize.Width <= 0) return;
-        float[] weights = [0.27f, 0.16f, 0.13f, 0.12f, 0.11f, 0.09f, 0.12f];
+        if (_cases.Columns.Count < 8 || _cases.ClientSize.Width <= 0) return;
+        float[] weights = [0.23f, 0.15f, 0.13f, 0.11f, 0.10f, 0.08f, 0.08f, 0.12f];
         int width = _cases.ClientSize.Width - 4;
         for (int i = 0; i < weights.Length; i++) _cases.Columns[i].Width = (int)(width * weights[i]);
         if (_reports.Columns.Count == 3 && _reports.ClientSize.Width > 0)

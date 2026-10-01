@@ -25,6 +25,9 @@ internal static class BrowserClient
     /// <summary>Tham số thêm khi mở trình duyệt (kiểm thử dùng " --headless=new").</summary>
     internal static string ExtraLaunchArgs { get; set; } = "";
 
+    /// <summary>Mở mọi trình duyệt điều khiển ở chế độ ẩn (headless) — đặt bởi tham số dòng lệnh --headless (máy CI).</summary>
+    internal static bool ForceHeadless { get; set; }
+
     /// <summary>Tiến trình trình duyệt mở gần nhất (kiểm thử dùng để dọn dẹp).</summary>
     internal static Process? LastLaunched { get; private set; }
     private static string BaseUrl => $"http://127.0.0.1:{Port}";
@@ -34,7 +37,7 @@ internal static class BrowserClient
         switch (s.BrowserAction)
         {
             case BrowserAction.Launch:
-                await LaunchAsync(s.Target, s.Text, s.Arguments, ct);
+                await LaunchAsync(s.Target, s.Text, s.Arguments, s.Force || ForceHeadless, ct);
                 break;
 
             case BrowserAction.Navigate:
@@ -93,7 +96,7 @@ internal static class BrowserClient
     // ───────────────────────────── Mở trình duyệt ─────────────────────────────
 
     /// <param name="profile">Hồ sơ của ScheduleApp (trống = mặc định) — mỗi hồ sơ giữ đăng nhập riêng.</param>
-    private static async Task LaunchAsync(string browser, string url, string profile, CancellationToken ct)
+    private static async Task LaunchAsync(string browser, string url, string profile, bool headless, CancellationToken ct)
     {
         profile = BrowserProfiles.SafeName(profile);
         var dir = BrowserProfiles.Dir(browser, profile);
@@ -126,6 +129,8 @@ internal static class BrowserClient
         if (!Directory.Exists(dir)) Log.Info($"      Hồ sơ mới ({Path.GetFileName(dir)}) — lần đầu cần đăng nhập các trang web, lần sau được giữ lại.");
         // Chrome 136+ chỉ cho remote debugging với thư mục hồ sơ riêng (không phải hồ sơ mặc định).
         var args = $"--remote-debugging-port={Port} --user-data-dir=\"{dir}\" --no-first-run --no-default-browser-check{ExtraLaunchArgs}";
+        // Ẩn: không hiện cửa sổ, vẫn chụp ảnh được qua DevTools. Đặt kích thước như màn hình Full HD để giao diện (thanh lệnh D365…) không bị thu gọn.
+        if (headless) args += " --headless=new --window-size=1920,1080";
         if (!string.IsNullOrWhiteSpace(url)) args += " " + NormalizeUrl(url);
         LastLaunched = Process.Start(new ProcessStartInfo(exe, args) { UseShellExecute = false });
 

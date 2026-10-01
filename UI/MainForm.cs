@@ -941,6 +941,16 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         }
     }
 
+    /// <summary>Nhập công việc từ thư mục kịch bản: cùng Id thì thay, chưa có thì thêm.</summary>
+    TestFolder.MergeResult ITestHost.ImportTests(IReadOnlyList<Job> jobs)
+    {
+        var r = TestFolder.Merge(_jobs, jobs);
+        _scheduler.RecalculateAll();
+        JobsChanged();
+        Log.Info($"Đã nhập từ thư mục kịch bản: {r.Updated} công việc cập nhật, {r.Added} công việc thêm mới.");
+        return r;
+    }
+
     private void ImportJobs()
     {
         using var dlg = new OpenFileDialog { Filter = "ScheduleApp (*.json)|*.json", Title = "Nhập công việc" };
@@ -980,7 +990,9 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         _btnStop.Enabled = true;
         try
         {
-            var result = await TestSuite.RunAsync(_runner, runnable, name);
+            var env = TestEnvironments.Current();
+            var result = await TestSuite.RunAsync(_runner, runnable, name, null,
+                new SuiteOptions { Environment = env?.Name, Variables = TestEnvironments.Variables(env) });
             RefreshTests();
             Notify(result.Ok ? "🧪 Kiểm thử ĐẠT" : "🧪 Kiểm thử KHÔNG ĐẠT", TestReport.Summary(result.Cases), !result.Ok);
             Process.Start(new ProcessStartInfo(result.ReportPath) { UseShellExecute = true });

@@ -42,6 +42,22 @@ public sealed class AppSettings
 
     /// <summary>Lần cuối ScheduleApp còn chạy — dùng để phát hiện lịch bị lỡ khi app tắt.</summary>
     public DateTime? LastAlive { get; set; }
+
+    /// <summary>Môi trường kiểm thử (Dev / Test / UAT…): mỗi môi trường là một bộ biến ghi đè biến của kịch bản.</summary>
+    public List<TestEnvironment> Environments { get; set; } = [];
+
+    /// <summary>Môi trường đang chọn trên trang Kiểm thử (trống = không dùng môi trường).</summary>
+    public string CurrentEnvironment { get; set; } = "";
+
+    /// <summary>Thư mục kịch bản kiểm thử dùng cho Xuất / Nhập (vd thư mục trong repo git).</summary>
+    public string TestFolder { get; set; } = "";
+}
+
+/// <summary>Môi trường kiểm thử: tên + các biến (vd d365Url, tài khoản test) dùng chung cho mọi kịch bản khi chạy ở môi trường này.</summary>
+public sealed class TestEnvironment
+{
+    public string Name { get; set; } = "";
+    public List<VariableDef> Variables { get; set; } = [];
 }
 
 public sealed class TelegramSettings

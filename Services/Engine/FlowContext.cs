@@ -39,6 +39,18 @@ public sealed class RunOptions
         Variables = Variables,
         Recorder = recorder
     };
+
+    /// <summary>Bản sao với biến có sẵn khác.</summary>
+    public RunOptions WithVariables(Dictionary<string, string>? variables) => new()
+    {
+        StartIndex = StartIndex,
+        IsTest = IsTest,
+        StepMode = StepMode,
+        UseBreakpoints = UseBreakpoints,
+        StepStarted = StepStarted,
+        Variables = variables,
+        Recorder = Recorder
+    };
 }
 
 /// <summary>Lệnh của người dùng khi flow đang tạm dừng gỡ lỗi.</summary>

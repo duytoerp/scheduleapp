@@ -76,6 +76,10 @@ internal sealed class JobEditorForm : BaseForm
         Text = "Tự xóa dữ liệu Dynamics 365 do flow tạo ra ({{d365.created}}) sau khi chạy — kể cả khi kiểm thử thất bại",
         AutoSize = true
     };
+    private readonly TextBox _txtTags = new() { Width = 320, PlaceholderText = "vd smoke, regression, khach-hang" };
+    private readonly TextBox _txtTestCaseId = new() { Width = 160, PlaceholderText = "vd 1234" };
+    private readonly TextBox _txtDataFile = new() { Width = 420, PlaceholderText = "trống = chạy một lần; có file = mỗi dòng một test case" };
+    private readonly ComboBox _cboDataSheet = new() { DropDownStyle = ComboBoxStyle.DropDown, Width = 160 };
 
     private readonly FlowDesigner _designer = new() { Dock = DockStyle.Fill };
     private readonly ToolTip _tips = new();
@@ -423,6 +427,27 @@ internal sealed class JobEditorForm : BaseForm
         grid.Controls.Add(_chkCleanup, 0, 4);
         grid.SetColumnSpan(_chkCleanup, 2);
 
+        grid.Controls.Add(Caption("Tag (chọn bộ chạy, --tag):"), 0, 5);
+        grid.Controls.Add(_txtTags, 1, 5);
+        grid.Controls.Add(Caption("Mã test case (Azure DevOps…):"), 0, 6);
+        grid.Controls.Add(_txtTestCaseId, 1, 6);
+        var dataRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+        var browseData = new Button { Text = "Duyệt…", AutoSize = true, Margin = new Padding(6, 2, 3, 2) };
+        browseData.Click += (_, _) =>
+        {
+            using var dlg = new OpenFileDialog { Filter = "Excel / CSV (*.xlsx;*.xlsm;*.csv)|*.xlsx;*.xlsm;*.csv|Mọi file (*.*)|*.*", Title = "File dữ liệu kiểm thử" };
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+            _txtDataFile.Text = dlg.FileName;
+            LoadDataSheets();
+        };
+        _txtDataFile.Leave += (_, _) => LoadDataSheets();
+        dataRow.Controls.AddRange([_txtDataFile, browseData, new Label { Text = "Sheet:", AutoSize = true, Margin = new Padding(10, 7, 3, 3) }, _cboDataSheet]);
+        grid.Controls.Add(Caption("Dữ liệu kiểm thử (Excel / CSV):"), 0, 7);
+        grid.Controls.Add(dataRow, 1, 7);
+        _tips.SetToolTip(_txtDataFile, "Mỗi dòng của file (dòng đầu là tiêu đề) chạy kịch bản một lần với {{row.TênCột}} và là một test case riêng trong báo cáo.\n" +
+                                       "Đường dẫn tương đối tính từ thư mục kịch bản khi chạy --test-dir.");
+        _chkTestCase.CheckedChanged += (_, _) => UpdateTestFields();
+
         var hint = new Label
         {
             Text = "Mỗi bước còn có cài đặt riêng \"Khi bước lỗi\": thử lại N lần, bỏ qua, hoặc nhảy tới một nhãn. " +
@@ -433,10 +458,28 @@ internal sealed class JobEditorForm : BaseForm
             ForeColor = UiText.Muted,
             Margin = new Padding(3, 10, 3, 3)
         };
-        grid.Controls.Add(hint, 0, 6);
+        grid.Controls.Add(hint, 0, 8);
         grid.SetColumnSpan(hint, 2);
         page.Controls.Add(grid);
         return page;
+    }
+
+    /// <summary>Các ô chỉ dùng cho kịch bản kiểm thử.</summary>
+    private void UpdateTestFields()
+    {
+        foreach (var c in new Control[] { _chkCleanup, _txtTags, _txtTestCaseId, _txtDataFile, _cboDataSheet }) c.Enabled = _chkTestCase.Checked;
+    }
+
+    private void LoadDataSheets()
+    {
+        var path = _txtDataFile.Text.Trim().Trim('"');
+        _cboDataSheet.Items.Clear();
+        if (!path.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase) && !path.EndsWith(".xlsm", StringComparison.OrdinalIgnoreCase)) return;
+        try
+        {
+            if (File.Exists(path)) _cboDataSheet.Items.AddRange([.. Services.Data.TabularReader.SheetNames(path)]);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Xml.XmlException) { }
     }
 
     private static Button SideButton(string text, EventHandler onClick)
@@ -475,6 +518,12 @@ internal sealed class JobEditorForm : BaseForm
         _cboNotify.SelectedIndex = Array.IndexOf(NotifyModes, _job.NotifyMode);
         _chkTestCase.Checked = _job.IsTestCase;
         _chkCleanup.Checked = _job.CleanupTestData;
+        _txtTags.Text = _job.Tags;
+        _txtTestCaseId.Text = _job.TestCaseId;
+        _txtDataFile.Text = _job.DataFile;
+        LoadDataSheets();
+        _cboDataSheet.Text = _job.DataSheet;
+        UpdateTestFields();
         foreach (var v in _job.Variables) _gridVars.Rows.Add(v.Name, v.Value);
         RefreshTriggers();
         _designer.SetSteps(_job.Steps);
@@ -606,6 +655,10 @@ internal sealed class JobEditorForm : BaseForm
         job.NotifyMode = NotifyModes[Math.Max(0, _cboNotify.SelectedIndex)];
         job.IsTestCase = _chkTestCase.Checked;
         job.CleanupTestData = _chkCleanup.Checked;
+        job.Tags = string.Join(", ", _txtTags.Text.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        job.TestCaseId = _txtTestCaseId.Text.Trim();
+        job.DataFile = _txtDataFile.Text.Trim().Trim('"');
+        job.DataSheet = job.DataFile.Length > 0 ? _cboDataSheet.Text.Trim() : "";
         job.Variables = ReadVariables();
         if (!ReferenceEquals(job, _job)) job.Triggers = _job.Triggers.ToList();
     }
@@ -887,11 +940,27 @@ internal sealed class JobEditorForm : BaseForm
         test.Id = Guid.NewGuid();
         test.Name = $"{test.Name} (chạy thử)";
 
+        // Kiểm thử theo dữ liệu: chạy thử với dòng dữ liệu đầu tiên (giữ tô sáng bước, điểm dừng như flow thường).
+        Dictionary<string, string>? dataVars = null;
+        if (test.IsTestCase && !string.IsNullOrWhiteSpace(test.DataFile))
+        {
+            var first = Services.Testing.TestSuite.Runs(test, Services.Testing.SuiteOptions.Default)[0];
+            if (first.Error != null)
+            {
+                MessageBox.Show(this, first.Error, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            dataVars = first.Variables;
+            test.DataFile = "";
+            Log.Info($"Chạy thử với dữ liệu {first.DataLabel} (chạy cả bộ dữ liệu: chạy kịch bản từ trang Kiểm thử).");
+        }
+
         var run = new RunOptions
         {
             StartIndex = options.StartIndex,
             StepMode = options.StepMode,
             UseBreakpoints = options.UseBreakpoints,
+            Variables = dataVars,
             IsTest = true,
             StepStarted = i =>
             {

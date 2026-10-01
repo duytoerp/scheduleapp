@@ -25,12 +25,13 @@ public static class TestReport
     }
 
     /// <summary>Ghi index.html + junit.xml vào <paramref name="folder"/>; trả về đường dẫn index.html.</summary>
-    public static string Write(string folder, string suiteName, IReadOnlyList<TestCaseResult> cases)
+    /// <param name="environment">Môi trường kiểm thử (hiện trong báo cáo), null = không dùng môi trường.</param>
+    public static string Write(string folder, string suiteName, IReadOnlyList<TestCaseResult> cases, string? environment = null)
     {
         Directory.CreateDirectory(folder);
-        File.WriteAllText(Path.Combine(folder, "junit.xml"), JUnit(suiteName, cases), new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(folder, "junit.xml"), JUnit(suiteName, cases, environment), new UTF8Encoding(false));
         var html = Path.Combine(folder, "index.html");
-        File.WriteAllText(html, Html(suiteName, cases, folder), new UTF8Encoding(false));
+        File.WriteAllText(html, Html(suiteName, cases, folder, environment), new UTF8Encoding(false));
         RememberLatest(cases.Select(c => c.JobId), html);
         return html;
     }
@@ -107,16 +108,18 @@ public static class TestReport
     /// <summary>Một dòng tóm tắt, vd "3/4 kịch bản đạt · 12/13 kiểm tra đạt · 1 phút 05 giây".</summary>
     public static string Summary(IReadOnlyList<TestCaseResult> cases)
     {
-        int passed = cases.Count(c => c.Ok);
+        int passed = cases.Count(c => c.Ok), flaky = cases.Count(c => c.Flaky);
         int ap = cases.Sum(c => c.AssertsPassed), af = cases.Sum(c => c.AssertsFailed);
-        return $"{passed}/{cases.Count} kịch bản đạt · {ap}/{ap + af} kiểm tra đạt · {Duration(cases.Sum(c => c.Seconds))}";
+        return $"{passed}/{cases.Count} kịch bản đạt" + (flaky > 0 ? $" ({flaky} đạt sau khi chạy lại)" : "") +
+               $" · {ap}/{ap + af} kiểm tra đạt · {Duration(cases.Sum(c => c.Seconds))}";
     }
 
     // ───────────────────────────── JUnit XML ─────────────────────────────
 
-    internal static string JUnit(string suiteName, IReadOnlyList<TestCaseResult> cases)
+    internal static string JUnit(string suiteName, IReadOnlyList<TestCaseResult> cases, string? environment = null)
     {
         static string Sec(double s) => s.ToString("0.###", CultureInfo.InvariantCulture);
+        static XElement Prop(string name, string value) => new("property", new XAttribute("name", name), new XAttribute("value", value));
 
         var suites = new XElement("testsuites",
             new XAttribute("name", suiteName),
@@ -134,12 +137,19 @@ public static class TestReport
                 new XAttribute("time", Sec(group.Sum(c => c.Seconds))),
                 new XAttribute("timestamp", group.Min(c => c.Start).ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture)),
                 new XAttribute("hostname", Environment.MachineName));
+            if (!string.IsNullOrWhiteSpace(environment)) suite.Add(new XElement("properties", Prop("environment", environment.Trim())));
             foreach (var c in group)
             {
                 var tc = new XElement("testcase",
                     new XAttribute("classname", group.Key),
                     new XAttribute("name", c.Name),
                     new XAttribute("time", Sec(c.Seconds)));
+                var props = new List<XElement>();
+                if (c.TestCaseId.Length > 0) props.Add(Prop("testcaseid", c.TestCaseId));
+                if (c.Tags.Count > 0) props.Add(Prop("tags", string.Join(", ", c.Tags)));
+                if (c.DataLabel != null) props.Add(Prop("data", c.DataLabel));
+                if (c.Attempts > 1) props.Add(Prop("attempts", c.Attempts.ToString(CultureInfo.InvariantCulture)));
+                if (props.Count > 0) tc.Add(new XElement("properties", props));
                 if (!c.Ok)
                 {
                     var failed = c.Steps.Where(s => !s.Ok).ToList();
@@ -148,7 +158,8 @@ public static class TestReport
                         new XAttribute("type", failed.Any(s => s.IsAssert) ? "AssertionFailed" : "StepFailed"),
                         string.Join("\n", failed.Select(s => $"Bước {s.Number} [{s.JobName}] {s.Description}: {s.Detail}"))));
                 }
-                tc.Add(new XElement("system-out", string.Join("\n", c.Steps.Select(s =>
+                var flaky = c.Flaky ? $"Đạt sau khi chạy lại (lần {c.Attempts}) — lần đầu không đạt: {c.FirstFailure}\n" : "";
+                tc.Add(new XElement("system-out", flaky + string.Join("\n", c.Steps.Select(s =>
                     $"{(s.Ok ? "✔" : "✖")} {new string(' ', s.Depth * 2)}{s.Number}. {s.Description}{(s.Detail.Length > 0 ? " — " + s.Detail : "")} ({Sec(s.Seconds)}s)"))));
                 foreach (var shot in c.Steps.Where(s => s.Screenshot != null))
                     tc.Add(new XElement("system-err", $"[[ATTACHMENT|{shot.Screenshot}]]"));
@@ -161,7 +172,7 @@ public static class TestReport
 
     // ───────────────────────────── HTML ─────────────────────────────
 
-    private static string Html(string suiteName, IReadOnlyList<TestCaseResult> cases, string folder)
+    private static string Html(string suiteName, IReadOnlyList<TestCaseResult> cases, string folder, string? environment)
     {
         // Chỉ thoát ký tự đặc biệt của HTML — WebUtility.HtmlEncode đổi cả chữ có dấu thành &#NNN; làm file khó đọc.
         static string E(string? s) => (s ?? "").Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
@@ -178,7 +189,7 @@ public static class TestReport
             <title>Báo cáo kiểm thử — {{E(suiteName)}}</title>
             <style>{{Css}}</style></head><body><main>
             <h1>Báo cáo kiểm thử — {{E(suiteName)}}</h1>
-            <div class="muted">{{start:dd/MM/yyyy HH:mm:ss}} · máy {{E(Environment.MachineName)}} · {{E(Environment.UserName)}}</div>
+            <div class="muted">{{start:dd/MM/yyyy HH:mm:ss}} · máy {{E(Environment.MachineName)}} · {{E(Environment.UserName)}}{{(string.IsNullOrWhiteSpace(environment) ? "" : " · môi trường <b>" + E(environment.Trim()) + "</b>")}}</div>
             <div class="cards">
               <div class="card"><span class="muted">Kết quả</span><b class="{{verdictClass}}">{{verdict}}</b></div>
               <div class="card"><span class="muted">Kịch bản đạt</span><b>{{passed}} / {{cases.Count}}</b></div>
@@ -190,9 +201,13 @@ public static class TestReport
         foreach (var c in cases)
         {
             sb.Append($"""<details{(c.Ok ? "" : " open")}><summary><span class="badge {(c.Ok ? "ok" : "bad")}">{(c.Ok ? "✔ Đạt" : "✖ Không đạt")}</span>""");
+            if (c.Flaky) sb.Append($"""<span class="badge flaky">↻ chạy lại {c.Attempts - 1} lần</span>""");
             sb.Append($"""<span class="name">{E(c.Name)}</span><span class="muted">{E(c.Group)}</span>""");
+            if (c.TestCaseId.Length > 0) sb.Append($"""<span class="tag">#{E(c.TestCaseId)}</span>""");
+            foreach (var tag in c.Tags) sb.Append($"""<span class="tag">{E(tag)}</span>""");
             sb.Append($"""<span class="muted">{c.AssertsPassed}/{c.AssertsPassed + c.AssertsFailed} kiểm tra · {E(Duration(c.Seconds))}</span></summary>""");
-            sb.Append($"""<div class="msg">{E(c.Message)}</div><div class="wrap"><table><thead><tr><th>#</th><th>Bước</th><th>Kết quả</th><th>Chi tiết</th><th>Thời gian</th></tr></thead><tbody>""");
+            var message = c.Flaky ? $"Đạt ở lần chạy thứ {c.Attempts} — lần đầu không đạt: {c.FirstFailure}" : c.Message;
+            sb.Append($"""<div class="msg">{E(message)}</div><div class="wrap"><table><thead><tr><th>#</th><th>Bước</th><th>Kết quả</th><th>Chi tiết</th><th>Thời gian</th></tr></thead><tbody>""");
             foreach (var s in c.Steps)
             {
                 var number = s.Depth > 0 ? $"↳ {E(s.JobName)} · {s.Number}" : s.Number.ToString(CultureInfo.InvariantCulture);
@@ -227,6 +242,7 @@ public static class TestReport
         .card b{display:block;font-size:22px}.ok{color:var(--ok)}.bad{color:var(--bad)}
         .badge{display:inline-block;padding:1px 9px;border-radius:999px;font-weight:600;font-size:12px}
         .badge.ok{background:var(--okbg)}.badge.bad{background:var(--badbg)}
+        .badge.flaky{background:#fff4ce;color:#8a5a00}.tag{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:0 8px;color:var(--muted)}
         details{background:var(--card);border:1px solid var(--line);border-radius:10px;margin:0 0 10px;overflow:hidden}
         summary{cursor:pointer;padding:12px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;list-style:none}
         summary::-webkit-details-marker{display:none}summary .name{font-weight:600;flex:1;min-width:200px}
