@@ -117,19 +117,23 @@ internal sealed class MacroRecorder : IDisposable
         return Win32.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
     }
 
-    private (Point Point, MouseButtonKind Button, IntPtr Root, long Tick, Task<Automation.UiElementFinder.CapturedElement?>? Element)? _pressed;
+    private (Point Point, MouseButtonKind Button, IntPtr Root, IntPtr Window, string Target, long Tick,
+        Task<Automation.UiElementFinder.CapturedElement?>? Element)? _pressed;
 
     private void OnButtonDown(Point p, MouseButtonKind button)
     {
+        _winAlone = false;
         var root = WindowHelper.RootWindowAt(p);
         if (root == IntPtr.Zero || WindowHelper.BelongsToThisApp(root))
         {
             _pressed = null;
             return;
         }
+        // Xác định cửa sổ đích ngay lúc nhấn: popup (menu, gợi ý…) thường đóng ngay sau click.
+        var (window, target) = ResolveTarget(root);
         // Đọc phần tử dưới chuột ngay lúc nhấn (trước khi click làm giao diện thay đổi), chạy nền để hook trả về ngay.
-        var element = RecordElements ? Task.Run(() => CaptureElement(p)) : null;
-        _pressed = (p, button, root, Environment.TickCount64, element);
+        var element = RecordElements && target.Length > 0 ? Task.Run(() => CaptureElement(p)) : null;
+        _pressed = (p, button, root, window, target, Environment.TickCount64, element);
     }
 
     private static Automation.UiElementFinder.CapturedElement? CaptureElement(Point p)
@@ -142,7 +146,9 @@ internal sealed class MacroRecorder : IDisposable
     private static bool IsGoodElement(Automation.UiElementFinder.CapturedElement? e, IntPtr root) =>
         e != null && e.Window == root &&
         (e.Selector.Contains("AutomationId=") || e.Selector.Contains("Name=")) &&
-        !System.Text.RegularExpressions.Regex.IsMatch(e.Selector, @"ControlType=(Pane|Window|Document|Custom|Group|TitleBar|ScrollBar|Thumb|Table|DataGrid|List|Tree|Image)\b");
+        !System.Text.RegularExpressions.Regex.IsMatch(e.Selector, @"ControlType=(Pane|Window|Document|Custom|Group|TitleBar|ScrollBar|Thumb|Table|DataGrid|List|Tree|Image)\b") &&
+        // Tên quá dài thường là nội dung thay đổi theo thời gian (gợi ý tìm kiếm, tiêu đề email, tên tài liệu…) → khó tìm lại.
+        !System.Text.RegularExpressions.Regex.IsMatch(e.Selector, @"Name=[^;]{61,}");
 
     /// <summary>Khi nhận diện xong, đổi bước "Click chuột" thành "Click phần tử UI" (giữ tọa độ để tham khảo).</summary>
     private void ConvertToElement(ActionStep step, IntPtr root, Task<Automation.UiElementFinder.CapturedElement?> capture)
@@ -156,7 +162,8 @@ internal sealed class MacroRecorder : IDisposable
                 if (step.Type != StepType.MouseClick) return;
                 step.Type = StepType.ClickElement;
                 step.Text = e!.Selector;
-                step.DelayMs = 10_000;
+                // Không thấy phần tử sau 5 giây → click theo tọa độ lúc ghi (X, Y được giữ lại).
+                step.DelayMs = 5_000;
             }
         }, TaskScheduler.Default));
     }
@@ -169,8 +176,8 @@ internal sealed class MacroRecorder : IDisposable
 
         FlushTyped();
         long now = down.Tick;
-        var target = TargetFor(down.Root);
-        var origin = target.Length > 0 ? WindowHelper.GetRect(down.Root).Location : Point.Empty;
+        var target = down.Target;
+        var origin = target.Length > 0 ? WindowHelper.GetRect(down.Window).Location : Point.Empty;
         int x = down.Point.X - origin.X, y = down.Point.Y - origin.Y;
 
         if (Math.Abs(p.X - down.Point.X) > 8 || Math.Abs(p.Y - down.Point.Y) > 8)
@@ -197,7 +204,7 @@ internal sealed class MacroRecorder : IDisposable
 
         var click = new ActionStep { Type = StepType.MouseClick, Target = target, X = x, Y = y, Button = down.Button };
         Add(click, now, now);
-        // Click phần tử chỉ tìm được trong cửa sổ đích có tên (không áp dụng cho menu popup / taskbar ghi bằng tọa độ màn hình).
+        // Click phần tử chỉ tìm được trong cửa sổ đích có tên (không áp dụng cho taskbar / Start ghi bằng tọa độ màn hình).
         if (down.Element != null && target.Length > 0) ConvertToElement(click, down.Root, down.Element);
     }
 
@@ -208,7 +215,7 @@ internal sealed class MacroRecorder : IDisposable
         if (root == IntPtr.Zero || WindowHelper.BelongsToThisApp(root)) return;
         FlushTyped();
         long now = Environment.TickCount64;
-        var target = TargetFor(root);
+        var (window, target) = ResolveTarget(root);
         int notches = delta / 120;
         if (notches == 0) notches = Math.Sign(delta);
 
@@ -220,7 +227,7 @@ internal sealed class MacroRecorder : IDisposable
             Changed?.Invoke();
             return;
         }
-        var origin = target.Length > 0 ? WindowHelper.GetRect(root).Location : Point.Empty;
+        var origin = target.Length > 0 ? WindowHelper.GetRect(window).Location : Point.Empty;
         Add(new ActionStep { Type = StepType.MouseScroll, Target = target, X = p.X - origin.X, Y = p.Y - origin.Y, Count = notches, DelayAfterMs = 300 }, now, now);
     }
 
@@ -228,18 +235,42 @@ internal sealed class MacroRecorder : IDisposable
 
     private IntPtr KeyHook(int nCode, IntPtr wParam, IntPtr lParam)
     {
-        if (nCode >= 0 && (int)wParam is 0x100 or 0x104) // WM_KEYDOWN, WM_SYSKEYDOWN
+        if (nCode >= 0 && (int)wParam is 0x100 or 0x104 or 0x101 or 0x105) // WM_KEYDOWN, WM_SYSKEYDOWN, WM_KEYUP, WM_SYSKEYUP
         {
             var info = Marshal.PtrToStructure<Win32.KBDLLHOOKSTRUCT>(lParam);
-            try { OnKey(info); }
+            try
+            {
+                if ((int)wParam is 0x100 or 0x104) OnKey(info);
+                else OnKeyUp(info);
+            }
             catch (Exception ex) { Debug.WriteLine(ex); }
         }
         return Win32.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
     }
 
-    private void OnKey(Win32.KBDLLHOOKSTRUCT k)
+    // Phím Win nhấn rồi thả mà không kèm phím nào khác → mở Start, ghi thành "Nhấn Win".
+    private bool _winDown, _winAlone;
+
+    internal void OnKeyUp(Win32.KBDLLHOOKSTRUCT k)
+    {
+        if (k.vkCode is not (0x5B or 0x5C)) return;
+        bool alone = _winAlone;
+        _winDown = _winAlone = false;
+        if (!alone || (k.flags & LLKHF_INJECTED) != 0) return;
+        FlushTyped();
+        AddKey("Win", IntPtr.Zero, Environment.TickCount64);
+    }
+
+    internal void OnKey(Win32.KBDLLHOOKSTRUCT k)
     {
         int vk = (int)k.vkCode;
+        if (vk is 0x5B or 0x5C)
+        {
+            // Bỏ qua lặp phím khi giữ Win (nếu không, Win+E rồi giữ Win sẽ bị ghi thêm "Win").
+            if (!_winDown) _winDown = _winAlone = true;
+            return;
+        }
+        _winAlone = false;
         if (IsModifier(vk)) return;
 
         var fg = Win32.GetForegroundWindow();
@@ -322,7 +353,7 @@ internal sealed class MacroRecorder : IDisposable
 
     private void AppendText(string text, IntPtr fg, long now)
     {
-        var target = TargetFor(fg);
+        var target = ResolveTarget(fg).Target;
         if (_typed.Length > 0 && target != _typedTarget) FlushTyped();
         if (_typed.Length == 0)
         {
@@ -364,7 +395,7 @@ internal sealed class MacroRecorder : IDisposable
 
     private void AddKey(string name, IntPtr fg, long now)
     {
-        var target = TargetFor(fg);
+        var target = ResolveTarget(fg).Target;
         // Nhấn lặp cùng một phím → gộp thành "Phím*N".
         if (_steps.Count > 0 && _steps[^1] is { Type: StepType.KeyPress } last && last.Target == target && now - _lastTick < 1500)
         {
@@ -403,28 +434,77 @@ internal sealed class MacroRecorder : IDisposable
 
     // ───────────────────────────── Hỗ trợ ─────────────────────────────
 
-    /// <summary>
-    /// Cách nhận diện cửa sổ khi phát lại: "exe:tên_tiến_trình" (ổn định khi tiêu đề đổi, vd Chrome),
-    /// tiêu đề với app UWP/Explorer; chuỗi rỗng = tọa độ tuyệt đối (menu popup, taskbar…).
-    /// </summary>
-    private string TargetFor(IntPtr hwnd)
+    /// <summary>Giao diện của Windows (taskbar, Start, jump list, khay hệ thống, desktop…): luôn ghi theo tọa độ màn hình.</summary>
+    private static readonly HashSet<string> ShellProcesses = new(StringComparer.OrdinalIgnoreCase)
     {
-        if (hwnd == IntPtr.Zero) return "";
+        "ShellExperienceHost", "StartMenuExperienceHost", "SearchHost", "SearchApp", "SearchUI", "ShellHost", "TextInputHost", "LockApp"
+    };
+
+    private static readonly HashSet<string> ShellClasses = new(StringComparer.Ordinal)
+    {
+        "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "NotifyIconOverflowWindow", "TopLevelWindowForOverflowXamlIsland",
+        "XamlExplorerHostIslandWindow", "TaskListThumbnailWnd", "Progman", "WorkerW"
+    };
+
+    private bool IsShellSurface(IntPtr root) =>
+        ShellClasses.Contains(WindowHelper.GetClassName(root)) || ShellProcesses.Contains(ProcessNameOf(root));
+
+    /// <summary>
+    /// Cửa sổ dùng làm mốc khi phát lại cho thao tác trên <paramref name="root"/>:
+    /// popup (menu chuột phải, gợi ý thanh địa chỉ, ô thả xuống…) → cửa sổ chính sở hữu nó, vì popup chỉ tồn tại thoáng qua
+    /// và có vị trí khác mỗi lần; giao diện Windows → không có cửa sổ (tọa độ màn hình).
+    /// </summary>
+    internal (IntPtr Window, string Target) ResolveTarget(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return (IntPtr.Zero, "");
         var root = Win32.GetAncestor(hwnd, Win32.GA_ROOT);
         if (root == IntPtr.Zero) root = hwnd;
+        if (IsShellSurface(root)) return (IntPtr.Zero, "");
+
+        var window = root;
+        if (WindowHelper.IsPopup(root) || WindowHelper.GetTitle(root).Length == 0)
+        {
+            var owner = WindowHelper.OwnerWindow(root);
+            if (owner != IntPtr.Zero)
+            {
+                window = owner;
+            }
+            else
+            {
+                // Menu (#32768) không có chủ sở hữu: lấy cửa sổ đang được chọn nếu cùng ứng dụng.
+                var fg = Win32.GetForegroundWindow();
+                fg = fg == IntPtr.Zero ? fg : Win32.GetAncestor(fg, Win32.GA_ROOT);
+                if (fg != IntPtr.Zero && fg != root && WindowHelper.SameProcess(fg, root) && !IsShellSurface(fg)) window = fg;
+            }
+        }
+        var target = TargetFor(window);
+        return (target.Length > 0 ? window : IntPtr.Zero, target);
+    }
+
+    /// <summary>
+    /// Cách nhận diện cửa sổ khi phát lại: "exe:tên_tiến_trình" (ổn định khi tiêu đề đổi, vd Chrome),
+    /// tiêu đề với app UWP/Explorer; chuỗi rỗng = tọa độ tuyệt đối (taskbar, desktop…).
+    /// </summary>
+    private string TargetFor(IntPtr root)
+    {
         var title = WindowHelper.GetTitle(root);
         if (title.Length == 0) return "";
+        var name = ProcessNameOf(root);
+        return name.Length == 0 || name.Equals("ApplicationFrameHost", StringComparison.OrdinalIgnoreCase) ||
+               name.Equals("explorer", StringComparison.OrdinalIgnoreCase)
+            ? title
+            : "exe:" + name;
+    }
 
-        Win32.GetWindowThreadProcessId(root, out uint pid);
+    private string ProcessNameOf(IntPtr hwnd)
+    {
+        Win32.GetWindowThreadProcessId(hwnd, out uint pid);
         if (!_processNames.TryGetValue(pid, out var name))
         {
             try { name = Process.GetProcessById((int)pid).ProcessName; } catch { name = ""; }
             _processNames[pid] = name;
         }
-        return name.Length == 0 || name.Equals("ApplicationFrameHost", StringComparison.OrdinalIgnoreCase) ||
-               name.Equals("explorer", StringComparison.OrdinalIgnoreCase)
-            ? title
-            : "exe:" + name;
+        return name;
     }
 
     private static bool Down(int vk) => (Win32.GetAsyncKeyState(vk) & 0x8000) != 0;

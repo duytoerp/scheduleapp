@@ -8,7 +8,10 @@ internal static class Win32
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
     public const int SW_RESTORE = 9;
-    public const uint GA_ROOT = 2;
+    public const uint GA_ROOT = 2, GA_ROOTOWNER = 3;
+    public const uint GW_OWNER = 4;
+    public const int GWL_STYLE = -16;
+    public const long WS_POPUP = 0x80000000L, WS_CAPTION = 0x00C00000L;
     public const int DWMWA_CLOAKED = 14;
     public const int WM_HOTKEY = 0x0312;
     public const uint MOD_ALT = 0x1, MOD_CONTROL = 0x2, MOD_SHIFT = 0x4, MOD_WIN = 0x8, MOD_NOREPEAT = 0x4000;
@@ -36,6 +39,9 @@ internal static class Win32
     [DllImport("user32.dll", SetLastError = true)] public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint vk);
     [DllImport("user32.dll")] public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr hWnd, int attribute, out int value, int size);
+    [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hWnd, uint cmd);
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int index);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder name, int maxCount);
 
     // Hook chuột/bàn phím toàn hệ thống (ghi macro)
     public delegate IntPtr LowLevelProc(int nCode, IntPtr wParam, IntPtr lParam);

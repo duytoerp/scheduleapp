@@ -3,7 +3,8 @@ using System.Text;
 
 namespace ScheduleApp.Native;
 
-internal sealed record WindowInfo(IntPtr Handle, string Title, string ProcessName)
+/// <param name="Popup">Cửa sổ phụ (menu, danh sách gợi ý, thả xuống…) — khi tìm theo tên, cửa sổ chính được ưu tiên.</param>
+internal sealed record WindowInfo(IntPtr Handle, string Title, string ProcessName, bool Popup = false)
 {
     public override string ToString() => $"{Title}   [{ProcessName}]";
 }
@@ -23,8 +24,7 @@ internal static class WindowHelper
             if (!Win32.IsWindowVisible(h)) return true;
             int len = Win32.GetWindowTextLength(h);
             if (len == 0) return true;
-            if (Win32.DwmGetWindowAttribute(h, Win32.DWMWA_CLOAKED, out int cloaked, sizeof(int)) == 0 && cloaked != 0)
-                return true;
+            if (IsCloaked(h)) return true;
 
             Win32.GetWindowThreadProcessId(h, out uint pid);
             if (pid == self) return true;
@@ -37,11 +37,84 @@ internal static class WindowHelper
                 try { name = Process.GetProcessById((int)pid).ProcessName; } catch { name = "?"; }
                 processNames[pid] = name;
             }
-            list.Add(new WindowInfo(h, sb.ToString(), name));
+            list.Add(new WindowInfo(h, sb.ToString(), name, IsPopup(h)));
             return true;
         }, IntPtr.Zero);
 
         return list;
+    }
+
+    /// <summary>
+    /// Các cửa sổ đang hiển thị khác của cùng tiến trình với <paramref name="main"/> (kể cả không có tiêu đề) theo thứ tự trên → dưới:
+    /// danh sách gợi ý của thanh địa chỉ, menu chuột phải, ô thả xuống… thường là cửa sổ riêng, không nằm trong cây của cửa sổ chính.
+    /// </summary>
+    public static List<IntPtr> ProcessPopups(IntPtr main)
+    {
+        var list = new List<IntPtr>();
+        if (main == IntPtr.Zero) return list;
+        Win32.GetWindowThreadProcessId(main, out uint pid);
+        Win32.EnumWindows((h, _) =>
+        {
+            if (h == main || !Win32.IsWindowVisible(h) || IsCloaked(h)) return true;
+            Win32.GetWindowThreadProcessId(h, out uint p);
+            if (p != pid) return true;
+            var r = GetRect(h);
+            if (r.Width > 4 && r.Height > 4 && (IsPopup(h) || GetTitle(h).Length == 0)) list.Add(h);
+            return true;
+        }, IntPtr.Zero);
+        return list;
+    }
+
+    public static bool IsCloaked(IntPtr h) =>
+        Win32.DwmGetWindowAttribute(h, Win32.DWMWA_CLOAKED, out int cloaked, sizeof(int)) == 0 && cloaked != 0;
+
+    /// <summary>Cửa sổ phụ: menu (#32768), hoặc cửa sổ popup / có chủ sở hữu mà không có thanh tiêu đề.</summary>
+    public static bool IsPopup(IntPtr h)
+    {
+        if (GetClassName(h) == "#32768") return true;
+        long style = (long)Win32.GetWindowLongPtr(h, Win32.GWL_STYLE);
+        if ((style & Win32.WS_CAPTION) == Win32.WS_CAPTION) return false;
+        return (style & Win32.WS_POPUP) != 0 || Win32.GetWindow(h, Win32.GW_OWNER) != IntPtr.Zero;
+    }
+
+    public static string GetClassName(IntPtr h)
+    {
+        var sb = new StringBuilder(256);
+        int n = Win32.GetClassName(h, sb, sb.Capacity);
+        return n > 0 ? sb.ToString(0, n) : "";
+    }
+
+    /// <summary>
+    /// Cửa sổ chính sở hữu popup <paramref name="h"/>: đi theo chuỗi chủ sở hữu tới cửa sổ đầu tiên đang hiển thị, có tiêu đề, không phải popup
+    /// (không dùng GA_ROOTOWNER vì nhiều ứng dụng có cửa sổ ẩn làm chủ sở hữu cao nhất). Không có → IntPtr.Zero.
+    /// </summary>
+    public static IntPtr OwnerWindow(IntPtr h)
+    {
+        int guard = 0;
+        for (var o = Win32.GetWindow(h, Win32.GW_OWNER); o != IntPtr.Zero && guard++ < 16; o = Win32.GetWindow(o, Win32.GW_OWNER))
+        {
+            if (Win32.IsWindowVisible(o) && GetTitle(o).Length > 0 && !IsPopup(o)) return o;
+        }
+        return IntPtr.Zero;
+    }
+
+    public static bool SameProcess(IntPtr a, IntPtr b)
+    {
+        Win32.GetWindowThreadProcessId(a, out uint pa);
+        Win32.GetWindowThreadProcessId(b, out uint pb);
+        return pa == pb;
+    }
+
+    /// <summary>
+    /// Kích hoạt cửa sổ, trừ khi nó (hoặc một popup của chính nó — menu, gợi ý…) đang ở trên cùng:
+    /// chuyển focus lúc đó sẽ làm popup đóng lại trước khi kịp click.
+    /// </summary>
+    public static void FocusKeepingPopups(IntPtr h)
+    {
+        var fg = Win32.GetForegroundWindow();
+        if (fg == h) return;
+        if (fg != IntPtr.Zero && (OwnerWindow(fg) == h || (IsPopup(fg) && SameProcess(fg, h)))) return;
+        Focus(h);
     }
 
     /// <summary>
@@ -52,7 +125,8 @@ internal static class WindowHelper
     {
         if (string.IsNullOrWhiteSpace(query)) return IntPtr.Zero;
         var q = query.Trim();
-        var windows = GetOpenWindows();
+        // Cửa sổ chính trước, popup sau (vẫn giữ thứ tự trên → dưới trong mỗi nhóm).
+        var windows = GetOpenWindows().OrderBy(w => w.Popup).ToList();
 
         if (q.StartsWith("exe:", StringComparison.OrdinalIgnoreCase))
         {

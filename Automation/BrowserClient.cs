@@ -21,6 +21,12 @@ internal static class BrowserClient
     private static int _messageId;
 
     private static int Port => SettingsStore.Current.BrowserPort;
+
+    /// <summary>Tham số thêm khi mở trình duyệt (kiểm thử dùng " --headless=new").</summary>
+    internal static string ExtraLaunchArgs { get; set; } = "";
+
+    /// <summary>Tiến trình trình duyệt mở gần nhất (kiểm thử dùng để dọn dẹp).</summary>
+    internal static Process? LastLaunched { get; private set; }
     private static string BaseUrl => $"http://127.0.0.1:{Port}";
 
     public static async Task ExecuteAsync(ActionStep s, Func<string, string, Task> setVar, CancellationToken ct)
@@ -28,7 +34,7 @@ internal static class BrowserClient
         switch (s.BrowserAction)
         {
             case BrowserAction.Launch:
-                await LaunchAsync(s.Target, s.Text, ct);
+                await LaunchAsync(s.Target, s.Text, s.Arguments, ct);
                 break;
 
             case BrowserAction.Navigate:
@@ -86,49 +92,101 @@ internal static class BrowserClient
 
     // ───────────────────────────── Mở trình duyệt ─────────────────────────────
 
-    private static async Task LaunchAsync(string browser, string url, CancellationToken ct)
+    /// <param name="profile">Hồ sơ của ScheduleApp (trống = mặc định) — mỗi hồ sơ giữ đăng nhập riêng.</param>
+    private static async Task LaunchAsync(string browser, string url, string profile, CancellationToken ct)
     {
+        profile = BrowserProfiles.SafeName(profile);
+        var dir = BrowserProfiles.Dir(browser, profile);
+        var label = BrowserProfiles.DisplayName(browser) + (profile.Length == 0 ? "" : $" · hồ sơ \"{profile}\"");
+
         if (await IsAvailableAsync(ct))
         {
-            // Đã có trình duyệt đang điều khiển → chỉ mở tab mới.
-            if (!string.IsNullOrWhiteSpace(url))
+            if (BrowserProfiles.InUse(dir) || (profile.Length == 0 && !BrowserProfiles.AllDirs().Any(BrowserProfiles.InUse)))
             {
-                using var req = new HttpRequestMessage(HttpMethod.Put, $"{BaseUrl}/json/new?{Uri.EscapeDataString(NormalizeUrl(url))}");
-                (await Http.SendAsync(req, ct)).EnsureSuccessStatusCode();
-                await Task.Delay(500, ct);
-                await WaitReadyAsync("", 30_000, ct); // tab mới nằm đầu danh sách
+                // Đúng hồ sơ đang được điều khiển (hoặc trình duyệt do người dùng tự mở ở cổng này) → chỉ mở tab mới.
+                await OpenTabAsync(url, ct);
+                return;
             }
-            return;
+            // Cổng điều khiển chỉ có một: đóng trình duyệt điều khiển đang mở hồ sơ khác rồi mở hồ sơ được chọn.
+            var other = BrowserProfiles.AllDirs().FirstOrDefault(BrowserProfiles.InUse);
+            if (other == null)
+                throw new InvalidOperationException(
+                    $"Cổng điều khiển {Port} đang được một trình duyệt khác dùng. Hãy đóng trình duyệt đó (hoặc đổi cổng trong ⚙ Cài đặt) rồi chạy lại.");
+            Log.Info($"      Đóng trình duyệt điều khiển đang mở hồ sơ khác ({Path.GetFileName(other)}) để mở {label}.");
+            await CloseBrowserAsync(other, ct);
+        }
+        else if (BrowserProfiles.InUse(dir))
+        {
+            // Mở thêm lần nữa chỉ tạo cửa sổ mới trong phiên cũ (không có cổng điều khiển).
+            throw new InvalidOperationException(
+                $"{label} đang mở nhưng không ở chế độ điều khiển (cổng {Port}). Hãy đóng cửa sổ trình duyệt đó rồi chạy lại.");
         }
 
-        var (exe, name) = ResolveBrowser(browser);
+        var exe = ResolveBrowser(browser);
+        if (!Directory.Exists(dir)) Log.Info($"      Hồ sơ mới ({Path.GetFileName(dir)}) — lần đầu cần đăng nhập các trang web, lần sau được giữ lại.");
         // Chrome 136+ chỉ cho remote debugging với thư mục hồ sơ riêng (không phải hồ sơ mặc định).
-        var profile = Path.Combine(JobStore.DataDir, "browser-" + name);
-        var args = $"--remote-debugging-port={Port} --user-data-dir=\"{profile}\" --no-first-run --no-default-browser-check";
+        var args = $"--remote-debugging-port={Port} --user-data-dir=\"{dir}\" --no-first-run --no-default-browser-check{ExtraLaunchArgs}";
         if (!string.IsNullOrWhiteSpace(url)) args += " " + NormalizeUrl(url);
-        Process.Start(new ProcessStartInfo(exe, args) { UseShellExecute = false });
+        LastLaunched = Process.Start(new ProcessStartInfo(exe, args) { UseShellExecute = false });
 
         var sw = Stopwatch.StartNew();
         while (!await IsAvailableAsync(ct))
         {
             if (sw.ElapsedMilliseconds > 20_000)
-                throw new TimeoutException($"Trình duyệt không mở cổng điều khiển {Port}. Nếu {name} đang chạy với cùng hồ sơ, hãy đóng hết rồi thử lại.");
+                throw new TimeoutException($"Trình duyệt không mở cổng điều khiển {Port}. Nếu {label} đang chạy, hãy đóng hết rồi thử lại.");
             await Task.Delay(500, ct);
         }
         if (!string.IsNullOrWhiteSpace(url)) await WaitReadyAsync("", 30_000, ct);
     }
 
-    private static (string Exe, string Name) ResolveBrowser(string browser)
+    private static async Task OpenTabAsync(string url, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+        using var req = new HttpRequestMessage(HttpMethod.Put, $"{BaseUrl}/json/new?{Uri.EscapeDataString(NormalizeUrl(url))}");
+        (await Http.SendAsync(req, ct)).EnsureSuccessStatusCode();
+        await Task.Delay(500, ct);
+        await WaitReadyAsync("", 30_000, ct); // tab mới nằm đầu danh sách
+    }
+
+    /// <summary>Đóng trình duyệt đang chiếm cổng điều khiển (lệnh Browser.close) và chờ nó nhả cổng + thư mục hồ sơ.</summary>
+    internal static async Task CloseBrowserAsync(string dir, CancellationToken ct)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await Http.GetStringAsync($"{BaseUrl}/json/version", ct));
+            var wsUrl = doc.RootElement.GetProperty("webSocketDebuggerUrl").GetString()!;
+            using var ws = new ClientWebSocket();
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(5));
+            await ws.ConnectAsync(new Uri(wsUrl), timeout.Token);
+            var payload = JsonSerializer.SerializeToUtf8Bytes(new { id = Interlocked.Increment(ref _messageId), method = "Browser.close" });
+            await ws.SendAsync(payload, WebSocketMessageType.Text, true, timeout.Token);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or WebSocketException or OperationCanceledException or KeyNotFoundException && !ct.IsCancellationRequested)
+        {
+            Log.Warn("      Không gửi được lệnh đóng trình duyệt: " + ex.Message);
+        }
+
+        var sw = Stopwatch.StartNew();
+        while (await IsAvailableAsync(ct) || BrowserProfiles.InUse(dir))
+        {
+            if (sw.ElapsedMilliseconds > 15_000)
+                throw new TimeoutException($"Trình duyệt điều khiển ({Path.GetFileName(dir)}) không đóng. Hãy tự đóng nó rồi chạy lại.");
+            await Task.Delay(300, ct);
+        }
+    }
+
+    private static string ResolveBrowser(string browser)
     {
         var b = browser.Trim().Trim('"');
-        if (b.Length > 0 && File.Exists(b)) return (b, Path.GetFileNameWithoutExtension(b).ToLowerInvariant());
-        bool edge = b.Contains("edge", StringComparison.OrdinalIgnoreCase);
+        if (b.Length > 0 && File.Exists(b)) return b;
+        bool edge = BrowserProfiles.Key(b) == "edge";
         var exeName = edge ? "msedge.exe" : "chrome.exe";
 
         foreach (var hive in new[] { Registry.CurrentUser, Registry.LocalMachine })
         {
             using var key = hive.OpenSubKey($@"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{exeName}");
-            if (key?.GetValue(null) is string path && File.Exists(path)) return (path, edge ? "edge" : "chrome");
+            if (key?.GetValue(null) is string path && File.Exists(path)) return path;
         }
         var candidates = edge
             ? new[] { @"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe", @"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe" }
@@ -136,7 +194,7 @@ internal static class BrowserClient
         foreach (var c in candidates)
         {
             var p = Environment.ExpandEnvironmentVariables(c);
-            if (File.Exists(p)) return (p, edge ? "edge" : "chrome");
+            if (File.Exists(p)) return p;
         }
         throw new FileNotFoundException($"Không tìm thấy {(edge ? "Microsoft Edge" : "Google Chrome")} trên máy.");
     }
@@ -184,13 +242,35 @@ internal static class BrowserClient
             tabs.Add(new TabInfo(t.GetProperty("id").GetString() ?? "", t.GetProperty("title").GetString() ?? "",
                 t.GetProperty("url").GetString() ?? "", ws.GetString() ?? ""));
         }
-        if (tabs.Count == 0) throw new InvalidOperationException("Trình duyệt không có tab nào đang mở.");
-        if (string.IsNullOrWhiteSpace(query)) return tabs[0];
+        var tab = PickTab(tabs.Select(t => (t.Url, t.Title)).ToList(), query);
+        if (tab < 0)
+            throw new InvalidOperationException(tabs.Count == 0 ? "Trình duyệt không có tab nào đang mở." : $"Không có tab nào có URL/tiêu đề chứa \"{query.Trim()}\".");
+        return tabs[tab];
+    }
 
+    /// <summary>
+    /// Chọn tab theo một phần URL/tiêu đề (trống = tab đầu tiên). Trang web thật được ưu tiên hơn tab mới và trang nội bộ
+    /// (edge://sync-confirmation-dialog, chrome://…, tiện ích) — Edge liệt kê cả các hộp thoại ẩn này như một "page", có khi đứng đầu danh sách.
+    /// </summary>
+    internal static int PickTab(IReadOnlyList<(string Url, string Title)> tabs, string query)
+    {
         var q = query.Trim();
-        return tabs.FirstOrDefault(t => t.Url.Contains(q, StringComparison.OrdinalIgnoreCase))
-               ?? tabs.FirstOrDefault(t => t.Title.Contains(q, StringComparison.OrdinalIgnoreCase))
-               ?? throw new InvalidOperationException($"Không có tab nào có URL/tiêu đề chứa \"{q}\".");
+        var candidates = Enumerable.Range(0, tabs.Count);
+        if (q.Length > 0)
+        {
+            var byUrl = candidates.Where(i => tabs[i].Url.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+            candidates = byUrl.Count > 0 ? byUrl : candidates.Where(i => tabs[i].Title.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+        return candidates.OrderBy(i => TabRank(tabs[i].Url)).DefaultIfEmpty(-1).First();
+    }
+
+    private static int TabRank(string url)
+    {
+        if (System.Text.RegularExpressions.Regex.IsMatch(url, @"^(chrome|edge)://(newtab|new-tab-page|ntp)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+            return 1;
+        if (System.Text.RegularExpressions.Regex.IsMatch(url, @"^(chrome|edge|chrome-untrusted|devtools|chrome-extension|extension|chrome-search)://", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+            return 2;
+        return 0;
     }
 
     /// <summary>Gửi một lệnh DevTools tới tab và trả về phần "result".</summary>

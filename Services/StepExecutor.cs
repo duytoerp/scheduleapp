@@ -60,7 +60,7 @@ public static class StepExecutor
                     {
                         // Không nhập tọa độ: cuộn ở giữa cửa sổ.
                         var h = await WindowHelper.WaitForAsync(s.Target, FindWindowTimeoutMs, ct);
-                        WindowHelper.Focus(h);
+                        WindowHelper.FocusKeepingPopups(h);
                         var r = WindowHelper.GetRect(h);
                         InputSimulator.MoveTo(r.Left + r.Width / 2, r.Top + r.Height / 2);
                     }
@@ -118,17 +118,12 @@ public static class StepExecutor
                 break;
 
             case StepType.ClickElement:
-            {
-                if (!string.IsNullOrWhiteSpace(s.Target)) WindowHelper.Focus(await WindowHelper.WaitForAsync(s.Target, FindWindowTimeoutMs, ct));
-                var e = await UiElementFinder.WaitAsync(s.Target, s.Text, s.DelayMs, ct);
-                UiElementFinder.LogFound(e);
-                await UiElementFinder.ClickAsync(e, s.Button, s.DoubleClick, ct);
+                await ClickElementAsync(s, ct);
                 break;
-            }
 
             case StepType.SetElementText:
             {
-                if (!string.IsNullOrWhiteSpace(s.Target)) WindowHelper.Focus(await WindowHelper.WaitForAsync(s.Target, FindWindowTimeoutMs, ct));
+                if (!string.IsNullOrWhiteSpace(s.Target)) WindowHelper.FocusKeepingPopups(await WindowHelper.WaitForAsync(s.Target, FindWindowTimeoutMs, ct));
                 var e = await UiElementFinder.WaitAsync(s.Target, s.Text, s.DelayMs, ct);
                 UiElementFinder.LogFound(e);
                 await UiElementFinder.SetTextAsync(e, s.Arguments, ct);
@@ -238,7 +233,7 @@ public static class StepExecutor
             if (!string.IsNullOrWhiteSpace(s.Target))
             {
                 window = await WindowHelper.WaitForAsync(s.Target, FindWindowTimeoutMs, ctx.Ct);
-                WindowHelper.Focus(window);
+                WindowHelper.FocusKeepingPopups(window);
                 await Task.Delay(300, ctx.Ct);
             }
             using var shot = ScreenCapture.Capture(ScreenLocator.AreaOf(window));
@@ -281,7 +276,7 @@ public static class StepExecutor
                 if (!string.IsNullOrWhiteSpace(s.Target))
                 {
                     window = await WindowHelper.WaitForAsync(s.Target, FindWindowTimeoutMs, ct);
-                    WindowHelper.Focus(window);
+                    WindowHelper.FocusKeepingPopups(window);
                     await Task.Delay(200, ct);
                 }
                 using var shot = ScreenCapture.Capture(ScreenLocator.AreaOf(window));
@@ -377,9 +372,33 @@ public static class StepExecutor
     {
         if (string.IsNullOrWhiteSpace(s.Target)) return (x, y);
         var h = await WindowHelper.WaitForAsync(s.Target, FindWindowTimeoutMs, ct);
-        if (focus) WindowHelper.Focus(h);
+        if (focus) WindowHelper.FocusKeepingPopups(h);
         var rect = WindowHelper.GetRect(h);
         return (x + rect.Left, y + rect.Top);
+    }
+
+    /// <summary>
+    /// Click phần tử UI. Bước do trình ghi macro tạo còn giữ tọa độ lúc ghi (so với cửa sổ đích):
+    /// không tìm thấy phần tử (tên đổi, phần tử không hỗ trợ UI Automation…) thì click theo tọa độ đó thay vì dừng flow.
+    /// </summary>
+    private static async Task ClickElementAsync(ActionStep s, CancellationToken ct)
+    {
+        bool hasTarget = !string.IsNullOrWhiteSpace(s.Target);
+        if (hasTarget) WindowHelper.FocusKeepingPopups(await WindowHelper.WaitForAsync(s.Target, FindWindowTimeoutMs, ct));
+        System.Windows.Automation.AutomationElement e;
+        try
+        {
+            e = await UiElementFinder.WaitAsync(s.Target, s.Text, s.DelayMs, ct);
+        }
+        catch (TimeoutException ex) when (hasTarget && s.HasRecordedPoint)
+        {
+            var (x, y) = await ToScreenAsync(s, s.X, s.Y, ct);
+            Log.Warn($"      {ex.Message} → click theo tọa độ lúc ghi ({s.X}, {s.Y}).");
+            InputSimulator.Click(x, y, s.Button, s.DoubleClick);
+            return;
+        }
+        UiElementFinder.LogFound(e);
+        await UiElementFinder.ClickAsync(e, s.Button, s.DoubleClick, ct);
     }
 
     private static async Task LocateOnScreenAsync(ActionStep s, CancellationToken ct)
@@ -434,7 +453,7 @@ public static class StepExecutor
     {
         if (!string.IsNullOrWhiteSpace(s.Target))
         {
-            WindowHelper.Focus(await WindowHelper.WaitForAsync(s.Target, FindWindowTimeoutMs, ct));
+            WindowHelper.FocusKeepingPopups(await WindowHelper.WaitForAsync(s.Target, FindWindowTimeoutMs, ct));
             return;
         }
         // Không có cửa sổ đích: tránh gõ nhầm vào chính ScheduleApp.

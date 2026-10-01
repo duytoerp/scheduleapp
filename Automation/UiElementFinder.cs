@@ -113,6 +113,23 @@ internal static class UiElementFinder
         return null;
     }
 
+    /// <summary>
+    /// Tìm trong các popup đang mở của cùng ứng dụng (menu, danh sách gợi ý, ô thả xuống — cây nhỏ, tìm nhanh) rồi mới tới cửa sổ chính.
+    /// </summary>
+    internal static AutomationElement? FindWithPopups(IntPtr window, string selector)
+    {
+        foreach (var popup in WindowHelper.ProcessPopups(window))
+        {
+            try
+            {
+                var e = Find(popup, selector);
+                if (e != null) return e;
+            }
+            catch (ElementNotAvailableException) { /* popup vừa đóng */ }
+        }
+        return Find(window, selector);
+    }
+
     /// <summary>Chờ tới khi phần tử xuất hiện trong cửa sổ (trống = cửa sổ đang được chọn).</summary>
     public static async Task<AutomationElement> WaitAsync(string windowQuery, string selector, int timeoutMs, CancellationToken ct)
     {
@@ -126,7 +143,7 @@ internal static class UiElementFinder
             {
                 try
                 {
-                    var found = await Task.Run(() => Find(window, selector), ct);
+                    var found = await Task.Run(() => FindWithPopups(window, selector), ct);
                     if (found != null) return found;
                 }
                 catch (ElementNotAvailableException) { /* cửa sổ đang đóng/đổi — thử lại */ }

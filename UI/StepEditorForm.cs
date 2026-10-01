@@ -51,6 +51,7 @@ internal sealed class StepEditorForm : BaseForm
     private readonly ComboBox _cboCompare = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
     private readonly Label _lblArgs = Caption("Tham số:");
     private readonly ComboBox _cboArgs = new() { DropDownStyle = ComboBoxStyle.DropDown, Dock = DockStyle.Fill };
+    private readonly Button _btnArgsAction = new() { Text = "Sao chép hồ sơ thật…", AutoSize = true };
     private readonly Label _lblText = Caption("");
     private readonly TextBox _txtText = new() { Dock = DockStyle.Fill, Multiline = true, Height = 90, ScrollBars = ScrollBars.Vertical, AcceptsReturn = true };
     private readonly Button _btnTextAction = new() { Text = "◎ Bắt phần tử (3 giây)", AutoSize = true };
@@ -209,7 +210,7 @@ internal sealed class StepEditorForm : BaseForm
         AddRow(_lblRowRef, _cboRowRef);
         AddRow(_lblHeaders, _txtHeaders);
         AddRow(_lblText, _txtText, _btnTextAction);
-        AddRow(_lblArgs, _cboArgs);
+        AddRow(_lblArgs, _cboArgs, _btnArgsAction);
         AddRow(_lblVariable, _cboVariable);
         AddRow(_lblCount, _numCount);
         AddRow(_lblJob, _cboJob);
@@ -269,6 +270,8 @@ internal sealed class StepEditorForm : BaseForm
         _cboOnError.SelectedIndexChanged += (_, _) => _cboErrorLabel.Visible = CurrentOnError == ErrorAction.GotoLabel;
         _btnTargetAction.Click += (_, _) => OnTargetAction();
         _btnTextAction.Click += async (_, _) => await CaptureElementAsync();
+        _btnArgsAction.Click += (_, _) => ShowRealProfiles();
+        _cboTarget.TextChanged += (_, _) => { if (!_loading && IsBrowserLaunch) FillProfileList(); };
         _cboTarget.SelectionChangeCommitted += (_, _) =>
         {
             if (_cboTarget.SelectedItem is WindowInfo w)
@@ -685,13 +688,15 @@ internal sealed class StepEditorForm : BaseForm
             StepType.LaunchApp or StepType.SetElementText or StepType.WriteData or StepType.HttpRequest => true,
             StepType.SetVariable => src is not (VarSource.Value or VarSource.Calc or VarSource.ListAdd),
             StepType.Loop => loop is LoopKind.Rows or LoopKind.Files,
-            StepType.Browser => br == BrowserAction.SetValue,
+            StepType.Browser => br is BrowserAction.SetValue or BrowserAction.Launch,
             _ => cond && ck == ConditionKind.Compare && CurrentCompare is not (CompareOp.IsEmpty or CompareOp.IsNotEmpty)
         };
         SetVisible(args, _lblArgs, _cboArgs);
+        SetVisible(t == StepType.Browser && br == BrowserAction.Launch, _btnArgsAction);
         _lblArgs.Text = t switch
         {
             StepType.LaunchApp => "Tham số:",
+            StepType.Browser when br == BrowserAction.Launch => "Hồ sơ (profile)\n(trống = mặc định):",
             StepType.SetElementText or StepType.Browser => "Giá trị cần nhập:",
             StepType.WriteData => "Sheet (trống = sheet đầu):",
             StepType.HttpRequest => "Trích từ JSON trả về\n(vd value[0].name, tùy chọn):",
@@ -706,6 +711,7 @@ internal sealed class StepEditorForm : BaseForm
             _ => "So với:"
         };
         if (!((t == StepType.Loop && loop == LoopKind.Rows) || t == StepType.WriteData)) _cboArgs.Items.Clear();
+        if (t == StepType.Browser && br == BrowserAction.Launch) FillProfileList();
 
         // Ô văn bản
         bool showText = t switch
@@ -935,8 +941,9 @@ internal sealed class StepEditorForm : BaseForm
         StepType.Notify => "Gửi tin qua các kênh đã bật trong ⚙ Cài đặt → Thông báo (Telegram / email / webhook), vd báo đã xử lý xong {{loop.count}} dòng.",
         StepType.Browser => br switch
         {
-            BrowserAction.Launch => "Mở Chrome/Edge với hồ sơ riêng của ScheduleApp ở chế độ cho phép điều khiển (lần đầu cần đăng nhập lại các trang web). " +
-                                    "Các bước Trình duyệt khác cần bước này chạy trước.",
+            BrowserAction.Launch => "Mở Chrome/Edge ở chế độ cho phép điều khiển. Mỗi hồ sơ giữ đăng nhập riêng: gõ tên mới (vd \"Kế toán\") để tạo hồ sơ mới, " +
+                                    "lần đầu đăng nhập các trang web, lần sau tự đăng nhập. \"Sao chép hồ sơ thật…\" lấy đăng nhập / tiện ích / dấu trang " +
+                                    "từ hồ sơ Chrome/Edge bạn đang dùng (Chrome không cho điều khiển trực tiếp hồ sơ đó). Các bước Trình duyệt khác cần bước này chạy trước.",
             BrowserAction.RunScript => "Chạy JavaScript trên trang, giá trị trả về lưu vào biến. Vd: document.title  hoặc  document.querySelectorAll('tr').length",
             _ => "Bộ chọn: CSS (#id, .lop, input[name=email], button[type=submit]), xpath://button[.='Lưu'] hoặc text:Đăng nhập. " +
                  "Chuột phải phần tử trên trang → Inspect → Copy selector để lấy CSS selector."
@@ -1293,5 +1300,83 @@ internal sealed class StepEditorForm : BaseForm
         _lblCaptureInfo.Visible = true;
         _lblCaptureInfo.Text = text;
         _lblCaptureInfo.ForeColor = ok ? Color.FromArgb(0, 100, 0) : Color.FromArgb(180, 40, 20);
+    }
+
+    // ───────────────────────────── Hồ sơ trình duyệt ─────────────────────────────
+
+    private bool IsBrowserLaunch => CurrentType == StepType.Browser && CurrentBrowser == BrowserAction.Launch;
+
+    /// <summary>Gợi ý các hồ sơ ScheduleApp đã có của trình duyệt đang chọn.</summary>
+    private void FillProfileList()
+    {
+        var text = _cboArgs.Text;
+        _cboArgs.BeginUpdate();
+        _cboArgs.Items.Clear();
+        try
+        {
+            _cboArgs.Items.AddRange([.. BrowserProfiles.List(_cboTarget.Text)]);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* chỉ là gợi ý */ }
+        _cboArgs.EndUpdate();
+        _cboArgs.Text = text;
+    }
+
+    /// <summary>Menu các hồ sơ thật của Chrome / Edge trên máy để sao chép sang ScheduleApp.</summary>
+    private void ShowRealProfiles()
+    {
+        var browser = _cboTarget.Text;
+        var name = BrowserProfiles.DisplayName(browser);
+        var profiles = BrowserProfiles.RealProfiles(browser);
+        if (profiles.Count == 0)
+        {
+            ShowInfo($"✖ Không thấy hồ sơ nào của {name} trên máy (chỉ hỗ trợ Chrome và Edge cài đặt bình thường).", false);
+            return;
+        }
+        var menu = new ContextMenuStrip();
+        menu.Items.Add(new ToolStripLabel($"Sao chép hồ sơ {name} sang ScheduleApp:") { ForeColor = SystemColors.GrayText });
+        foreach (var p in profiles)
+            menu.Items.Add(p.ToString(), null, async (_, _) => await CopyProfileAsync(p));
+        menu.Closed += (_, _) => BeginInvoke(new MethodInvoker(menu.Dispose));
+        menu.Show(_btnArgsAction, new Point(0, _btnArgsAction.Height));
+    }
+
+    private async Task CopyProfileAsync(BrowserProfiles.RealProfile source)
+    {
+        var browserName = BrowserProfiles.DisplayName(source.Browser);
+        var profileName = BrowserProfiles.SafeName(source.Name);
+        if (profileName.Length == 0) profileName = BrowserProfiles.SafeName(source.Directory);
+        bool exists = Directory.Exists(BrowserProfiles.Dir(source.Browser, profileName));
+
+        var message =
+            $"Sao chép hồ sơ \"{source.Name}\" của {browserName} sang hồ sơ \"{profileName}\" của ScheduleApp?\n\n" +
+            $"• Chép đăng nhập (cookie), mật khẩu đã lưu, tiện ích, dấu trang — không chép bộ nhớ đệm, không thay đổi hồ sơ gốc.\n" +
+            $"• {browserName} không cho điều khiển trực tiếp hồ sơ bạn đang dùng nên ScheduleApp dùng bản sao. " +
+            "Đăng nhập mới sau này nằm riêng trong bản sao.\n" +
+            $"• Cần đóng các cửa sổ {browserName} đang dùng hồ sơ \"{source.Name}\" trong lúc chép (vài giây tới vài phút)." +
+            (exists ? $"\n\n⚠ Hồ sơ \"{profileName}\" đã có trong ScheduleApp và sẽ bị thay bằng bản chép mới." : "");
+        if (MessageBox.Show(this, message, "Sao chép hồ sơ trình duyệt", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+            return;
+
+        ShowInfo($"Đang sao chép hồ sơ \"{source.Name}\"…", true);
+        UseWaitCursor = true;
+        Enabled = false;
+        try
+        {
+            var result = await Task.Run(() => BrowserProfiles.CopyFromReal(source, profileName));
+            _cboArgs.Text = result.Profile;
+            FillProfileList();
+            ShowInfo($"✔ Đã sao chép {result.Files:N0} file ({result.Bytes / 1048576.0:N0} MB) vào hồ sơ \"{result.Profile}\". " +
+                     "Chạy thử bước này để mở trình duyệt với hồ sơ đó.", true);
+            Log.Info($"Đã sao chép hồ sơ {browserName} \"{source.Name}\" ({source.Directory}) sang hồ sơ ScheduleApp \"{result.Profile}\".");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            ShowInfo("✖ " + ex.Message, false);
+        }
+        finally
+        {
+            Enabled = true;
+            UseWaitCursor = false;
+        }
     }
 }

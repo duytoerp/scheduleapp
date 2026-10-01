@@ -444,7 +444,10 @@ public sealed class ActionStep
         || (Type == StepType.SetVariable && VarSource == VarSource.ScreenText)
         || (Type is StepType.AskAi or StepType.Notify && Force);
 
-    [JsonIgnore] public bool IsImageStep => Type is StepType.ClickImage or StepType.WaitForImage;
+    /// <summary>Click phần tử còn giữ tọa độ lúc ghi macro — dùng khi không tìm thấy phần tử.</summary>
+    [JsonIgnore] public bool HasRecordedPoint => Type == StepType.ClickElement && !string.IsNullOrWhiteSpace(Target) && (X != 0 || Y != 0);
+
+    [JsonIgnore] public bool IsImageStep =>Type is StepType.ClickImage or StepType.WaitForImage;
     [JsonIgnore] public bool IsTextStep => Type is StepType.ClickText or StepType.WaitForText;
 
     /// <summary>Bước điều kiện có dùng các trường điều kiện không.</summary>
@@ -502,12 +505,14 @@ public sealed class ActionStep
         StepType.Goto => $"→ nhãn \"{Target}\"",
         StepType.StopFlow => (Force ? "Dừng flow (tính là lỗi)" : "Dừng flow") + (string.IsNullOrWhiteSpace(Text) ? "" : $": {Short(Text)}"),
         StepType.CallJob => $"Chạy \"{Target}\"",
-        StepType.ClickElement => $"{ClickName()} phần tử [{Short(Text)}]" + SearchArea(),
+        StepType.ClickElement => $"{ClickName()} phần tử [{Short(Text)}]" + SearchArea() + (HasRecordedPoint ? $" · dự phòng ({X}, {Y})" : ""),
         StepType.SetElementText => $"Nhập \"{Short(Arguments)}\" vào [{Short(Text)}]" + SearchArea(),
         StepType.WaitForElement => $"Chờ phần tử [{Short(Text)}] (tối đa {FormatMs(DelayMs)})" + SearchArea(),
         StepType.Browser => BrowserAction switch
         {
-            BrowserAction.Launch => $"Mở {(string.IsNullOrWhiteSpace(Target) ? "Chrome" : Target)} chế độ điều khiển" + (string.IsNullOrWhiteSpace(Text) ? "" : $" → {Short(Text)}"),
+            BrowserAction.Launch => $"Mở {(string.IsNullOrWhiteSpace(Target) ? "Chrome" : Target)} chế độ điều khiển" +
+                                    (string.IsNullOrWhiteSpace(Arguments) ? "" : $" · hồ sơ \"{Short(Arguments)}\"") +
+                                    (string.IsNullOrWhiteSpace(Text) ? "" : $" → {Short(Text)}"),
             BrowserAction.Navigate => $"Mở {Short(Text)}" + InTab(),
             BrowserAction.Click => $"Click \"{Short(Text)}\"" + InTab(),
             BrowserAction.SetValue => $"Nhập \"{Short(Arguments)}\" vào \"{Short(Text)}\"" + InTab(),

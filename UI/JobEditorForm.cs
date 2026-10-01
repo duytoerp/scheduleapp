@@ -759,7 +759,7 @@ internal sealed class JobEditorForm : BaseForm
         int pointClicks = recorded.Count(s => s.Type is StepType.MouseClick or StepType.MouseDrag);
         MessageBox.Show(this,
             $"Đã thêm {recorded.Count} bước từ thao tác vừa ghi.\n\n" +
-            (elementClicks > 0 ? $"✔ {elementClicks} click được ghi theo phần tử UI (không phụ thuộc vị trí cửa sổ / độ phân giải).\n" : "") +
+            (elementClicks > 0 ? $"✔ {elementClicks} click được ghi theo phần tử UI (không phụ thuộc vị trí cửa sổ / độ phân giải; không tìm thấy phần tử thì tự click theo tọa độ lúc ghi).\n" : "") +
             "Đã tự chèn bước \"Chờ cửa sổ\" khi chuyển sang cửa sổ khác." +
             (pointClicks > 0 ? $" Còn {pointClicks} thao tác theo tọa độ — nên xem lại, thay click quan trọng bằng \"Click vào hình ảnh\" nếu cần." : "") +
             (hasSecret ? "\n\n🔑 Phát hiện ô mật khẩu: chữ gõ vào đó được thay bằng {{secret:MatKhau}} — hãy thêm bí mật \"MatKhau\" trong mục 🔑 Bí mật." : ""),

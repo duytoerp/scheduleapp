@@ -212,6 +212,8 @@ Bấm **◎ Bắt phần tử (3 giây)** rồi trỏ chuột vào nút/ô cần
 Bước **Trình duyệt** điều khiển trang web qua DevTools Protocol — chính xác hơn nhiều so với OCR/tọa độ:
 
 1. **Mở trình duyệt ở chế độ điều khiển** (Chrome hoặc Edge, kèm URL): dùng hồ sơ riêng của ScheduleApp (`%AppData%\ScheduleApp\browser-chrome`) — lần đầu đăng nhập các trang web, các lần sau giữ phiên đăng nhập.
+   - Ô **Hồ sơ (profile)**: mỗi tên là một hồ sơ riêng với đăng nhập riêng (vd "Kế toán", "Tài khoản test") — gõ tên mới để tạo, trống = hồ sơ mặc định. Chỉ một trình duyệt điều khiển chạy cùng lúc: mở hồ sơ khác thì trình duyệt điều khiển đang mở được đóng trước.
+   - **Sao chép hồ sơ thật…**: chép một hồ sơ Chrome/Edge bạn đang dùng (vd hồ sơ "Tai") sang ScheduleApp — giữ đăng nhập, mật khẩu đã lưu, tiện ích, dấu trang; không chép bộ nhớ đệm, không đổi hồ sơ gốc. Chrome/Edge không cho điều khiển trực tiếp hồ sơ đang dùng (từ bản 136), nên ScheduleApp dùng bản sao. Cần đóng Chrome/Edge đang mở hồ sơ đó trong lúc chép.
 2. Các hành động: **Mở URL**, **Click**, **Nhập giá trị** (kích hoạt sự kiện input/change — chạy được với form React/Angular/Dynamics 365), **Đọc chữ vào biến**, **Chờ phần tử**, **Chạy JavaScript**.
 3. Bộ chọn: CSS (`#email`, `input[name=q]`, `button[type=submit]`), `xpath://button[.='Lưu']` hoặc `text:Đăng nhập`. Ô *Tab* chọn tab theo một phần URL/tiêu đề (trống = tab đầu tiên).
 
