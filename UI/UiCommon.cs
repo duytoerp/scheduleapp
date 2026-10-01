@@ -18,6 +18,29 @@ internal class BaseForm : Form
         Theme.Apply(this);
         base.OnLoad(e);
     }
+
+    /// <summary>Chủ đề hướng dẫn mở khi nhấn F1 ở cửa sổ này.</summary>
+    protected virtual string HelpTopicId => HelpContent.Start;
+
+    protected virtual void ShowHelp(string topic) => HelpWindow.ShowTopic(topic);
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (keyData == Keys.F1)
+        {
+            ShowHelp(HelpTopicId);
+            return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    /// <summary>Liên kết "? Hướng dẫn (F1)" mở chủ đề của cửa sổ này.</summary>
+    protected LinkLabel HelpLink(string text = "? Hướng dẫn (F1)")
+    {
+        var link = new LinkLabel { Text = text, AutoSize = true, LinkColor = Theme.Accent, Margin = new Padding(3, 8, 16, 3), UseMnemonic = false };
+        link.LinkClicked += (_, _) => ShowHelp(HelpTopicId);
+        return link;
+    }
 }
 
 /// <summary>Icon đồng hồ vẽ bằng code (không cần file .ico).</summary>

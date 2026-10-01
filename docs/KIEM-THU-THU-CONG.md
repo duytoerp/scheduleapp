@@ -22,6 +22,7 @@ $env:SCHEDULEAPP_DATA_DIR = "$env:TEMP\ScheduleAppManual"; .\publish\ScheduleApp
 
 - [ ] Xóa một khối *Lặp* → `Ctrl+Z` khôi phục cả khối; `Ctrl+Y` làm lại. Đang gõ trong ô tên công việc thì `Ctrl+Z` chỉ hoàn tác chữ trong ô.
 - [ ] Sửa và **Lưu** một công việc 2 lần → mở lại → **Phiên bản cũ…** thấy 2 bản; khôi phục bản đầu → bấm *Hủy* thì không đổi, bấm *Lưu* thì đổi.
+- [ ] Hướng dẫn: bấm **Hướng dẫn** ở thanh bên trái → bấm từng chủ đề, gõ "ghi kich ban" vào ô tìm → còn chủ đề ghi kịch bản; nút **＋ Thêm công việc** trong chủ đề *Bắt đầu nhanh* mở trình soạn. Mở form soạn bước *Dynamics 365* → `F1` → cửa sổ Hướng dẫn mở ở *Bước Dynamics 365*, cuộn / bấm được trong khi form soạn bước vẫn mở.
 
 ## 3. Ghi Excel trong vòng lặp
 

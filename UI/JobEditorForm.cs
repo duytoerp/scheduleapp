@@ -99,6 +99,8 @@ internal sealed class JobEditorForm : BaseForm
 
     public Job Job => _job;
 
+    protected override string HelpTopicId => "flow";
+
     public JobEditorForm(Job job, FlowRunner runner, IReadOnlyList<Job> allJobs, IUserNotifier notifier, bool isNew)
     {
         _job = job;
@@ -194,7 +196,7 @@ internal sealed class JobEditorForm : BaseForm
         _btnTest.Click += async (_, _) => await TestRunAsync(new RunOptions { UseBreakpoints = _chkBreakpoints.Checked });
         _btnRunFrom.Click += async (_, _) => await RunFromAsync(_designer.SelectedIndex);
         _btnStepMode.Click += async (_, _) => await TestRunAsync(new RunOptions { StepMode = true, UseBreakpoints = true });
-        buttons.Controls.AddRange([_btnTest, _btnRunFrom, _btnStepMode, _chkBreakpoints, _lblStepCount]);
+        buttons.Controls.AddRange([_btnTest, _btnRunFrom, _btnStepMode, _chkBreakpoints, _lblStepCount, HelpLink()]);
 
         var stepsLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 2 };
         stepsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, LogicalToDeviceUnits(235)));

@@ -15,6 +15,9 @@ internal interface ITestHost
 
     void EditJob(Job job);
     Task RunTestsAsync(IReadOnlyList<Job> jobs, string name);
+
+    /// <summary>Mở trang Hướng dẫn ở chủ đề <paramref name="topic"/>.</summary>
+    void OpenHelp(string topic);
 }
 
 /// <summary>Trang "Kiểm thử": các kịch bản kiểm thử với kết quả lần chạy gần nhất, chạy một / nhiều / tất cả, báo cáo gần đây.</summary>
@@ -30,7 +33,7 @@ internal sealed class TestDashboard : UserControl
     private readonly Label _empty = new()
     {
         Text = "Chưa có kịch bản kiểm thử nào.\n\nBấm \"⏺ Ghi kịch bản D365\" rồi thao tác trên form Dynamics 365 — các bước được tạo tự động,\n" +
-               "hoặc \"+ Kịch bản mới\" để tự dựng, hoặc thêm từ Mẫu có sẵn (nhóm \"Mẫu kiểm thử Dynamics 365\").",
+               "hoặc \"+ Kịch bản mới\" để tự dựng, hoặc thêm từ Mẫu có sẵn (nhóm \"Mẫu kiểm thử Dynamics 365\").\n\nLần đầu? Bấm \"? Hướng dẫn\" ở góc phải để xem từng bước.",
         TextAlign = ContentAlignment.MiddleCenter,
         Dock = DockStyle.Fill,
         ForeColor = Theme.Muted,
@@ -69,6 +72,9 @@ internal sealed class TestDashboard : UserControl
             Directory.CreateDirectory(TestReport.RootDir);
             Process.Start(new ProcessStartInfo(TestReport.RootDir) { UseShellExecute = true });
         }));
+        var help = Theme.CommandButton("? Hướng dẫn", (_, _) => _host.OpenHelp("d365-overview"), tip: "Cách ghi, kiểm tra và chạy kịch bản kiểm thử Dynamics 365 (F1)");
+        help.Alignment = ToolStripItemAlignment.Right;
+        bar.Items.Add(help);
 
         var cards = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(18, 4, 18, 10), BackColor = Theme.Background, WrapContents = false };
         cards.Controls.AddRange([_cardTotal, _cardPassed, _cardFailed, _cardNever]);

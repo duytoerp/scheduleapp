@@ -36,7 +36,9 @@ Chuột phải một công việc → **Tạo shortcut trên Desktop** để ch�
 
 ## Cách dùng
 
-Màn hình chính có thanh điều hướng bên trái: **Công việc** (danh sách công việc theo nhóm, nhật ký hoạt động thu gọn được ở dưới — bấm *📜 Nhật ký* trên thanh trạng thái để ẩn/hiện), **Kiểm thử** (kịch bản kiểm thử và báo cáo), cùng **Lịch sử chạy**, **Bí mật**, **Cài đặt**.
+Màn hình chính có thanh điều hướng bên trái: **Công việc** (danh sách công việc theo nhóm, nhật ký hoạt động thu gọn được ở dưới — bấm *📜 Nhật ký* trên thanh trạng thái để ẩn/hiện), **Kiểm thử** (kịch bản kiểm thử và báo cáo), cùng **Lịch sử chạy**, **Bí mật**, **Cài đặt**, **Hướng dẫn**.
+
+**Hướng dẫn trong ứng dụng:** trang **Hướng dẫn** gồm các chủ đề từ bắt đầu nhanh, lịch chạy, dựng flow, biến tới toàn bộ quy trình kiểm thử Dynamics 365 (chuẩn bị trình duyệt, ghi kịch bản, chọn field, bước D365, Kiểm tra, dữ liệu test, báo cáo, CLI/CI, xử lý sự cố). Trang có ô tìm không dấu và nút *làm ngay* (vd **⏺ Ghi kịch bản D365**). Nhấn `F1` ở bất kỳ cửa sổ nào để mở đúng chủ đề đang làm: trong form soạn bước D365 mở *Bước Dynamics 365*, trong cửa sổ ghi mở *Ghi kịch bản bằng thao tác*… Từ hộp thoại, hướng dẫn mở trong cửa sổ riêng không chặn hộp thoại, để vừa đọc vừa làm.
 
 1. **＋ Thêm công việc** (hoặc **Mẫu có sẵn…**) → đặt tên, nhóm, kiểu lịch / trình kích hoạt.
 2. Dựng flow bằng **kéo thả** (xem bên dưới).

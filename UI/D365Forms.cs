@@ -42,6 +42,8 @@ internal sealed class D365PickerForm : BaseForm
     public string SelectedText { get; private set; } = "";
     public D365Client.FormInfo? Form => _form;
 
+    protected override string HelpTopicId => "d365-pick";
+
     public D365PickerForm(D365PickKind kind, string tab = "")
     {
         _kind = kind;
@@ -251,6 +253,8 @@ internal sealed class D365RecorderForm : BaseForm
     /// <summary>Các bước ghi được (khi bấm "Dừng & thêm vào flow").</summary>
     public List<ActionStep> Steps { get; } = [];
 
+    protected override string HelpTopicId => "d365-record";
+
     public D365RecorderForm()
     {
         Text = "Ghi thao tác Dynamics 365 — ScheduleApp";
@@ -267,6 +271,7 @@ internal sealed class D365RecorderForm : BaseForm
 
         var header = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = false };
         header.Controls.Add(_status);
+        header.Controls.Add(HelpLink("? Hướng dẫn"));
 
         var hint = new Label
         {

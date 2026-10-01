@@ -272,7 +272,7 @@ internal sealed class StepEditorForm : BaseForm
         var btnCancel = new Button { Text = "Hủy", AutoSize = true, MinimumSize = new Size(90, 0), DialogResult = DialogResult.Cancel };
         var btnOk = new Button { Text = "OK", AutoSize = true, MinimumSize = new Size(90, 0) };
         btnOk.Click += (_, _) => Save();
-        bottom.Controls.AddRange([btnCancel, btnOk]);
+        bottom.Controls.AddRange([btnCancel, btnOk, HelpLink()]);
         AcceptButton = null; // Enter dùng để xuống dòng trong ô văn bản
         CancelButton = btnCancel;
 
@@ -306,6 +306,14 @@ internal sealed class StepEditorForm : BaseForm
     }
 
     private StepType CurrentType => Types[Math.Max(0, _cboType.SelectedIndex)];
+
+    protected override string HelpTopicId => CurrentType switch
+    {
+        StepType.Dynamics => "d365-steps",
+        StepType.Assert => "assert",
+        StepType.SetVariable => "variables",
+        _ => "flow"
+    };
     private LoopKind CurrentLoop => LoopKinds[Math.Clamp(_cboSub.SelectedIndex, 0, LoopKinds.Length - 1)];
     private VarSource CurrentSource => VarSources[Math.Clamp(_cboSub.SelectedIndex, 0, VarSources.Length - 1)];
     private BrowserAction CurrentBrowser => BrowserActions[Math.Clamp(_cboSub.SelectedIndex, 0, BrowserActions.Length - 1)];

@@ -7,7 +7,7 @@ using ScheduleApp.Services.Testing;
 
 namespace ScheduleApp.UI;
 
-internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHost, ITestHost
+internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHost, ITestHost, IHelpHost
 {
     private const int StopHotkeyId = 0x5AFE;
     private const int MaxLogChars = 200_000;
@@ -35,7 +35,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
 
     private readonly Label _emptyJobs = new()
     {
-        Text = "Chưa có công việc nào.\n\nBấm \"＋ Thêm công việc\" để tự dựng, hoặc \"Mẫu có sẵn…\" để bắt đầu từ ví dụ.",
+        Text = "Chưa có công việc nào.\n\nBấm \"＋ Thêm công việc\" để tự dựng, hoặc \"Mẫu có sẵn…\" để bắt đầu từ ví dụ.\n\nLần đầu dùng? Mở \"Hướng dẫn\" ở thanh bên trái (hoặc nhấn F1).",
         Dock = DockStyle.Fill,
         TextAlign = ContentAlignment.MiddleCenter,
         ForeColor = Theme.Muted,
@@ -45,6 +45,9 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
 
     private readonly Panel _jobsPage = new() { Dock = DockStyle.Fill, BackColor = Theme.Background };
     private TestDashboard _testsPage = null!;
+    private HelpView? _helpPage;
+    private Panel _content = null!;
+    private readonly NavButton _navHelp = new("", "Hướng dẫn");
     private readonly NavButton _navJobs = new("", "Công việc");
     private readonly NavButton _navTests = new("", "Kiểm thử");
 
@@ -311,10 +314,11 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
             TextAlign = ContentAlignment.MiddleLeft
         };
         // Dock = Top xếp theo thứ tự ngược (control thêm sau nằm trên).
-        nav.Controls.AddRange([navSettings, navSecrets, navHistory, section, spacer, _navTests, _navJobs, brand, startup, version]);
+        _navHelp.Click += (_, _) => ShowHelp(HelpContent.Start);
+        nav.Controls.AddRange([_navHelp, navSettings, navSecrets, navHistory, section, spacer, _navTests, _navJobs, brand, startup, version]);
 
         _testsPage = new TestDashboard(this) { Visible = false };
-        var content = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Background };
+        var content = _content = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Background };
         content.Controls.Add(_jobsPage);
         content.Controls.Add(_testsPage);
 
@@ -370,10 +374,50 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         SuspendLayout();
         _jobsPage.Visible = page == _jobsPage;
         _testsPage.Visible = page == _testsPage;
+        if (_helpPage != null) _helpPage.Visible = page == _helpPage;
         _navJobs.Selected = page == _jobsPage;
         _navTests.Selected = page == _testsPage;
+        _navHelp.Selected = page == _helpPage;
         if (page == _testsPage) _testsPage.RefreshData();
         ResumeLayout(true);
+    }
+
+    // ───────────────────────────── Hướng dẫn (IHelpHost) ─────────────────────────────
+
+    protected override string HelpTopicId => _testsPage.Visible ? "d365-overview" : _helpPage?.Visible == true ? _helpPage.CurrentTopicId ?? HelpContent.Start : HelpContent.Start;
+
+    /// <summary>Mở trang Hướng dẫn ngay trong cửa sổ chính (tạo khi cần lần đầu).</summary>
+    protected override void ShowHelp(string topic)
+    {
+        if (_helpPage == null)
+        {
+            _helpPage = new HelpView(this, showHeader: true) { Visible = false };
+            _content.Controls.Add(_helpPage);
+        }
+        ShowMain();
+        ShowPage(_helpPage);
+        _helpPage.ShowTopic(topic);
+    }
+
+    public void OpenHelp(string topic) => ShowHelp(topic);
+
+    public void RunHelpCommand(string command)
+    {
+        switch (command)
+        {
+            case HelpContent.CmdNewJob: ShowPage(_jobsPage); AddJob(); break;
+            case HelpContent.CmdTemplates: ShowPage(_jobsPage); AddFromTemplate(); break;
+            case HelpContent.CmdOpenTests: ShowPage(_testsPage); break;
+            case HelpContent.CmdNewTest: NewTestCase(false); break;
+            case HelpContent.CmdRecordD365: NewTestCase(true); break;
+            case HelpContent.CmdReports:
+                Directory.CreateDirectory(TestReport.RootDir);
+                Process.Start(new ProcessStartInfo(TestReport.RootDir) { UseShellExecute = true });
+                break;
+            case HelpContent.CmdHistory: ShowHistory(null); break;
+            case HelpContent.CmdSettings: ShowSettings(); break;
+            case HelpContent.CmdSecrets: { using var f = new SecretsForm(); f.ShowDialog(this); } break;
+        }
     }
 
     private void ToggleLog(bool show)
@@ -546,7 +590,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
                 _list.Groups.Add(g);
             _list.ShowGroups = groups.Count > 1;
             _emptyJobs.Text = _jobs.Count == 0
-                ? "Chưa có công việc nào.\n\nBấm \"＋ Thêm công việc\" để tự dựng, hoặc \"Mẫu có sẵn…\" để bắt đầu từ ví dụ."
+                ? "Chưa có công việc nào.\n\nBấm \"＋ Thêm công việc\" để tự dựng, hoặc \"Mẫu có sẵn…\" để bắt đầu từ ví dụ.\n\nLần đầu dùng? Mở \"Hướng dẫn\" ở thanh bên trái (hoặc nhấn F1)."
                 : $"Không có công việc nào khớp \"{filter}\".";
             _emptyJobs.Visible = _list.Items.Count == 0;
         }

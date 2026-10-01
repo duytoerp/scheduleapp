@@ -16,6 +16,8 @@ internal sealed class HistoryForm : BaseForm
     private readonly SplitContainer _split = new() { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
     private List<Guid?> _jobFilter = [];
 
+    protected override string HelpTopicId => "errors";
+
     public HistoryForm(IReadOnlyList<Job> jobs, Guid? jobId)
     {
         _jobs = jobs;
