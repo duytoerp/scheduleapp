@@ -191,6 +191,26 @@ internal static class WindowHelper
         return Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom);
     }
 
+    /// <summary>
+    /// Phần của <paramref name="area"/> bị các cửa sổ nằm trên <paramref name="root"/> (cửa sổ được click tại <paramref name="p"/>) che:
+    /// tooltip, menu cha, thanh ghi thao tác của ScheduleApp, cửa sổ khác chồng lên… Các vùng này lúc chạy lại thường không còn.
+    /// Cửa sổ trong suốt phủ cả điểm click (lớp phủ màn hình, click xuyên qua được) không tính.
+    /// </summary>
+    public static List<Rectangle> CoveringRects(IntPtr root, Point p, Rectangle area)
+    {
+        var result = new List<Rectangle>();
+        Win32.EnumWindows((h, _) =>
+        {
+            // EnumWindows đi từ trên xuống theo thứ tự chồng — tới cửa sổ được click thì dừng.
+            if (h == root) return false;
+            if (!Win32.IsWindowVisible(h) || IsCloaked(h)) return true;
+            var r = GetRect(h);
+            if (r.Width > 0 && r.Height > 0 && r.IntersectsWith(area) && !r.Contains(p)) result.Add(Rectangle.Intersect(r, area));
+            return true;
+        }, IntPtr.Zero);
+        return result;
+    }
+
     /// <summary>Cửa sổ top-level nằm dưới một điểm trên màn hình.</summary>
     public static IntPtr RootWindowAt(Point p)
     {

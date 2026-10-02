@@ -41,6 +41,7 @@ internal sealed class FlowDesigner : ScrollableControl
     private readonly ToolStripMenuItem _miBreakpoint;
     private readonly ToolStripMenuItem _miRunFrom;
     private readonly ToolTip _tip = new();
+    private readonly Dictionary<ActionStep, (string Data, Bitmap Image)> _thumbs = [];
     private Font _titleFont = null!;
     private Font _iconFont = null!;
     private Font _pillFont = null!;
@@ -103,6 +104,7 @@ internal sealed class FlowDesigner : ScrollableControl
 
     public void RefreshView()
     {
+        PruneThumbnails();
         _structure = FlowStructure.Build(_steps);
         Relayout();
         Invalidate();
@@ -576,6 +578,20 @@ internal sealed class FlowDesigner : ScrollableControl
 
         int textX = circle.Right + S(12);
         int textW = r.Right - textX - S(36);
+
+        // Hình mẫu (click theo hình, click đã ghi…) thu nhỏ ở bên phải — nhìn là biết bước sẽ click vào đâu.
+        if (Thumbnail(step) is { } thumb)
+        {
+            double k = Math.Min(Math.Min((double)S(100) / thumb.Width, (double)(r.Height - S(16)) / thumb.Height), S(100) / 100.0);
+            int w = Math.Max(1, (int)(thumb.Width * k)), h = Math.Max(1, (int)(thumb.Height * k));
+            var box = new Rectangle(r.Right - S(36) - w, r.Y + (r.Height - h) / 2, w, h);
+            var mode = g.InterpolationMode;
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.DrawImage(thumb, box);
+            g.InterpolationMode = mode;
+            using (var pen = new Pen(Color.FromArgb(200, 204, 210))) g.DrawRectangle(pen, box.X - 1, box.Y - 1, box.Width + 1, box.Height + 1);
+            textW -= w + S(12);
+        }
         var extras = new List<string>();
         if (step.Retries > 0) extras.Add($"⟳{step.Retries}");
         if (step.OnError == ErrorAction.Continue) extras.Add("bỏ qua lỗi");
@@ -819,10 +835,40 @@ internal sealed class FlowDesigner : ScrollableControl
         if (_selected < 0 && _steps.Count > 0) SelectStep(0);
     }
 
+    /// <summary>Hình mẫu của bước đã giải mã (giữ lại theo chuỗi ImageData để không giải mã PNG mỗi lần vẽ).</summary>
+    private Bitmap? Thumbnail(ActionStep step)
+    {
+        if (string.IsNullOrEmpty(step.ImageData) || StepVisuals.IsMarker(step.Type)) return null;
+        if (_thumbs.TryGetValue(step, out var cached) && ReferenceEquals(cached.Data, step.ImageData)) return cached.Image;
+        cached.Image?.Dispose();
+        _thumbs.Remove(step);
+        try
+        {
+            var image = Vision.ScreenCapture.FromBase64Png(step.ImageData);
+            _thumbs[step] = (step.ImageData, image);
+            return image;
+        }
+        catch (Exception ex) when (ex is FormatException or ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    private void PruneThumbnails()
+    {
+        foreach (var step in _thumbs.Keys.Where(s => !_steps.Contains(s)).ToList())
+        {
+            _thumbs[step].Image.Dispose();
+            _thumbs.Remove(step);
+        }
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
+            foreach (var (_, image) in _thumbs.Values) image.Dispose();
+            _thumbs.Clear();
             _menu.Dispose();
             _tip.Dispose();
             _titleFont.Dispose();

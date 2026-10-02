@@ -18,11 +18,17 @@ internal static class ImageMatcher
     /// Vị trí khớp nhất, hoặc null nếu hình mẫu lớn hơn vùng tìm.
     /// Score (0..1) = độ khớp hình dạng (NCC) × độ khớp màu — nút cùng hình nhưng khác màu (vd nút bị mờ) sẽ bị điểm thấp.
     /// </summary>
-    public static MatchResult? FindBest(Bitmap haystack, Bitmap needle)
+    public static MatchResult? FindBest(Bitmap haystack, Bitmap needle) => FindAll(haystack, needle).FirstOrDefault();
+
+    /// <summary>
+    /// Các vị trí giống hình mẫu nhất (tối đa 12, không chồng lên nhau quá nửa), độ khớp giảm dần; rỗng nếu hình mẫu lớn hơn vùng tìm.
+    /// Hình mẫu lớn chỉ giữ các vị trí có hình dạng kém vị trí tốt nhất không quá 0,15 — vẫn đủ để nhận ra chỗ trùng lặp.
+    /// </summary>
+    public static List<MatchResult> FindAll(Bitmap haystack, Bitmap needle)
     {
         var hay = GrayImage.From(haystack);
         var tpl = GrayImage.From(needle);
-        if (tpl.W < 2 || tpl.H < 2 || tpl.W > hay.W || tpl.H > hay.H) return null;
+        if (tpl.W < 2 || tpl.H < 2 || tpl.W > hay.W || tpl.H > hay.H) return [];
 
         // 1) Lấy các ứng viên theo hình dạng; hình mẫu đủ lớn thì tìm thô trên ảnh thu nhỏ k lần cho nhanh.
         int k = Math.Clamp(Math.Min(tpl.W, tpl.H) / 10, 1, 8);
@@ -48,7 +54,7 @@ internal static class ImageMatcher
         // 2) Tinh chỉnh vị trí ở độ phân giải gốc, rồi chấm thêm điểm màu.
         var stats = new TemplateStats(tpl);
         var integral = new Integral(hay);
-        MatchResult? result = null;
+        var results = new List<MatchResult>();
         foreach (var (cx, cy, _) in candidates)
         {
             int bx = cx, by = cy;
@@ -60,10 +66,21 @@ internal static class ImageMatcher
                     if (s > bestShape) (bestShape, bx, by) = (s, x, y);
                 }
             double score = Math.Max(0, bestShape) * ColorScore(hay, tpl, bx, by);
-            if (result == null || score > result.Score)
-                result = new MatchResult(new Rectangle(bx, by, tpl.W, tpl.H), score);
+            results.Add(new MatchResult(new Rectangle(bx, by, tpl.W, tpl.H), score));
         }
-        return result;
+
+        // Tinh chỉnh có thể đưa hai ứng viên về cùng một chỗ → giữ cái khớp hơn.
+        var distinct = new List<MatchResult>();
+        foreach (var r in results.OrderByDescending(r => r.Score))
+            if (distinct.All(d => Overlap(d.Bounds, r.Bounds) < 0.5)) distinct.Add(r);
+        return distinct;
+    }
+
+    /// <summary>Tỉ lệ diện tích chồng nhau của hai vùng cùng kích thước (0..1).</summary>
+    public static double Overlap(Rectangle a, Rectangle b)
+    {
+        var i = Rectangle.Intersect(a, b);
+        return i.IsEmpty ? 0 : (double)i.Width * i.Height / Math.Max(1, Math.Min(a.Width * a.Height, b.Width * b.Height));
     }
 
     /// <summary>1 − sai lệch RGB trung bình / 255 giữa hình mẫu và vùng tại (x, y).</summary>

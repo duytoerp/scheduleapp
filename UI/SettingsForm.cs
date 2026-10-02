@@ -35,7 +35,7 @@ internal sealed class SettingsForm : BaseForm
     private readonly CheckBox _chkAttach = new() { Text = "Đính kèm ảnh chụp màn hình lỗi", AutoSize = true };
     private readonly CheckBox _chkWebhook = new() { Text = "Gửi tới webhook (Teams / Slack / Discord / Google Chat)", AutoSize = true };
     private readonly TextBox _txtWebhook = new() { Width = 520 };
-    private readonly CheckBox _chkTgCommands = new() { Text = "Nhận lệnh điều khiển từ chat này (/run, /stop, /status, /screenshot…)", AutoSize = true, Margin = new Padding(22, 3, 3, 3) };
+    private readonly CheckBox _chkTgCommands = new() { Text = "Nhận lệnh điều khiển từ chat này (/run, /stop, /status, /screenshot, /new tạo công việc bằng AI…)", AutoSize = true, Margin = new Padding(22, 3, 3, 3) };
 
     // Cập nhật
     private readonly TextBox _txtUpdateSource = new() { Width = 420, PlaceholderText = "github:chủ/repo · https://…/version.json · \\\\máy\\thư mục" };

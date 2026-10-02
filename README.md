@@ -55,6 +55,28 @@ Tick **Khởi động cùng Windows** để app tự chạy (ẩn ở khay) khi 
 
 Nút **Mẫu có sẵn…** mở kho mẫu nhúng trong ứng dụng; ba file trong [Samples/](Samples/) cũng nhập được bằng **Thêm → Nhập công việc…**. Mẫu có lịch hoặc trình kích hoạt được tắt sẵn — xem lại rồi tick để bật.
 
+**Thiết lập mẫu:** chọn mẫu xong, màn hình *Thiết lập mẫu* hỏi một lần những gì là của riêng bạn — gom từ mẫu được chọn **và các công việc dùng chung nó gọi tới** (vd C2 → C1 *Mở Dynamics 365*):
+
+- **Biến** như `tenant`, `d365Url`, `taiKhoanTest`, `vaiTro` (kèm giải thích). Biến dùng ở nhiều công việc chỉ cần điền một lần; giá trị còn là chữ mẫu (`ten-cong-ty`, `tenorg`, appid toàn số 0) được đánh dấu ⚠. Giá trị đã điền được nhớ và **tự điền sẵn** khi thêm mẫu khác dùng cùng biến. Biến do flow tự gán (bộ đếm, danh sách) không bị hỏi.
+- **Bí mật** mà mẫu dùng (`{{secret:MatKhauTest}}`…): nhập luôn tại đây, lưu mã hóa trên máy; đã có thì để trống để giữ nguyên.
+- **Kết nối API** mẫu cần (vd `Dynamics365`) — báo nếu chưa khai báo, có nút mở Cài đặt.
+- **Đường dẫn file / thư mục** ghi trong bước và trình kích hoạt (vd `%USERPROFILE%\Documents\khach-hang.xlsx`, thư mục Downloads được theo dõi) — có nút *Duyệt…*, phần động như `\{{today:yyyy-MM}}` được giữ nguyên.
+
+**Dữ liệu test ngẫu nhiên:** giá trị biến viết dạng công thức `=…` (như Excel) được sinh mới ở **mỗi lần chạy** — điền ngay trong Thiết lập mẫu, tab *Biến* của công việc hoặc *Môi trường*, có nút **⚄ Ngẫu nhiên** chọn nhanh và xem trước ví dụ:
+
+| Công thức | Ví dụ giá trị |
+|---|---|
+| `=hoten()` · `=hoten(nữ)` · `=ho()` · `=ten()` | Nguyễn Thị Lan · Trần · Minh |
+| `=email()` · `=email(cty.vn)` | lan.nguyen482@example.com |
+| `=sdt()` · `=cccd()` | 0912345678 (đầu số di động thật) · 079203004512 |
+| `=diachi()` · `=thanhpho()` · `=congty()` | 125 Lê Lợi, Quận 1, TP. Hồ Chí Minh · Công ty TNHH Minh Long Thương mại |
+| `=random(1, 100)` · `=random(1, 100, 2)` · `=chuso(6)` · `=chuoi(8)` · `=guid()` | 42 · 57.31 · 040213 · K7Q2MZ9A |
+| `=chon(Mới; Đang xử lý; Đã đóng)` · `=ngay(-30, 0)` · `=ngay(1, 90, yyyy-MM-dd)` | Đang xử lý · 14/09/2026 · 2026-11-20 |
+
+Giá trị sinh ra được ghi vào nhật ký (`🎲 {{hoTen}} = "…"`) để tái hiện lần chạy lỗi. Dùng thẳng trong ô chữ bằng `{{=sdt()}}` — mỗi lần thay ra một giá trị khác; cần cùng một giá trị cho bước nhập và bước *Kiểm tra* thì đặt vào biến. Tên hàm gõ có dấu cũng được (`=họtên()`, `=chọn(…)`).
+
+Bấm *Để sau* để giữ nguyên mẫu. Mở lại bất cứ lúc nào: chuột phải công việc → **⚙ Thiết lập biến & bí mật…**, hoặc **⋯ Thêm → Thiết lập biến & bí mật (mọi công việc)…** để đổi một giá trị (vd `tenant`) cho tất cả công việc cùng lúc.
+
 **Cơ bản** — [Samples/ScheduleApp-vi-du-mau.json](Samples/ScheduleApp-vi-du-mau.json) (14 mẫu): mở Notepad gõ tiếng Việt, nhắc nghỉ giải lao, nhắc họp, mở CRM bằng Chrome profile, OCR, click hình ảnh, gõ mẫu email, phím tắt, sao lưu robocopy, PowerShell, đóng ứng dụng…
 
 **Nâng cao** — [Samples/ScheduleApp-mau-nang-cao.json](Samples/ScheduleApp-mau-nang-cao.json):
@@ -96,6 +118,22 @@ Nút **Mẫu có sẵn…** mở kho mẫu nhúng trong ứng dụng; ba file tr
 | C6 | Phân quyền: vai trò, nút trên thanh lệnh | *Đọc người dùng & vai trò*, kiểm tra vai trò, nút **bấm được** / **bị ẩn** theo command id |
 | C7 | Khách hàng mới hiện trong view mặc định | *Danh sách (view): đọc bản ghi* theo FetchXML của view + tìm theo tên, *tìm và mở bản ghi* |
 
+## Tạo flow bằng AI
+
+Bấm **✨ Tạo bằng AI…** (thanh công cụ chính, hoặc nút bên phải trình soạn flow), mô tả việc cần làm bằng lời — Claude dựng sẵn flow để xem trước rồi áp dụng:
+
+> *Đọc file khach-hang.xlsx trong Documents. Với mỗi dòng chưa có Trạng thái: mở Edge vào trang đăng ký, điền Họ tên, Email, bấm Đăng ký, ghi "Đã nhập" vào cột Trạng thái. Xong thì gửi thông báo số dòng đã nhập.*
+
+- **Tạo mới / viết lại cả flow**, hoặc **chỉ thêm bước** vào sau bước đang chọn (vd *"sau khi lưu, gửi thông báo kèm ảnh màn hình"*). Flow đang có được gửi kèm nên có thể yêu cầu sửa: *"dùng Edge thay Chrome"*, *"bỏ bước đăng nhập, gọi công việc A1 có sẵn"*.
+- AI biết các công việc khác (để gọi lại, vd đăng nhập), biến, kết nối API đã khai báo; tùy chọn gửi kèm danh sách cửa sổ đang mở.
+- Nói luôn lúc nào chạy (*"8h sáng các ngày làm việc"*, *"mỗi 15 phút trong giờ hành chính"*, *"ngày cuối tháng"*, *"khi có email hóa đơn"*, *"phím Ctrl+Alt+7"*) → lịch chạy / kích hoạt được đặt cùng flow khi áp dụng (chế độ tạo mới / viết lại).
+- Tạo từ điện thoại: lệnh `/new` qua Telegram (xem *Điều khiển từ xa qua Telegram*).
+- ScheduleApp kiểm tra flow AI trả về (khối Nếu/Lặp, tổ hợp phím, bộ chọn phần tử, công việc / kết nối được tham chiếu…) và **tự gửi lỗi lại cho AI sửa** (tối đa 2 lần) trước khi hiện kết quả.
+- Phần **Cần kiểm tra** liệt kê những gì phải xác nhận trước khi chạy (bộ chọn CSS, đường dẫn, bí mật cần thêm). Mật khẩu luôn là `{{secret:…}}`; các bước có hình mẫu được giữ nguyên khi AI sửa flow.
+- Áp dụng xong vẫn hoàn tác được bằng **Ctrl+Z**. Nên **Chạy thử** trước khi đặt lịch.
+
+Cần khóa API Claude (**⚙ Cài đặt → Tích hợp**). Mô tả, các bước hiện có, tên biến / công việc / kết nối API được gửi tới Anthropic; giá trị trong 🔑 Bí mật không được gửi.
+
 ## Thiết kế flow bằng kéo thả
 
 Trình soạn công việc có 3 vùng: **Hộp công cụ** (trái) · **Khung luồng** Bắt đầu → các bước → Kết thúc (giữa) · nút lệnh (phải). Phía trên là các tab **Lịch chạy · Kích hoạt khác · Biến · Lỗi · thông báo · kiểm thử**. Trong form soạn bước, các tùy chọn ít dùng (thử lại khi lỗi, xử lý lỗi, nghỉ sau bước, bật/tắt, điểm dừng) nằm trong mục **▸ Nâng cao** — tự mở khi bước đã có giá trị khác mặc định.
@@ -132,7 +170,7 @@ Mọi ô chữ của bước (đường dẫn, văn bản gõ, lệnh, bộ ch�
 | `{{email.subject}}` `{{email.from}}` `{{email.body}}` `{{email.attachments}}` | Email vừa nhận (kích hoạt "có email mới") |
 | `{{http.status}}` `{{http.body}}` · `{{ai.answer}}` · `{{lastRow}}` | Kết quả lần gọi API gần nhất · câu trả lời AI · dòng Excel/CSV vừa ghi |
 
-Định dạng giá trị biến: `{{ten:upper}}` `{{ten:lower}}` `{{ten:trim}}` `{{ten:len}}` `{{ten:nodiacritics}}` (bỏ dấu) `{{ten:url}}` `{{ten:json}}` (đặt vào chuỗi JSON an toàn), số `{{tien:N0}}` (1.234.568) `{{so:000}}`, ngày `{{ngay:dd/MM/yyyy}}`.
+Định dạng giá trị biến: `{{ten:upper}}` `{{ten:lower}}` `{{ten:trim}}` `{{duongDan:unquote}}` (bỏ dấu nháy bao quanh, vd đường dẫn chép bằng *Copy as path*) `{{ten:len}}` `{{ten:nodiacritics}}` (bỏ dấu) `{{ten:url}}` `{{ten:json}}` (đặt vào chuỗi JSON an toàn), số `{{tien:N0}}` (1.234.568) `{{so:000}}`, ngày `{{ngay:dd/MM/yyyy}}`.
 
 **Danh sách** = biến có mỗi phần tử một dòng (tạo bằng *Gán biến → Thêm vào cuối danh sách / Tách chuỗi*, hoặc từ `value[*].name` của JSON): `{{ds:count}}` `{{ds:first}}` `{{ds:last}}` `{{ds:item(2)}}` `{{ds:item(-1)}}` `{{ds:join(, )}}` `{{ds:sort}}` `{{ds:unique}}`; lặp qua bằng *Lặp → Mỗi dòng văn bản* với `{{ds}}`.
 Khai báo giá trị ban đầu ở tab **Biến** của công việc; gán/đổi trong flow bằng bước **Gán biến**:
@@ -154,9 +192,9 @@ Bước **Chạy lệnh** cũng lưu được output vào biến; bước **Trì
 - **Lặp** … **Hết lặp** — N lần · khi điều kiện đúng · **mỗi dòng file Excel (.xlsx) / CSV** (dòng đầu là tiêu đề; đọc được cả khi file đang mở trong Excel, chọn sheet) · mỗi dòng văn bản (file hoặc `{{biến}}`) · mỗi file trong thư mục (`*.pdf;*.xlsx`).
 - **Thoát vòng lặp**, **Bỏ qua, sang lần lặp kế**, **Nhãn** + **Nhảy tới nhãn**, **Dừng flow** (tùy chọn tính là thất bại), **Chạy công việc khác** (flow con dùng chung biến — vd "Đăng nhập CRM" dùng cho nhiều công việc).
 
-## Ghi Excel / CSV
+## Ghi file (Excel / CSV / văn bản)
 
-Bước **Ghi Excel / CSV** ghi thẳng vào `.xlsx` / `.csv` không cần mở Excel — giữ nguyên định dạng ô, công thức khác, các sheet khác và bảng (*Format as Table* được nới xuống khi thêm dòng). Mỗi dòng của ô nội dung là một ô cần ghi: `TrangThai=Đã nhập`, `MaDon={{maDon}}`, `NgayNhap={{now:dd/MM/yyyy HH:mm}}`; cột chưa có được thêm vào sau cột cuối.
+Bước **Ghi file** ghi thẳng vào `.xlsx` / `.csv` không cần mở Excel — giữ nguyên định dạng ô, công thức khác, các sheet khác và bảng (*Format as Table* được nới xuống khi thêm dòng). Mỗi dòng của ô nội dung là một ô cần ghi: `TrangThai=Đã nhập`, `MaDon={{maDon}}`, `NgayNhap={{now:dd/MM/yyyy HH:mm}}`; cột chưa có được thêm vào sau cột cuối.
 
 - **Thêm dòng mới vào cuối** — nhật ký, sổ hóa đơn… File chưa có sẽ tự tạo (kèm dòng tiêu đề).
 - **Sửa ô của một dòng có sẵn** — theo **số dòng Excel** (trong vòng lặp *Mỗi dòng Excel/CSV* dùng `{{row.rowNumber}}` để ghi kết quả vào đúng dòng đang xử lý) hoặc theo **cột khóa** `MaKH={{row.MaKH}}`.
@@ -164,6 +202,19 @@ Bước **Ghi Excel / CSV** ghi thẳng vào `.xlsx` / `.csv` không cần mở 
 - Excel **khóa file khi đang mở** — đóng file trước khi chạy (bước báo lỗi rõ ràng; bật *Thử lại* nếu cần).
 
 Mẫu thường dùng: lặp mỗi dòng Excel → nếu `{{row.TrangThai}}` bắt đầu bằng "Đã nhập" thì *Bỏ qua, sang lần lặp kế* → nhập liệu → ghi `TrangThai=Đã nhập` (hoặc `Lỗi: {{lastError}}` qua *khi lỗi → nhảy nhãn*). Chạy lại sau khi lỗi giữa chừng sẽ tiếp tục đúng chỗ.
+
+**Ghi file văn bản** (cách ghi *Ghi file văn bản* / *Thêm vào cuối file văn bản*): ghi nội dung tự do nhiều dòng, có `{{biến}}`, vào `.txt` (UTF-8, tự tạo thư mục) — báo cáo, nhật ký, thông báo "đã chạy xong". Mở để xem bằng bước *Mở ứng dụng* `notepad.exe` với tham số là đường dẫn file.
+
+## Phát video / nhạc
+
+Bước **Phát video / nhạc** phát bằng trình phát có sẵn trong ScheduleApp (dùng bộ giải mã của Windows, không cần cài thêm): mỗi dòng một file, phát lần lượt từ trên xuống — hết file này tự sang file kế, **phát xong cả danh sách mới chạy bước sau**. Bấm **＋ Thêm file…** để chọn nhiều file, hoặc dán đường dẫn (*Copy as path* của Explorer, có dấu nháy cũng được); dòng là thư mục → phát mọi video trong đó theo tên (2 trước 10); dòng bắt đầu bằng `#` là ghi chú.
+
+- Mặc định **toàn màn hình**; khi đang phát: `Esc` dừng (bước báo lỗi, flow dừng), `→` sang file kế, `Space` tạm dừng / phát tiếp. Âm lượng 0–100.
+- File không có / không phát được → bỏ qua, ghi vào nhật ký. Số file đã phát: `{{media.played}}`.
+- **Thời lượng tự tính** mỗi khi thêm / đổi file (đọc metadata của Windows, file không có thì mở thử bằng trình phát — không phát): ngay dưới ô danh sách hiện thời lượng từng file và **tổng** (file thiếu, dòng dùng biến chỉ biết khi chạy được ghi rõ); thẻ bước hiện `Phát "Clip_1.mp4" (0:12)`; cạnh nút *Chạy thử* hiện tổng của cả công việc (`4 bước · video/nhạc 0:26`). Mở công việc là tự tính lại (file có thể đã đổi).
+- Khi chạy, nhật ký ghi tổng thời lượng và giờ **dự kiến xong**; màn hình phát hiện `1/2 · Clip_1.mp4 · 0:12`. Sau bước có `{{media.duration}}` (vd `0:26`) và `{{media.seconds}}` (vd `26`) — dùng được trong báo cáo, vd *Ghi file văn bản* "Đã phát {{media.played}} video, {{media.duration}}".
+
+Ví dụ: *Phát Clip_1.mp4* → *Phát Clip_2.mp4* → *Ghi file văn bản* `Documents\ScheduleApp\da-chay-xong.txt` ("ĐÃ CHẠY XONG… {{now}}") → *Mở* `notepad.exe "…\da-chay-xong.txt"`, lịch *Hằng ngày 15:30*.
 
 ## Gọi API (REST) — Dynamics 365 Web API, Microsoft Graph, API nội bộ
 
@@ -211,6 +262,12 @@ Nội dung yêu cầu (và ảnh nếu bật) được gửi tới Anthropic đ�
 | `/status` | Đang chạy gì, 5 lịch sắp tới |
 | `/history 10` | 10 lần chạy gần nhất |
 | `/screenshot` | Chụp màn hình máy tính gửi về điện thoại |
+| `/new <mô tả>` | Tạo công việc mới bằng AI (cần khóa Claude trong ⚙ Cài đặt → Tích hợp) — trả về bản nháp để xem trước |
+| *(nhắn thường)* · `/sua <yêu cầu>` | Sửa bản nháp đang có, vd "dùng Edge thay Chrome", "chỉ chạy thứ 2 và thứ 6" |
+| `/ok` · `/ok chay` | Lưu bản nháp thành công việc (nhóm *Telegram*) · lưu và chạy ngay |
+| `/huy` | Bỏ bản nháp |
+
+**Tạo công việc từ điện thoại:** `/new 8h sáng các ngày làm việc mở D:\bao-cao.xlsx, làm mới dữ liệu, lưu rồi báo cho tôi` → bot báo "⏳ Đang dựng…" (20–60 giây) rồi gửi bản nháp: tên, **lịch chạy** (AI đặt luôn khi bạn nói giờ chạy — hằng ngày, các thứ trong tuần, mỗi N phút trong khung giờ, ngày cuối tháng, một lần lúc…), kích hoạt (phím tắt, khi có email / file mới…), danh sách bước, biến và những việc cần kiểm tra. Nhắn thêm để sửa — AI nhớ cả hội thoại — rồi `/ok`. Không nói giờ chạy → công việc chạy thủ công bằng `/run`. Công việc tên trùng được thêm số để `/run` theo tên không nhầm; mở trên máy để xem / sửa chi tiết như công việc thường. Các bản nháp do AI dựng nên xem kỹ trước khi `/ok chay`, nhất là bước click / gõ phím trên máy.
 
 ## Gỡ lỗi flow
 
@@ -343,26 +400,32 @@ Hình mẫu ghi nhớ mức scale màn hình lúc chụp và **tự co giãn** k
 Trong trình soạn công việc bấm **● Ghi thao tác…** → các cửa sổ ScheduleApp tạm ẩn, thanh "Đang ghi" hiện ở trên cùng → thao tác bình thường → **Dừng & lưu** (hoặc `Ctrl+Shift+Q`). Các bước được chèn sau bước đang chọn:
 
 - Click vào nút / ô nhập / mục menu có tên → **Click phần tử UI** (bộ chọn UI Automation, không phụ thuộc tọa độ — tắt được bằng ô trên thanh "Đang ghi"); phần tử không nhận diện được → *Click chuột* với tọa độ tương đối theo cửa sổ (`exe:…`). Hai click nhanh cùng chỗ → double-click.
+- **Nhận diện bằng hình ảnh:** ngay lúc nhấn chuột (trước khi giao diện đổi), vùng quanh chỗ click được chụp và chọn làm **hình mẫu** — đúng khung nút/ô nếu UI Automation nhận ra, không thì vùng lớn dần quanh điểm click cho tới khi đủ chi tiết và không lẫn với chỗ khác (nút *Sửa* lặp ở mỗi dòng → lấy cả nhãn của dòng). Phần bị tooltip / cửa sổ khác che không đưa vào hình. Khi chạy:
+  1. *Click phần tử UI*: tìm phần tử trước; không thấy → tìm theo hình mẫu → tọa độ lúc ghi.
+  2. *Click chuột*: đưa chuột tới vị trí lúc ghi (để nút có hiệu ứng hover giống lúc ghi) rồi tìm hình mẫu trong cửa sổ, chờ tối đa 5 giây (cũng là chờ giao diện hiện ra); nhiều chỗ giống nhau → chọn chỗ gần vị trí lúc ghi nhất; không thấy → click theo tọa độ lúc ghi và ghi cảnh báo vào log.
+  3. Hình mẫu tự co giãn khi màn hình đổi mức scale; độ khớp mặc định 80%.
+
+  Thẻ bước hiện ảnh thu nhỏ của hình mẫu. Trong form soạn bước: xem hình (dấu chữ thập đỏ = điểm sẽ click), chụp lại, bỏ hình, chỉnh độ khớp / thời gian chờ, **Thử tìm trên màn hình**. Tắt bằng ô *Chụp hình chỗ được click* trên thanh "Đang ghi". Bấm vào vùng trống / ít chi tiết vẫn ghi theo tọa độ.
 - Nhấn giữ rồi kéo → *Kéo thả chuột*; lăn bánh xe → *Cuộn chuột* (các lần cuộn liên tiếp được gộp).
 - Chuyển sang cửa sổ khác → tự chèn *Chờ cửa sổ xuất hiện* trước thao tác đầu tiên trên cửa sổ đó.
 - Chữ gõ liên tiếp → một bước *Gõ văn bản* (Backspace sửa chữ được tính luôn; hỗ trợ Unikey/EVKey). Gõ vào **ô mật khẩu** → lưu thành `{{secret:MatKhau}}` thay vì mật khẩu thật (thêm bí mật "MatKhau" trong 🔑 Bí mật).
 - Enter, Tab, phím mũi tên, F1–F12, tổ hợp Ctrl/Alt/Win → *Nhấn phím* (phím lặp gộp thành `Tab*3`).
 - Khoảng nghỉ thật giữa các thao tác được giữ lại (0,15–5 giây).
 
-Hạn chế: với bộ gõ Telex có sẵn của Windows, chữ được ghi dạng phím gốc (vd "tieengs") — sửa lại trong bước sau khi ghi. Click còn ghi theo tọa độ nên xem lại, thay bằng *Click vào hình ảnh* nếu cần.
+Hạn chế: với bộ gõ Telex có sẵn của Windows, chữ được ghi dạng phím gốc (vd "tieengs") — sửa lại trong bước sau khi ghi. Click không có hình mẫu (vùng trống) và kéo thả vẫn theo tọa độ nên xem lại. Nội dung quanh chỗ click thay đổi giữa các lần chạy (ô đã có chữ khác, danh sách đổi thứ tự) làm hình mẫu khó khớp → flow chậm 5 giây rồi click theo tọa độ; khi đó chụp lại hình mẫu vùng ổn định hơn hoặc bỏ hình.
 
 ## Các loại bước
 
 | Nhóm | Bước | Mô tả |
 |---|---|---|
-| Ứng dụng | Mở ứng dụng / file / URL · Đóng ứng dụng · Chạy lệnh (cmd) | `notepad.exe`, `D:\bao-cao.xlsx`, `https://…` · theo tên tiến trình, tùy chọn kill · chạy ẩn, output vào log/biến, mã thoát ≠ 0 = lỗi |
+| Ứng dụng | Mở ứng dụng / file / URL · Đóng ứng dụng · Chạy lệnh (cmd) · Phát video / nhạc | `notepad.exe`, `D:\bao-cao.xlsx`, `https://…` · theo tên tiến trình, tùy chọn kill · chạy ẩn, output vào log/biến, mã thoát ≠ 0 = lỗi · phát lần lượt danh sách, xong mới sang bước sau |
 | Cửa sổ | Chờ cửa sổ xuất hiện · Kích hoạt cửa sổ | Theo tiêu đề / `exe:tiến_trình` |
 | Chuột & bàn phím | Click chuột · Gõ văn bản · Nhấn phím · Cuộn chuột · Kéo thả chuột | Tọa độ màn hình hoặc tương đối theo cửa sổ; Unicode đầy đủ; `Ctrl+S`, `Tab*3`, `Ctrl+A, Delete` |
 | Phần tử UI | Click / Nhập vào / Chờ phần tử UI | UI Automation — xem mục riêng |
 | Trình duyệt | Trình duyệt (Chrome/Edge) | Mở, URL, click, nhập, đọc, chờ, JavaScript |
 | Kiểm thử & Dynamics 365 | Dynamics 365 (model-driven) · Kiểm tra (Assert) | Xem [mục riêng](#kiểm-thử-tự-động-dynamics-365-model-driven-app) |
 | Nhận dạng màn hình | Click / Chờ hình ảnh · Click / Chờ chữ (OCR) | Xem mục riêng |
-| Biến & dữ liệu | Gán biến · Ghi Excel / CSV · Ghi nhật ký | Xem mục Biến, Ghi Excel |
+| Biến & dữ liệu | Gán biến · Ghi file (Excel / CSV / văn bản) · Ghi nhật ký | Xem mục Biến, Ghi file |
 | Tích hợp | Gọi API (HTTP / REST) · Hỏi AI (Claude) · Gửi thông báo | Xem mục riêng |
 | Điều kiện & lặp | Nếu · Không thì · Lặp · Thoát vòng lặp · Bỏ qua, sang lần lặp kế · Nhãn · Nhảy tới nhãn | Xem mục riêng |
 | Điều khiển luồng | Chờ (delay) · Hiện nhắc nhở · Chạy công việc khác · Dừng flow | Nhắc nhở có thể tạm dừng flow chờ xác nhận |

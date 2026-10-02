@@ -182,10 +182,10 @@ public sealed class FlowRunner
         ctx.Vars["user"] = Environment.UserName;
         ctx.Vars["lastError"] = "";
         ctx.Vars["lastOutput"] = "";
-        if (options.Variables != null)
-            foreach (var (k, v) in options.Variables) ctx.Vars[k] = v;
-
         Log.Info($"▶ Bắt đầu \"{job.Name}\" ({trigger}) — {total} bước" + (options.StartIndex > 0 ? $", từ bước {options.StartIndex + 1}" : ""));
+        // Biến của môi trường / dòng dữ liệu kiểm thử — công thức "=hoten()"… được sinh mới ở mỗi lần chạy.
+        if (options.Variables != null)
+            foreach (var (k, v) in options.Variables) ctx.Vars[k] = ctx.InitialValue(k, v);
 
         IDisposable? screen = null;
         IDisposable? awake = null;

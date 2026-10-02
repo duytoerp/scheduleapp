@@ -47,6 +47,12 @@ public static class StepExecutor
             case StepType.MouseClick:
             {
                 var (x, y) = await ToScreenAsync(s, s.X, s.Y, ct);
+                if (s.HasImageAnchor)
+                {
+                    var found = await FindAnchorAsync(s, new Point(x, y), s.DelayMs, ct);
+                    if (found != null) (x, y) = (found.Value.X, found.Value.Y);
+                    else Log.Warn($"      → click theo tọa độ lúc ghi ({s.X}, {s.Y}).");
+                }
                 InputSimulator.Click(x, y, s.Button, s.DoubleClick);
                 break;
             }
@@ -154,6 +160,10 @@ public static class StepExecutor
                 WriteData(s, ctx);
                 break;
 
+            case StepType.PlayMedia:
+                await PlayMediaAsync(s, ctx);
+                break;
+
             case StepType.HttpRequest:
                 await HttpRequestAsync(s, ctx);
                 break;
@@ -185,12 +195,88 @@ public static class StepExecutor
     private static void WriteData(ActionStep s, FlowContext ctx)
     {
         var path = Environment.ExpandEnvironmentVariables(s.Target.Trim().Trim('"'));
+        if (s.IsTextWrite)
+        {
+            WriteText(s, ctx, path);
+            return;
+        }
         if (path.Length == 0) throw new InvalidOperationException("Chưa nhập file Excel / CSV.");
         // Text chưa thay biến (xem FlowContext.ExpandStep) — thay riêng từng ô để giá trị có xuống dòng vẫn đúng.
         var values = TabularWriter.ParseAssignments(s.Text, ctx.Expand);
         int row = TabularWriter.Write(path, s.Arguments, s.DataAction, s.RowRef, values);
         ctx.Vars["lastRow"] = row.ToString(CultureInfo.InvariantCulture);
         Log.Info($"      Đã ghi dòng {row} của \"{Path.GetFileName(path)}\": {Truncate(string.Join(", ", values.Select(v => $"{v.Key}={Log.Redact(v.Value)}")))}");
+    }
+
+    /// <summary>Ghi / thêm nội dung vào file văn bản (UTF-8, tạo thư mục nếu chưa có) — vd báo cáo để mở bằng Notepad.</summary>
+    private static void WriteText(ActionStep s, FlowContext ctx, string path)
+    {
+        if (path.Length == 0) throw new InvalidOperationException("Chưa nhập file văn bản.");
+        var full = Path.GetFullPath(path);
+        Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+        var content = ctx.Expand(s.Text).Replace("\r\n", "\n").Replace("\n", Environment.NewLine) + Environment.NewLine;
+        var utf8 = new UTF8Encoding(false);
+        if (s.DataAction == DataAction.WriteText)
+        {
+            File.WriteAllText(full, content, utf8);
+        }
+        else
+        {
+            // File có sẵn chưa kết thúc bằng xuống dòng → thêm xuống dòng để nội dung mới bắt đầu ở dòng riêng.
+            // Giữ đúng mã hóa của file có sẵn (UTF-16 của Notepad cũ, UTF-8 có BOM…); file mới / rỗng → UTF-8.
+            Encoding encoding = utf8;
+            bool needBreak = false;
+            if (File.Exists(full) && new FileInfo(full).Length > 0)
+            {
+                using var reader = new StreamReader(full, utf8, detectEncodingFromByteOrderMarks: true);
+                var existing = reader.ReadToEnd();
+                needBreak = !existing.EndsWith('\n');
+                encoding = reader.CurrentEncoding switch
+                {
+                    UnicodeEncoding u => new UnicodeEncoding(u.CodePage == 1201, byteOrderMark: false),
+                    UTF32Encoding u => new UTF32Encoding(u.CodePage == 12001, byteOrderMark: false),
+                    _ => utf8
+                };
+            }
+            File.AppendAllText(full, (needBreak ? Environment.NewLine : "") + content, encoding);
+        }
+        Log.Info($"      Đã {(s.DataAction == DataAction.WriteText ? "ghi" : "thêm")} {content.Length} ký tự vào \"{full}\": " +
+                 Truncate(Log.Redact(content.Trim())).Replace("\r", "").Replace("\n", " ⏎ "));
+    }
+
+    // ───────────────────────────── Phát video ─────────────────────────────
+
+    /// <summary>Phát lần lượt danh sách video / nhạc bằng trình phát của ScheduleApp; phát hết mới sang bước sau.</summary>
+    private static async Task PlayMediaAsync(ActionStep s, FlowContext ctx)
+    {
+        var lines = s.MediaLines;
+        if (lines.Count == 0) throw new InvalidOperationException("Chưa có file video nào trong danh sách.");
+        // Text đã được thay biến (ExpandStep) → mọi dòng đều là đường dẫn.
+        var plan = await MediaInfo.AnalyzeAsync(lines, expand: null, ctx.Ct);
+        foreach (var e in plan.Entries.Where(e => e.Path == null)) Log.Warn($"      Bỏ qua — {e.Problem}: {e.Line}");
+        var playable = plan.Entries.Where(e => e.Path != null).ToList();
+        if (playable.Count == 0)
+            throw new InvalidOperationException("Không thấy file video nào: " + string.Join("; ", plan.Entries.Select(e => e.Line)));
+        var files = playable.Select(e => e.Path!).ToList();
+
+        int volume = int.TryParse(s.Arguments.Trim().TrimEnd('%'), out int v) ? v : 100;
+        Log.Info($"      Phát {files.Count} file — tổng {ActionStep.FormatDuration(plan.Total)}" +
+                 (plan.UnknownCount > 0 ? $" + {plan.UnknownCount} file chưa rõ thời lượng" : "") +
+                 $", dự kiến xong khoảng {DateTime.Now + plan.Total:HH:mm:ss}{(s.Force ? " · toàn màn hình" : "")}. Esc: dừng · →: sang file kế · Space: tạm dừng.");
+        Log.Info("      " + Truncate(string.Join(" → ", playable.Select(e =>
+            Path.GetFileName(e.Path) + (e.Duration is { } d ? $" ({ActionStep.FormatDuration(d)})" : "")))));
+        var r = await MediaPlayback.PlayAsync(files, s.Force, volume, ctx.Ct, durations: playable.Select(e => e.Duration).ToList());
+        foreach (var p in r.Problems) Log.Warn("      Bỏ qua — " + p);
+        // Thời lượng thực đã phát: chỉ các file phát hết (không tính file bỏ qua / lỗi).
+        var played = TimeSpan.FromTicks((r.PlayedIndexes ?? []).Sum(i => playable[i].Duration?.Ticks ?? 0));
+        ctx.Vars["media.played"] = r.Played.ToString(CultureInfo.InvariantCulture);
+        ctx.Vars["media.duration"] = ActionStep.FormatDuration(played);
+        ctx.Vars["media.seconds"] = ((long)Math.Round(played.TotalSeconds, MidpointRounding.AwayFromZero)).ToString(CultureInfo.InvariantCulture);
+        if (r.StoppedByUser) throw new InvalidOperationException($"Đã dừng phát giữa chừng sau {r.Played}/{files.Count} file.");
+        // Người dùng chủ động bấm → bỏ qua hết thì không phải lỗi.
+        if (r.Played == 0 && r.Skipped == 0) throw new InvalidOperationException("Không phát được file nào: " + string.Join("; ", r.Problems));
+        Log.Info($"      ✔ Đã phát xong {r.Played}/{files.Count} file (tổng {ActionStep.FormatDuration(played)})" +
+                 (r.Skipped > 0 ? $", bỏ qua {r.Skipped} file (→)." : "."));
     }
 
     // ───────────────────────────── Gọi API ─────────────────────────────
@@ -386,8 +472,8 @@ public static class StepExecutor
     }
 
     /// <summary>
-    /// Click phần tử UI. Bước do trình ghi macro tạo còn giữ tọa độ lúc ghi (so với cửa sổ đích):
-    /// không tìm thấy phần tử (tên đổi, phần tử không hỗ trợ UI Automation…) thì click theo tọa độ đó thay vì dừng flow.
+    /// Click phần tử UI. Bước do trình ghi macro tạo còn giữ hình mẫu và tọa độ lúc ghi (so với cửa sổ đích):
+    /// không tìm thấy phần tử (tên đổi, phần tử không hỗ trợ UI Automation…) thì tìm theo hình mẫu, rồi tới tọa độ, thay vì dừng flow.
     /// </summary>
     private static async Task ClickElementAsync(ActionStep s, CancellationToken ct)
     {
@@ -398,15 +484,52 @@ public static class StepExecutor
         {
             e = await UiElementFinder.WaitAsync(s.Target, s.Text, s.DelayMs, ct);
         }
-        catch (TimeoutException ex) when (hasTarget && s.HasRecordedPoint)
+        catch (TimeoutException ex) when (hasTarget && (s.HasRecordedPoint || s.HasImageAnchor))
         {
-            var (x, y) = await ToScreenAsync(s, s.X, s.Y, ct);
-            Log.Warn($"      {ex.Message} → click theo tọa độ lúc ghi ({s.X}, {s.Y}).");
-            InputSimulator.Click(x, y, s.Button, s.DoubleClick);
+            Point? recorded = null;
+            if (s.HasRecordedPoint)
+            {
+                var (x, y) = await ToScreenAsync(s, s.X, s.Y, ct);
+                recorded = new Point(x, y);
+            }
+            Point? at = null;
+            if (s.HasImageAnchor)
+            {
+                Log.Warn($"      {ex.Message} → tìm theo hình mẫu.");
+                at = await FindAnchorAsync(s, recorded, 2_000, ct);
+            }
+            if (at == null)
+            {
+                if (recorded == null) throw;
+                Log.Warn($"      {(s.HasImageAnchor ? "" : ex.Message + " ")}→ click theo tọa độ lúc ghi ({s.X}, {s.Y}).");
+                at = recorded;
+            }
+            InputSimulator.Click(at.Value.X, at.Value.Y, s.Button, s.DoubleClick);
             return;
         }
         UiElementFinder.LogFound(e);
         await UiElementFinder.ClickAsync(e, s.Button, s.DoubleClick, ct);
+    }
+
+    /// <summary>
+    /// Click kèm hình mẫu: tìm lại chỗ cần click theo hình ảnh (cửa sổ di chuyển, đổi kích thước, bố cục xê dịch vẫn đúng).
+    /// null = không thấy sau <paramref name="timeoutMs"/> (đã ghi log, người gọi dùng tọa độ lúc ghi nếu có).
+    /// </summary>
+    /// <param name="recorded">Điểm click theo tọa độ lúc ghi (tọa độ màn hình), nếu có.</param>
+    private static async Task<Point?> FindAnchorAsync(ActionStep s, Point? recorded, int timeoutMs, CancellationToken ct)
+    {
+        var window = string.IsNullOrWhiteSpace(s.Target) ? IntPtr.Zero : WindowHelper.Find(s.Target);
+        var result = await ScreenLocator.WaitAnchorAsync(s, window, recorded, timeoutMs, ct);
+        if (!result.Found)
+        {
+            Log.Warn($"      Không thấy hình mẫu sau {ActionStep.FormatMs(timeoutMs)} — {result.Detail}.");
+            return null;
+        }
+        var p = result.ClickPoint;
+        bool moved = recorded is { } r && (Math.Abs(p.X - r.X) > 2 || Math.Abs(p.Y - r.Y) > 2);
+        Log.Info($"      🖼 Thấy hình mẫu — {result.Detail}" +
+                 (moved ? $"; đã dời ({p.X - recorded!.Value.X:+0;-0}, {p.Y - recorded.Value.Y:+0;-0}) px so với lúc ghi" : ""));
+        return p;
     }
 
     private static async Task LocateOnScreenAsync(ActionStep s, CancellationToken ct)

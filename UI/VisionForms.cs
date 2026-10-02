@@ -241,11 +241,27 @@ internal sealed class RecorderToolbar : BaseForm
             Services.SettingsStore.Save();
         };
 
+        var chkImages = new CheckBox
+        {
+            Text = "Chụp hình chỗ được click — khi chạy tìm lại theo hình ảnh (cửa sổ dời chỗ vẫn đúng)",
+            AutoSize = true,
+            Checked = Services.SettingsStore.Current.RecordImages,
+            Margin = new Padding(3, 2, 3, 0)
+        };
+        _recorder.RecordImages = chkImages.Checked;
+        chkImages.CheckedChanged += (_, _) =>
+        {
+            _recorder.RecordImages = chkImages.Checked;
+            Services.SettingsStore.Current.RecordImages = chkImages.Checked;
+            Services.SettingsStore.Save();
+        };
+
         var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
         row.Controls.AddRange([_status, btnStop, btnCancel]);
         var layout = new TableLayoutPanel { AutoSize = true, ColumnCount = 1, Dock = DockStyle.Fill };
         layout.Controls.Add(row);
         layout.Controls.Add(chkElements);
+        layout.Controls.Add(chkImages);
         layout.Controls.Add(hint);
         Controls.Add(layout);
         ResumeLayout(true);

@@ -547,7 +547,8 @@
     "Variables": [
       {
         "Name": "tenant",
-        "Value": "ten-cong-ty"
+        "Value": "ten-cong-ty",
+        "Description": "Phần đầu địa chỉ Dynamics 365 của công ty: https://<tenant>.crm5.dynamics.com (vd contoso)."
       }
     ],
     "MissedRunPolicy": "Skip",
@@ -1235,7 +1236,8 @@
     "Variables": [
       {
         "Name": "tenant",
-        "Value": "ten-cong-ty"
+        "Value": "ten-cong-ty",
+        "Description": "Phần đầu địa chỉ Dynamics 365 của công ty: https://<tenant>.crm5.dynamics.com (vd contoso)."
       },
       {
         "Name": "dem",

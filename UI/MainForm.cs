@@ -148,6 +148,8 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         // ── Trang "Công việc" ──
         var bar = Theme.CommandBar();
         bar.Items.Add(Theme.CommandButton("＋ Thêm công việc", (_, _) => AddJob(), primary: true));
+        bar.Items.Add(Theme.CommandButton("✨ Tạo bằng AI…", (_, _) => AddJob(new Job(), isNew: true, startWithAi: true),
+            tip: "Mô tả việc cần làm bằng lời — AI (Claude) dựng sẵn flow để xem trước rồi áp dụng"));
         bar.Items.Add(Theme.CommandButton("Mẫu có sẵn…", (_, _) => AddFromTemplate(), tip: "Thêm từ kho mẫu (Notepad, Excel, Dynamics 365, kiểm thử…)"));
         bar.Items.Add(new ToolStripSeparator());
         bar.Items.Add(Theme.CommandButton("▶ Chạy", (_, _) => RunSelected(), tip: "Chạy công việc đang chọn (F5)"));
@@ -161,6 +163,10 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         var more = new ToolStripDropDownButton("⋯ Thêm") { DisplayStyle = ToolStripItemDisplayStyle.Text, Padding = new Padding(8, 3, 8, 3), ShowDropDownArrow = false };
         more.DropDownItems.Add("Nhập công việc…", null, (_, _) => ImportJobs());
         more.DropDownItems.Add("Xuất công việc…", null, (_, _) => ExportJobs());
+        more.DropDownItems.Add("Thiết lập biến && bí mật (mọi công việc)…", null, (_, _) =>
+        {
+            if (ShowTemplateSetup([.. _jobs], fromTemplate: false)) JobsChanged();
+        });
         more.DropDownItems.Add(new ToolStripSeparator());
         more.DropDownItems.Add("Mở thư mục log", null, (_, _) => OpenFolder(Log.LogDir));
         more.DropDownItems.Add("Mở thư mục ảnh lỗi", null, (_, _) => OpenFolder(ErrorScreenshots.Dir));
@@ -207,6 +213,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         };
         listMenu.Items.Add(new ToolStripSeparator());
         listMenu.Items.Add("Sửa…", null, (_, _) => EditSelected());
+        listMenu.Items.Add("⚙ Thiết lập biến && bí mật…", null, (_, _) => SetupSelected());
         listMenu.Items.Add("Nhân bản", null, (_, _) => DuplicateSelected());
         listMenu.Items.Add("Lịch sử chạy…", null, (_, _) => { if (SelectedJob() is { } j) ShowHistory(j.Id); });
         listMenu.Items.Add("Tạo shortcut trên Desktop (chạy công việc này)", null, (_, _) => CreateShortcut());
@@ -651,9 +658,9 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
 
     private void AddJob() => AddJob(new Job(), isNew: true);
 
-    private void AddJob(Job job, bool isNew, bool recordD365 = false)
+    private void AddJob(Job job, bool isNew, bool recordD365 = false, bool startWithAi = false)
     {
-        using var editor = new JobEditorForm(job, _runner, _jobs, this, isNew) { StartD365RecordingOnShow = recordD365 };
+        using var editor = new JobEditorForm(job, _runner, _jobs, this, isNew) { StartD365RecordingOnShow = recordD365, StartWithAi = startWithAi };
         if (editor.ShowDialog(this) != DialogResult.OK) return;
         var added = editor.Job;
         _jobs.Add(added);
@@ -665,8 +672,11 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
     {
         using var picker = new TemplatePickerForm();
         if (picker.ShowDialog(this) != DialogResult.OK || picker.Selected == null) return;
+        var newDeps = picker.Dependencies.Where(d => _jobs.All(j => j.Id != d.Id)).ToList();
+        // Điền tenant / URL / tài khoản / bí mật / đường dẫn của bạn một lần cho mẫu và các mẫu đi kèm.
+        ShowTemplateSetup([picker.Selected, .. newDeps], fromTemplate: true);
         // Mẫu gọi tới mẫu khác (vd "Nhập liệu" gọi "Đăng nhập") → thêm luôn các mẫu đó (Id đã được gán mới khi nạp).
-        foreach (var dep in picker.Dependencies.Where(d => _jobs.All(j => j.Id != d.Id)))
+        foreach (var dep in newDeps)
         {
             _jobs.Add(dep);
             _scheduler.Recalculate(dep);
@@ -674,6 +684,36 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         }
         if (picker.Dependencies.Count > 0) JobsChanged();
         AddJob(picker.Selected, isNew: true);
+    }
+
+    /// <summary>Màn hình "Thiết lập mẫu" cho nhóm công việc; true nếu có giá trị được thay đổi.</summary>
+    private bool ShowTemplateSetup(IReadOnlyCollection<Job> jobs, bool fromTemplate)
+    {
+        var items = TemplateSetup.Collect(jobs, remember: fromTemplate);
+        if (items.Count == 0)
+        {
+            if (!fromTemplate)
+                MessageBox.Show(this, "Không có biến, bí mật, kết nối API hay đường dẫn nào cần thiết lập.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return false;
+        }
+        var first = jobs.First();
+        var intro = fromTemplate
+            ? $"Điền thông tin của bạn cho mẫu \"{first.Name}\"" + (jobs.Count > 1 ? $" và {jobs.Count - 1} công việc dùng chung đi kèm" : "") +
+              ". Mỗi giá trị được áp cho mọi công việc dùng nó. Bấm \"Để sau\" để giữ giá trị mẫu — mở lại bất cứ lúc nào: chuột phải công việc → Thiết lập biến & bí mật."
+            : jobs.Count == 1
+                ? $"Thiết lập cho \"{first.Name}\"."
+                : $"Thiết lập cho {jobs.Count} công việc — mỗi giá trị được áp cho mọi công việc đang dùng nó (vd đổi tenant một lần cho tất cả).";
+        using var form = new TemplateSetupForm(items, intro, ShowSettings);
+        if (form.ShowDialog(this) != DialogResult.OK || form.Changes == 0) return false;
+        Log.Info($"Thiết lập mẫu: cập nhật {form.Changes} giá trị cho {jobs.Count} công việc.");
+        return true;
+    }
+
+    private void SetupSelected()
+    {
+        if (SelectedJob() is not { } job) return;
+        // Kèm các công việc được gọi tới (vd kịch bản C2 gọi C1 "Mở Dynamics 365" chứa d365Url).
+        if (ShowTemplateSetup(TemplateSetup.WithDependencies(job, _jobs), fromTemplate: false)) JobsChanged(job);
     }
 
     private void EditSelected()
@@ -903,6 +943,40 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         if (!_runner.IsBusy) return "Không có flow nào đang chạy.";
         _runner.StopAll();
         return "■ Đã yêu cầu dừng flow đang chạy.";
+    });
+
+    FlowGenerator.Context IRemoteHost.NewJobContext() => OnUi(() => new FlowGenerator.Context
+    {
+        OtherJobs = [.. _jobs],
+        Connections = [.. SettingsStore.Current.ApiConnections.Where(c => c.Name.Trim().Length > 0)
+            .Select(c => (c.Name.Trim(), $"URL gốc {c.BaseUrl}, xác thực {c.Auth}"))],
+        NotificationsEnabled = NotificationService.AnyChannelEnabled
+    });
+
+    string IRemoteHost.AddJob(Job job, bool run) => OnUi(() =>
+    {
+        // Tên trùng công việc có sẵn → thêm số để /run theo tên không nhầm.
+        var name = job.Name.Trim();
+        for (int i = 2; _jobs.Any(j => j.Name.Trim().Equals(name, StringComparison.CurrentCultureIgnoreCase)); i++) name = $"{job.Name.Trim()} ({i})";
+        job.Name = name;
+        _jobs.Add(job);
+        JobsChanged(job);
+        Log.Info($"Telegram: đã tạo công việc \"{job.Name}\" ({job.Steps.Count} bước, {job.Schedule.Describe()}).");
+
+        int number = OrderedJobs().IndexOf(job) + 1;
+        var lines = new List<string>
+        {
+            $"✅ Đã lưu \"{job.Name}\" — số {number} trong /list, nhóm \"{job.Group}\".",
+            job.NextRun is DateTime next ? $"⏰ Lần chạy tới: {next:HH:mm dd/MM/yyyy}" : $"⏰ Không có lịch — chạy bằng /run {number}"
+        };
+        if (job.Triggers.Count > 0) lines.Add("⚡ " + string.Join("; ", job.Triggers.Select(t => t.Describe())));
+        if (run)
+        {
+            RunJob(job, "Telegram");
+            lines.Add("▶ Đã đưa vào hàng đợi chạy — kết quả trong /history.");
+        }
+        lines.Add("Xem / sửa chi tiết trên máy: mở công việc trong ScheduleApp.");
+        return string.Join("\n", lines);
     });
 
     string IRemoteHost.Status() => OnUi(() =>

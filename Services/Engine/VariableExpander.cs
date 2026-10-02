@@ -34,6 +34,12 @@ public sealed partial class VariableExpander(Dictionary<string, string> vars)
 
     private string Resolve(string name)
     {
+        // Dữ liệu test ngẫu nhiên ngay trong ô chữ: {{=hoten()}}, {{=random(1, 100)}} — mỗi lần thay ra một giá trị mới.
+        if (name.StartsWith('='))
+        {
+            try { return TestData.Evaluate(name); }
+            catch (FormatException ex) { throw new InvalidOperationException(ex.Message, ex); }
+        }
         if (name.StartsWith("secret:", StringComparison.OrdinalIgnoreCase))
         {
             var key = name[7..].Trim();
@@ -114,7 +120,7 @@ public sealed partial class VariableExpander(Dictionary<string, string> vars)
         value.Replace("\r\n", "\n").Split('\n').Select(l => l.TrimEnd()).Where(l => l.Length > 0).ToList();
 
     /// <summary>
-    /// Định dạng giá trị biến: upper, lower, trim, len, url, json, số (N0, 0.00…), ngày (dd/MM/yyyy…),
+    /// Định dạng giá trị biến: upper, lower, trim, unquote, len, url, json, số (N0, 0.00…), ngày (dd/MM/yyyy…),
     /// danh sách (count, first, last, item(2), join(, ), sort, unique).
     /// </summary>
     public static string ApplyFormat(string value, string format)
@@ -124,6 +130,8 @@ public sealed partial class VariableExpander(Dictionary<string, string> vars)
             case "upper": return value.ToUpper(Vi);
             case "lower": return value.ToLower(Vi);
             case "trim": return value.Trim();
+            // Bỏ khoảng trắng và dấu nháy bao quanh (đường dẫn chép bằng "Copy as path" của Explorer).
+            case "unquote": return value.Trim().Trim('"', '\'').Trim();
             case "len": return value.Length.ToString(CultureInfo.InvariantCulture);
             case "url": return Uri.EscapeDataString(value);
             case "nodiacritics": return Vision.ScreenOcr.RemoveDiacritics(value);

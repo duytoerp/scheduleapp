@@ -55,6 +55,14 @@ internal sealed class StepEditorForm : BaseForm
     private readonly Button _btnArgsAction = new() { Text = "Sao chép hồ sơ thật…", AutoSize = true };
     private readonly Label _lblText = Caption("");
     private readonly TextBox _txtText = new() { Dock = DockStyle.Fill, Multiline = true, Height = 90, ScrollBars = ScrollBars.Vertical, AcceptsReturn = true };
+
+    // Phát video / nhạc: thời lượng từng file và tổng, tính lại mỗi khi danh sách thay đổi.
+    private readonly Label _lblMediaInfo = new() { AutoSize = true, MaximumSize = new Size(640, 0), ForeColor = Color.FromArgb(30, 70, 120), Margin = new Padding(3, 2, 3, 6) };
+    private readonly System.Windows.Forms.Timer _mediaTimer = new() { Interval = 400 };
+    private int _mediaVersion;
+    private Services.MediaInfo.Plan? _mediaPlan;
+    /// <summary>Nội dung ô danh sách phát ứng với <see cref="_mediaPlan"/>.</summary>
+    private string? _mediaPlanText;
     private readonly Button _btnTextAction = new() { Text = "◎ Bắt phần tử (3 giây)", AutoSize = true };
     private readonly Label _lblVariable = Caption("Lưu vào biến:");
     private readonly ComboBox _cboVariable = new() { DropDownStyle = ComboBoxStyle.DropDown, Width = 240 };
@@ -133,6 +141,7 @@ internal sealed class StepEditorForm : BaseForm
     private readonly FlowLayoutPanel _pnlImage = Row();
     private readonly PictureBox _picImage = new() { Size = new Size(240, 96), SizeMode = PictureBoxSizeMode.Zoom, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.White };
     private readonly Button _btnSnip = new() { Text = "✂ Chụp hình mẫu", AutoSize = true, Margin = new Padding(10, 2, 3, 2) };
+    private readonly Button _btnClearImage = new() { Text = "✕ Bỏ hình mẫu", AutoSize = true, Margin = new Padding(3, 2, 3, 2) };
     private readonly Label _lblConfidence = Caption("Độ khớp tối thiểu (%):");
     private readonly NumericUpDown _numConfidence = Num(50, 100, 80);
     private readonly Label _lblMatchIndex = Caption("Lần xuất hiện thứ:");
@@ -144,6 +153,7 @@ internal sealed class StepEditorForm : BaseForm
     private string _imageData = "";
     private int _imageWidth, _imageHeight;
     private double _imageScale;
+    private Point _imageOffset;
 
     private bool _loading;
 
@@ -226,6 +236,7 @@ internal sealed class StepEditorForm : BaseForm
         AddRow(_lblRowRef, _cboRowRef);
         AddRow(_lblHeaders, _txtHeaders);
         AddRow(_lblText, _txtText, _btnTextAction);
+        AddRow(null, _lblMediaInfo, span: true);
         AddRow(_lblArgs, _cboArgs, _btnArgsAction);
         AddRow(_lblD365Extra, _cboD365Extra);
         AddRow(_lblVariable, _cboVariable);
@@ -234,7 +245,7 @@ internal sealed class StepEditorForm : BaseForm
         _cboTypeMode.Items.AddRange(["Tự động (dán nếu có UniKey/EVKey đang chạy)", "Gõ từng phím", "Dán qua clipboard (Ctrl+V)"]);
         AddRow(_lblTypeMode, _cboTypeMode);
 
-        _pnlImage.Controls.AddRange([_picImage, _btnSnip]);
+        _pnlImage.Controls.AddRange([_picImage, _btnSnip, _btnClearImage]);
         AddRow(_lblImage, _pnlImage, span: true);
         AddRow(_lblConfidence, _numConfidence);
         AddRow(_lblMatchIndex, _numMatchIndex);
@@ -276,7 +287,48 @@ internal sealed class StepEditorForm : BaseForm
         var bottom = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill, Margin = new Padding(0, 12, 0, 0) };
         var btnCancel = new Button { Text = "Hủy", AutoSize = true, MinimumSize = new Size(90, 0), DialogResult = DialogResult.Cancel };
         var btnOk = new Button { Text = "OK", AutoSize = true, MinimumSize = new Size(90, 0) };
-        btnOk.Click += (_, _) => Save();
+        btnOk.Click += async (_, _) =>
+        {
+            // Phát video: danh sách vừa sửa mà chưa kịp tính thời lượng → tính xong rồi mới lưu.
+            if (CurrentType == StepType.PlayMedia && _mediaPlanText != _txtText.Text)
+            {
+                _mediaTimer.Stop();
+                btnOk.Enabled = false;
+                _txtText.ReadOnly = true;
+                try
+                {
+                    while (!IsDisposed && CurrentType == StepType.PlayMedia && _mediaPlanText != _txtText.Text)
+                        await RefreshMediaInfoAsync();
+                }
+                finally
+                {
+                    if (!IsDisposed)
+                    {
+                        btnOk.Enabled = true;
+                        _txtText.ReadOnly = false;
+                    }
+                }
+                // Hộp thoại đã bị đóng / hủy trong lúc chờ.
+                if (IsDisposed || !Visible) return;
+            }
+            Save();
+        };
+        _mediaTimer.Tick += async (_, _) =>
+        {
+            _mediaTimer.Stop();
+            await RefreshMediaInfoAsync();
+        };
+        FormClosed += (_, _) =>
+        {
+            _mediaTimer.Stop();
+            _mediaTimer.Dispose();
+        };
+        _txtText.TextChanged += (_, _) =>
+        {
+            if (_loading || CurrentType != StepType.PlayMedia) return;
+            _mediaTimer.Stop();
+            _mediaTimer.Start();
+        };
         bottom.Controls.AddRange([btnCancel, btnOk, HelpLink()]);
         AcceptButton = null; // Enter dùng để xuống dòng trong ô văn bản
         CancelButton = btnCancel;
@@ -292,7 +344,12 @@ internal sealed class StepEditorForm : BaseForm
         _cboCompare.SelectedIndexChanged += (_, _) => { if (!_loading) OnTypeChanged(resetSub: false); };
         _cboOnError.SelectedIndexChanged += (_, _) => _cboErrorLabel.Visible = CurrentOnError == ErrorAction.GotoLabel;
         _btnTargetAction.Click += (_, _) => OnTargetAction();
-        _btnTextAction.Click += async (_, _) => { if (D365PickContext != null) await PickFromD365Async(); else await CaptureElementAsync(); };
+        _btnTextAction.Click += async (_, _) =>
+        {
+            if (CurrentType == StepType.PlayMedia) AddMediaFiles();
+            else if (D365PickContext != null) await PickFromD365Async();
+            else await CaptureElementAsync();
+        };
         _btnArgsAction.Click += (_, _) => ShowRealProfiles();
         _cboTarget.TextChanged += (_, _) => { if (!_loading && IsBrowserLaunch) FillProfileList(); };
         _cboTarget.SelectionChangeCommitted += (_, _) =>
@@ -306,6 +363,10 @@ internal sealed class StepEditorForm : BaseForm
         _btnCapture2.Click += async (_, _) => await CaptureAsync(_numX2, _numY2);
         _btnPreview.Click += (_, _) => PreviewPoint();
         _btnSnip.Click += async (_, _) => await SnipAsync();
+        _btnClearImage.Click += (_, _) => ClearImage();
+        _picImage.Paint += (_, e) => DrawClickMarker(e.Graphics);
+        _numX.ValueChanged += (_, _) => { if (CurrentType == StepType.ClickImage) _picImage.Invalidate(); };
+        _numY.ValueChanged += (_, _) => { if (CurrentType == StepType.ClickImage) _picImage.Invalidate(); };
         _btnTestFind.Click += async (_, _) => await TestFindAsync();
         _btnTestStep.Click += async (_, _) => await TestStepAsync();
     }
@@ -342,7 +403,10 @@ internal sealed class StepEditorForm : BaseForm
     private ErrorAction CurrentOnError => ErrorActions[Math.Max(0, _cboOnError.SelectedIndex)];
 
     /// <summary>Bước hiện tại đọc/ghi bảng Excel / CSV (có ô chọn sheet).</summary>
-    private bool UsesTable => (CurrentType == StepType.Loop && CurrentLoop == LoopKind.Rows) || CurrentType == StepType.WriteData;
+    private bool UsesTable => (CurrentType == StepType.Loop && CurrentLoop == LoopKind.Rows) || (CurrentType == StepType.WriteData && !TextWrite);
+
+    /// <summary>Bước "Ghi file" đang ở chế độ ghi file văn bản.</summary>
+    private bool TextWrite => CurrentType == StepType.WriteData && CurrentData is DataAction.WriteText or DataAction.AppendText;
 
     /// <summary>Bước hiện tại dùng điều kiện (Nếu, Kiểm tra, hoặc Lặp khi).</summary>
     private bool UsesCondition => CurrentType is StepType.If or StepType.Assert || (CurrentType == StepType.Loop && CurrentLoop == LoopKind.While);
@@ -401,6 +465,7 @@ internal sealed class StepEditorForm : BaseForm
         _imageWidth = _step.ImageWidth;
         _imageHeight = _step.ImageHeight;
         _imageScale = _step.ImageScale;
+        _imageOffset = new Point(_step.ImageOffsetX, _step.ImageOffsetY);
         UpdateImagePreview();
         _numConfidence.Value = Math.Clamp(_step.Confidence, 50, 100);
         _numMatchIndex.Value = Math.Clamp(_step.MatchIndex, 1, 50);
@@ -415,14 +480,15 @@ internal sealed class StepEditorForm : BaseForm
             _advancedOpen = true;
         _loading = false;
         OnTypeChanged(resetSub: false);
-        if ((_step.Type == StepType.Loop && _step.LoopKind == LoopKind.Rows) || _step.Type == StepType.WriteData) LoadSheetNames();
+        if (UsesTable) LoadSheetNames();
     }
 
     /// <summary>Tạo bước từ nội dung đang nhập (không kiểm tra hợp lệ).</summary>
     private ActionStep BuildStep()
     {
         var type = CurrentType;
-        bool image = type is StepType.ClickImage or StepType.WaitForImage || (UsesCondition && CurrentCondition == ConditionKind.ImageOnScreen);
+        bool image = type is StepType.ClickImage or StepType.WaitForImage || (UsesCondition && CurrentCondition == ConditionKind.ImageOnScreen)
+                     || ActionStep.CanHaveImageAnchor(type);
         bool relativeType = type is StepType.MouseClick or StepType.MouseScroll or StepType.MouseDrag;
 
         var s = _step.ShallowCopy();
@@ -455,6 +521,9 @@ internal sealed class StepEditorForm : BaseForm
         s.ImageWidth = image ? _imageWidth : 0;
         s.ImageHeight = image ? _imageHeight : 0;
         s.ImageScale = image ? _imageScale : 0;
+        bool anchor = ActionStep.CanHaveImageAnchor(type) && _imageData.Length > 0;
+        s.ImageOffsetX = anchor ? _imageOffset.X : 0;
+        s.ImageOffsetY = anchor ? _imageOffset.Y : 0;
         s.Confidence = (int)_numConfidence.Value;
         s.MatchIndex = (int)_numMatchIndex.Value;
         s.TypeMode = (TypeMode)Math.Max(0, _cboTypeMode.SelectedIndex);
@@ -474,7 +543,70 @@ internal sealed class StepEditorForm : BaseForm
         s.RetryDelayMs = (int)_numRetryDelay.Value;
         s.OnError = _errorApplies ? CurrentOnError : ErrorAction.Default;
         s.ErrorLabel = s.OnError == ErrorAction.GotoLabel ? _cboErrorLabel.Text.Trim() : "";
+        s.MediaDurationMs = type != StepType.PlayMedia ? 0
+            : _mediaPlan != null && _mediaPlanText == _txtText.Text ? Services.MediaInfo.ToMs(_mediaPlan)
+            : s.Text == _step.Text ? _step.MediaDurationMs
+            : 0;
         return s;
+    }
+
+    // ───────────────────────────── Thời lượng video / nhạc ─────────────────────────────
+
+    /// <summary>Đọc thời lượng các file trong danh sách phát và hiện từng file + tổng ngay dưới ô danh sách.</summary>
+    private async Task RefreshMediaInfoAsync()
+    {
+        if (CurrentType != StepType.PlayMedia) return;
+        int version = ++_mediaVersion;
+        var text = _txtText.Text;
+        var lines = new ActionStep { Type = StepType.PlayMedia, Text = text.Replace("\r\n", "\n") }.MediaLines;
+        if (lines.Count == 0)
+        {
+            (_mediaPlan, _mediaPlanText) = (null, text);
+            _lblMediaInfo.Text = "Chưa có file nào — bấm \"＋ Thêm file…\" hoặc dán đường dẫn, mỗi dòng một file.";
+            return;
+        }
+        _lblMediaInfo.Text = "Đang tính thời lượng…";
+        Services.MediaInfo.Plan plan;
+        try
+        {
+            var expand = Services.MediaInfo.ExpanderFor(_ctx.JobVariables);
+            plan = await Task.Run(() => Services.MediaInfo.AnalyzeAsync(lines, expand));
+        }
+        catch (Exception ex)
+        {
+            if (version == _mediaVersion) _lblMediaInfo.Text = "✖ Không tính được thời lượng: " + ex.Message;
+            return;
+        }
+        if (IsDisposed) return;
+        // Kết quả vẫn đúng với nội dung hiện tại thì giữ (kể cả khi có lần tính khác chồng lên); chỉ lần tính mới nhất được hiện.
+        if (text == _txtText.Text) (_mediaPlan, _mediaPlanText) = (plan, text);
+        if (version == _mediaVersion) _lblMediaInfo.Text = DescribePlan(plan);
+    }
+
+    internal static string DescribePlan(Services.MediaInfo.Plan plan)
+    {
+        const int maxLines = 10;
+        var sb = new System.Text.StringBuilder();
+        int files = plan.FileCount;
+        if (files == 0 && plan.Entries.Any(e => e.Problem == Services.MediaInfo.VariableProblem))
+            sb.Append("Thời lượng: tính khi chạy (danh sách dùng biến).");
+        else if (files == 0) sb.Append("✖ Không có file nào phát được.");
+        else
+        {
+            sb.Append(plan.Complete ? "Tổng thời lượng: " : "Tổng thời lượng: ít nhất ").Append(ActionStep.FormatDuration(plan.Total))
+              .Append($" · {files} file");
+            if (plan.UnknownCount > 0) sb.Append($" ({plan.UnknownCount} file chưa đọc được thời lượng)");
+        }
+        foreach (var (e, i) in plan.Entries.Take(maxLines).Select((e, i) => (e, i)))
+        {
+            sb.AppendLine();
+            sb.Append(e.Path == null
+                ? $"   {(e.Problem == Services.MediaInfo.VariableProblem ? "•" : "✖")} {Shorten(e.Line)} — {e.Problem}"
+                : $"   {plan.Entries.Take(i + 1).Count(x => x.Path != null)}. {Path.GetFileName(e.Path)} — " +
+                  (e.Duration is { } d ? ActionStep.FormatDuration(d) : "chưa rõ thời lượng"));
+        }
+        if (plan.Entries.Count > maxLines) sb.AppendLine().Append($"   … và {plan.Entries.Count - maxLines} mục nữa");
+        return sb.ToString();
     }
 
     private void Save()
@@ -535,6 +667,15 @@ internal sealed class StepEditorForm : BaseForm
                 if (s.VarSource == VarSource.Element) return SelectorError(s.Text);
                 if (s.VarSource == VarSource.AskUser && s.Text.Trim().Length == 0) return ("Hãy nhập câu hỏi.", _txtText);
                 if (s.VarSource == VarSource.JsonPath && s.Text.Trim().Length == 0) return ("Hãy nhập nội dung JSON, vd {{http.body}}.", _txtText);
+                break;
+            case StepType.WriteData when s.IsTextWrite:
+                if (s.Target.Trim().Length == 0) return ("Hãy chọn file văn bản cần ghi.", _cboTarget);
+                break;
+            case StepType.PlayMedia:
+                if (s.MediaLines.Count == 0) return ("Hãy thêm ít nhất một file video — bấm \"＋ Thêm file…\" hoặc dán đường dẫn, mỗi dòng một file.", _txtText);
+                if (s.Arguments.Trim().Length > 0 && !s.Arguments.Contains("{{") &&
+                    !(int.TryParse(s.Arguments.Trim().TrimEnd('%'), out int vol) && vol is >= 0 and <= 100))
+                    return ("Âm lượng là số từ 0 đến 100 (trống = 100).", _cboArgs);
                 break;
             case StepType.WriteData:
                 if (s.Text.Trim().Length == 0) return ("Hãy nhập các ô cần ghi, mỗi dòng dạng TênCột=giá trị.", _txtText);
@@ -725,6 +866,9 @@ internal sealed class StepEditorForm : BaseForm
                        || (t == StepType.SetVariable && src == VarSource.Element) || (cond && ck == ConditionKind.ElementExists);
         bool vision = image || text;
         bool visionClick = t is StepType.ClickImage or StepType.ClickText;
+        // Click chuột / click phần tử kèm hình mẫu (thường do trình ghi thao tác chụp) — tìm theo hình trước, rồi mới tới tọa độ.
+        bool anchor = ActionStep.CanHaveImageAnchor(t);
+        bool anchorImage = anchor && _imageData.Length > 0;
         bool pointer = t is StepType.MouseClick or StepType.MouseScroll or StepType.MouseDrag;
         bool marker = StepVisuals.IsMarker(t);
 
@@ -752,7 +896,7 @@ internal sealed class StepEditorForm : BaseForm
         bool showTarget = t switch
         {
             StepType.Wait or StepType.LogMessage or StepType.Else or StepType.EndIf or StepType.EndLoop or StepType.BreakLoop
-                or StepType.ContinueLoop or StepType.StopFlow or StepType.CallJob => false,
+                or StepType.ContinueLoop or StepType.StopFlow or StepType.CallJob or StepType.PlayMedia => false,
             StepType.SetVariable => src is not (VarSource.Value or VarSource.Calc or VarSource.Clipboard or VarSource.ListAdd
                 or VarSource.Split or VarSource.JsonPath),
             StepType.Loop => loop != LoopKind.Count,
@@ -780,7 +924,7 @@ internal sealed class StepEditorForm : BaseForm
                 VarSource.AskUser => "Tiêu đề hộp thoại:",
                 _ => "Cửa sổ (trống = cửa sổ\nđang chọn / cả màn hình):"
             },
-            StepType.WriteData => "File Excel / CSV\n(chưa có sẽ tự tạo):",
+            StepType.WriteData => TextWrite ? "File văn bản\n(chưa có sẽ tự tạo):" : "File Excel / CSV\n(chưa có sẽ tự tạo):",
             StepType.HttpRequest => "URL (hoặc phần sau\nURL gốc của kết nối):",
             StepType.AskAi => "Cửa sổ chụp ảnh\n(trống = cả màn hình):",
             StepType.Notify => "Tiêu đề (tùy chọn):",
@@ -815,7 +959,8 @@ internal sealed class StepEditorForm : BaseForm
         SetVisible(compareCond, _lblCompare, _cboCompare);
         bool args = t switch
         {
-            StepType.LaunchApp or StepType.SetElementText or StepType.WriteData or StepType.HttpRequest => true,
+            StepType.LaunchApp or StepType.SetElementText or StepType.HttpRequest or StepType.PlayMedia => true,
+            StepType.WriteData => !TextWrite,
             StepType.SetVariable => src is not (VarSource.Value or VarSource.Calc or VarSource.ListAdd),
             StepType.Loop => loop is LoopKind.Rows or LoopKind.Files,
             StepType.Browser => br is BrowserAction.SetValue or BrowserAction.Launch,
@@ -832,6 +977,7 @@ internal sealed class StepEditorForm : BaseForm
             StepType.Browser when br == BrowserAction.Launch => "Hồ sơ (profile)\n(trống = mặc định):",
             StepType.SetElementText or StepType.Browser => "Giá trị cần nhập:",
             StepType.WriteData => "Sheet (trống = sheet đầu):",
+            StepType.PlayMedia => "Âm lượng %\n(trống = 100):",
             StepType.HttpRequest => "Trích từ JSON trả về\n(vd value[0].name, tùy chọn):",
             StepType.SetVariable => src switch
             {
@@ -877,7 +1023,7 @@ internal sealed class StepEditorForm : BaseForm
         bool showText = t switch
         {
             StepType.Reminder or StepType.TypeText or StepType.KeyPress or StepType.LogMessage or StepType.StopFlow => true,
-            StepType.WriteData or StepType.HttpRequest or StepType.AskAi or StepType.Notify => true,
+            StepType.WriteData or StepType.HttpRequest or StepType.AskAi or StepType.Notify or StepType.PlayMedia => true,
             StepType.SetVariable => src is VarSource.Value or VarSource.Calc or VarSource.Element or VarSource.AskUser
                 or VarSource.ListAdd or VarSource.Split or VarSource.JsonPath,
             StepType.Browser => true,
@@ -892,7 +1038,8 @@ internal sealed class StepEditorForm : BaseForm
             StepType.KeyPress => "Phím:",
             StepType.LogMessage => "Nội dung ghi log:",
             StepType.StopFlow => "Lý do (tùy chọn):",
-            StepType.WriteData => "Các ô cần ghi\n(mỗi dòng Cột=giá trị):",
+            StepType.WriteData => TextWrite ? "Nội dung\n(dùng được {{biến}}):" : "Các ô cần ghi\n(mỗi dòng Cột=giá trị):",
+            StepType.PlayMedia => "Danh sách phát\n(mỗi dòng một file,\nphát từ trên xuống):",
             StepType.HttpRequest => "Nội dung gửi (body)\n— POST/PATCH/PUT:",
             StepType.AskAi => "Yêu cầu cho AI:",
             StepType.SetVariable => src switch
@@ -945,9 +1092,10 @@ internal sealed class StepEditorForm : BaseForm
         _txtText.Multiline = !singleLine;
         _txtText.Height = singleLine ? _cboArgs.Height : LogicalToDeviceUnits(90);
         var pick = D365PickContext;
-        _btnTextAction.Visible = showText && (element || pick != null);
+        _btnTextAction.Visible = showText && (element || pick != null || t == StepType.PlayMedia);
         _btnTextAction.Text = pick switch
         {
+            null when t == StepType.PlayMedia => "＋ Thêm file…",
             null => "◎ Bắt phần tử (3 giây)",
             D365PickKind.Tab => "Chọn tab từ form…",
             D365PickKind.Command => "Chọn nút từ form…",
@@ -994,7 +1142,18 @@ internal sealed class StepEditorForm : BaseForm
         SetVisible(t == StepType.CallJob, _lblJob, _cboJob);
 
         SetVisible(t == StepType.TypeText, _lblTypeMode, _cboTypeMode);
-        SetVisible(image, _lblImage, _pnlImage, _lblConfidence, _numConfidence);
+        SetVisible(t == StepType.PlayMedia, _lblMediaInfo);
+        if (t == StepType.PlayMedia && _mediaPlanText != _txtText.Text)
+        {
+            _mediaTimer.Stop();
+            _mediaTimer.Start();
+        }
+        SetVisible(image || anchor, _lblImage, _pnlImage);
+        SetVisible(image || anchorImage, _lblConfidence, _numConfidence);
+        _lblImage.Text = anchor ? "Tìm theo hình\n(tùy chọn):" : "Hình mẫu:";
+        _btnClearImage.Visible = anchorImage;
+        _picImage.Visible = !anchor || anchorImage;
+        _picImage.Invalidate();
         SetVisible(text, _lblMatchIndex, _numMatchIndex);
 
         SetVisible(pointer, _chkRelative);
@@ -1022,16 +1181,18 @@ internal sealed class StepEditorForm : BaseForm
         bool delay = vision || element || t is StepType.Wait or StepType.WaitForWindow or StepType.FocusWindow or StepType.RunCommand or StepType.Browser
                          or StepType.HttpRequest or StepType.AskAi or StepType.Dynamics
                      || (t == StepType.SetVariable && src is VarSource.Command or VarSource.Element)
-                     || (cond && ck is not (ConditionKind.Compare or ConditionKind.LastStepFailed));
+                     || (cond && ck is not (ConditionKind.Compare or ConditionKind.LastStepFailed))
+                     || (t == StepType.MouseClick && anchorImage);
         SetVisible(delay, _lblDelay, _numDelay);
         _lblDelay.Text = t == StepType.Wait ? "Thời gian chờ (ms):"
+                       : t == StepType.MouseClick ? "Chờ hình mẫu tối đa (ms):"
                        : cond ? "Chờ tối đa (ms, 0 = kiểm tra 1 lần):"
                        : "Timeout (ms):";
 
         SetVisible(t == StepType.Reminder, _chkWaitUser);
         bool force = t is StepType.CloseApp or StepType.StopFlow or StepType.HttpRequest or StepType.AskAi or StepType.Notify
                      || (t == StepType.SetVariable && src == VarSource.AskUser) || (dyn && d is D365Action.SetField or D365Action.WebApi)
-                     || (t == StepType.Browser && br == BrowserAction.Launch);
+                     || (t == StepType.Browser && br == BrowserAction.Launch) || t == StepType.PlayMedia;
         SetVisible(force, _chkForce);
         _chkForce.Text = t switch
         {
@@ -1043,6 +1204,7 @@ internal sealed class StepEditorForm : BaseForm
             StepType.Browser => "Chạy ẩn (headless) — không hiện cửa sổ, vẫn chụp ảnh khi lỗi được; hồ sơ phải đã đăng nhập sẵn",
             StepType.AskAi => "Gửi kèm ảnh chụp màn hình (cửa sổ ở trên hoặc cả màn hình) cho AI đọc",
             StepType.Notify => "Gửi kèm ảnh chụp màn hình hiện tại",
+            StepType.PlayMedia => "Toàn màn hình (khi phát: Esc = dừng · → = sang file kế · Space = tạm dừng)",
             _ => "Ẩn ký tự khi nhập (mật khẩu) — không ghi giá trị vào log"
         };
 
@@ -1067,7 +1229,7 @@ internal sealed class StepEditorForm : BaseForm
         else _pnlFlags.Visible = true;
 
         SetVisible(pointer || vision || element || TestableType(t), _lblCaptureInfo);
-        bool testFind = vision && !cond;
+        bool testFind = (vision && !cond) || anchorImage;
         bool testStep = TestableType(t) || (cond && ck != ConditionKind.LastStepFailed);
         _btnTestFind.Visible = testFind;
         _btnTestStep.Visible = testStep;
@@ -1081,7 +1243,7 @@ internal sealed class StepEditorForm : BaseForm
         ResumeLayout(true);
     }
 
-    private static bool TestableType(StepType t) => t is StepType.SetVariable or StepType.ClickElement or StepType.SetElementText
+    private static bool TestableType(StepType t) => t is StepType.SetVariable or StepType.ClickElement or StepType.SetElementText or StepType.PlayMedia
         or StepType.WaitForElement or StepType.Browser or StepType.RunCommand or StepType.LogMessage or StepType.Loop
         or StepType.WriteData or StepType.HttpRequest or StepType.AskAi or StepType.Notify or StepType.Dynamics or StepType.Assert;
 
@@ -1120,7 +1282,9 @@ internal sealed class StepEditorForm : BaseForm
         StepType.WaitForWindow => "Nhập một phần tiêu đề cửa sổ hoặc tên tiến trình (vd: Notepad, chrome, EXCEL, exe:chrome), hoặc chọn từ danh sách. " +
                                   "Bước lỗi nếu hết timeout mà chưa thấy cửa sổ.",
         StepType.FocusWindow => "Đưa cửa sổ lên trên cùng và nhận bàn phím (khôi phục nếu đang thu nhỏ).",
-        StepType.MouseClick => "Bấm \"Lấy tọa độ\" rồi di chuột tới vị trí cần click trong 3 giây. Ổn định hơn: dùng \"Click phần tử UI\" hoặc \"Click vào hình ảnh\".",
+        StepType.MouseClick => "Bấm \"Lấy tọa độ\" rồi di chuột tới vị trí cần click trong 3 giây. " +
+                               "Có hình mẫu (trình ghi thao tác tự chụp, hoặc bấm \"Chụp hình mẫu\"): khi chạy tìm chỗ đó theo hình ảnh trước — cửa sổ dời chỗ, " +
+                               "đổi kích thước vẫn click đúng — hết thời gian chờ mà không thấy mới click theo tọa độ X, Y.",
         StepType.MouseScroll => "Cuộn bánh xe chuột. Số dương cuộn lên, số âm cuộn xuống (1 nấc ≈ 3 dòng).",
         StepType.MouseDrag => "Nhấn giữ chuột tại điểm đầu, kéo tới điểm cuối rồi thả (kéo file, thanh trượt, chọn vùng…).",
         StepType.TypeText => "Hỗ trợ tiếng Việt có dấu và emoji. Xuống dòng = phím Enter. Nếu nhập cửa sổ đích, cửa sổ đó sẽ được kích hoạt trước khi gõ. " +
@@ -1176,13 +1340,20 @@ internal sealed class StepEditorForm : BaseForm
                             "Hai công việc dùng chung biến.",
         StepType.ClickElement or StepType.SetElementText or StepType.WaitForElement =>
             "Tìm phần tử bằng Windows UI Automation — không phụ thuộc vị trí, độ phân giải hay zoom. Bấm \"Bắt phần tử\" rồi trỏ chuột vào nút / ô nhập. " +
-            "Bộ chọn: AutomationId=…; Name=…; ControlType=Button/Edit/…; Index=2; Name~=một phần tên.",
+            "Bộ chọn: AutomationId=…; Name=…; ControlType=Button/Edit/…; Index=2; Name~=một phần tên." +
+            (t == StepType.ClickElement ? " Không tìm thấy phần tử thì tìm theo hình mẫu (nếu có), rồi tới tọa độ lúc ghi." : ""),
         StepType.ContinueLoop => "Bỏ qua các bước còn lại của lần lặp hiện tại, sang lần kế tiếp (vd dòng Excel đã xử lý rồi). Thường đặt trong khối \"Nếu\".",
         StepType.WriteData =>
             "Ghi vào .xlsx / .csv mà không cần mở Excel — giữ nguyên định dạng và các sheet khác. Mỗi dòng một ô: TrangThai=Đã nhập, MaDon={{maDon}}, " +
             "NgayNhap={{now:dd/MM/yyyy HH:mm}}. Cột chưa có sẽ được thêm vào cuối. Sửa dòng: dùng {{row.rowNumber}} trong vòng lặp \"Mỗi dòng Excel\" " +
             "để ghi kết quả vào đúng dòng đang xử lý, hoặc MaKH=KH001 để tìm theo cột khóa. Excel khóa file khi đang mở — đóng file trước khi chạy. " +
-            "Số dòng vừa ghi có trong {{lastRow}}.",
+            "Số dòng vừa ghi có trong {{lastRow}}. Ghi chữ tự do (báo cáo, nhật ký, \"đã chạy xong\"…): chọn cách ghi \"Ghi file văn bản\" — " +
+            "mở file đó bằng bước \"Mở ứng dụng\" notepad.exe.",
+        StepType.PlayMedia =>
+            "Phát lần lượt bằng trình phát có sẵn trong ScheduleApp: hết file này tự sang file kế, phát xong cả danh sách mới chạy bước sau. " +
+            "Mỗi dòng một file (dán đường dẫn \"Copy as path\" của Explorer được, dòng # là ghi chú); dòng là thư mục thì phát mọi video trong đó theo tên. " +
+            "Thời lượng từng file và tổng hiện ngay dưới danh sách (tự tính khi thêm / đổi file). File thiếu / lỗi được bỏ qua và ghi vào nhật ký. " +
+            "Sau bước: {{media.played}} (số file đã phát), {{media.duration}} (tổng thời lượng, vd 0:26).",
         StepType.HttpRequest =>
             "Gọi REST API: kết quả trong {{http.body}}, mã trả về trong {{http.status}}. Trích một giá trị bằng đường dẫn JSON, vd value[0].accountid, " +
             "value[*].name (mọi phần tử, mỗi dòng một giá trị), value.length. Dynamics 365: tạo kết nối loại \"Microsoft Entra ID\" với URL gốc " +
@@ -1345,6 +1516,7 @@ internal sealed class StepEditorForm : BaseForm
                 CheckFileExists = t != StepType.WriteData,
                 Filter = t == StepType.LaunchApp ? "Ứng dụng (*.exe;*.bat;*.cmd;*.lnk)|*.exe;*.bat;*.cmd;*.lnk|Tất cả file (*.*)|*.*"
                        : UsesTable ? "Excel / CSV (*.xlsx;*.xlsm;*.csv)|*.xlsx;*.xlsm;*.csv;*.tsv|Tất cả file (*.*)|*.*"
+                       : TextWrite ? "Văn bản (*.txt;*.log;*.md;*.csv)|*.txt;*.log;*.md;*.csv|Tất cả file (*.*)|*.*"
                        : "Tất cả file (*.*)|*.*"
             };
             if (dlg.ShowDialog(this) != DialogResult.OK) return;
@@ -1354,6 +1526,23 @@ internal sealed class StepEditorForm : BaseForm
         }
         FillTargetList();
         _cboTarget.DroppedDown = _cboTarget.Items.Count > 0;
+    }
+
+    /// <summary>Phát video: chọn nhiều file, thêm vào cuối danh sách (mỗi dòng một file) theo thứ tự tên.</summary>
+    private void AddMediaFiles()
+    {
+        var exts = string.Join(";", Services.MediaPlayback.Extensions.Select(e => "*" + e));
+        using var dlg = new OpenFileDialog
+        {
+            Title = "Chọn video / nhạc (chọn được nhiều file)",
+            Multiselect = true,
+            Filter = $"Video / nhạc ({exts})|{exts}|Tất cả file (*.*)|*.*"
+        };
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        var lines = _txtText.Text.Replace("\r\n", "\n").TrimEnd('\n');
+        var added = dlg.FileNames.Order(Services.MediaPlayback.NameOrder);
+        _txtText.Text = string.Join("\r\n", (lines.Length > 0 ? lines.Split('\n') : []).Concat(added));
+        ShowInfo($"✔ Đã thêm {dlg.FileNames.Length} file — sửa thứ tự bằng cách sắp xếp lại các dòng.", true);
     }
 
     /// <summary>Nạp tên sheet của file Excel và hiện cột tiêu đề để gợi ý biến {{row.Cột}}.</summary>
@@ -1562,7 +1751,14 @@ internal sealed class StepEditorForm : BaseForm
             _imageWidth = bmp.Width;
             _imageHeight = bmp.Height;
             _imageScale = RegionSelectorForm.LastScale;
+            _imageOffset = Point.Empty;
             UpdateImagePreview();
+            if (ActionStep.CanHaveImageAnchor(CurrentType))
+            {
+                // Click theo hình: click vào giữa hình mẫu; chờ hình xuất hiện một lúc trước khi dùng tọa độ.
+                if (CurrentType == StepType.MouseClick && _numDelay.Value < 2_000) _numDelay.Value = ClickAnchor.DefaultTimeoutMs;
+                OnTypeChanged(resetSub: false);
+            }
             if (ImageMatcher.IsLowDetail(bmp))
                 ShowInfo($"⚠ Hình mẫu {bmp.Width}×{bmp.Height} gần như một màu nên dễ khớp nhầm chỗ khác — nên chụp vùng có chữ/icon đặc trưng.", false);
             else
@@ -1573,6 +1769,43 @@ internal sealed class StepEditorForm : BaseForm
             _btnSnip.Enabled = true;
             Activate();
         }
+    }
+
+    /// <summary>Dấu chữ thập trên hình mẫu tại điểm sẽ click (tâm hình + độ lệch).</summary>
+    private void DrawClickMarker(Graphics g)
+    {
+        if (_picImage.Image is not { } img) return;
+        var t = CurrentType;
+        Point? offset = ActionStep.CanHaveImageAnchor(t) ? _imageOffset
+            : t == StepType.ClickImage ? new Point((int)_numX.Value, (int)_numY.Value) : null;
+        if (offset is not { } o) return;
+        var c = _picImage.ClientSize;
+        float k = Math.Min((float)c.Width / img.Width, (float)c.Height / img.Height);
+        float x = (c.Width - img.Width * k) / 2 + (img.Width / 2 + o.X) * k;
+        float y = (c.Height - img.Height * k) / 2 + (img.Height / 2 + o.Y) * k;
+        if (x < 0 || y < 0 || x > c.Width || y > c.Height) return;
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        using var halo = new Pen(Color.FromArgb(200, 255, 255, 255), 4);
+        using var pen = new Pen(Color.FromArgb(220, 30, 30), 2);
+        foreach (var p in new[] { halo, pen })
+        {
+            g.DrawEllipse(p, x - 5, y - 5, 10, 10);
+            g.DrawLine(p, x - 12, y, x - 6, y);
+            g.DrawLine(p, x + 6, y, x + 12, y);
+            g.DrawLine(p, x, y - 12, x, y - 6);
+            g.DrawLine(p, x, y + 6, x, y + 12);
+        }
+    }
+
+    private void ClearImage()
+    {
+        _imageData = "";
+        _imageWidth = _imageHeight = 0;
+        _imageScale = 0;
+        _imageOffset = Point.Empty;
+        UpdateImagePreview();
+        OnTypeChanged(resetSub: false);
+        ShowInfo("Đã bỏ hình mẫu — bước sẽ click theo " + (CurrentType == StepType.MouseClick ? "tọa độ X, Y." : "phần tử UI."), true);
     }
 
     /// <summary>Tìm thử ngay với cấu hình đang nhập: khoanh đỏ vị trí tìm được và đưa con trỏ tới điểm sẽ click.</summary>
@@ -1606,11 +1839,18 @@ internal sealed class StepEditorForm : BaseForm
 
                 var area = ScreenLocator.AreaOf(window);
                 using var template = ScreenLocator.LoadTemplate(probe, area);
-                result = await ScreenLocator.LocateOnceAsync(probe, area, template);
+                // Click kèm hình mẫu: nhiều chỗ giống nhau thì chọn chỗ gần tọa độ lúc ghi nhất (như khi chạy).
+                Point? recorded = null;
+                if (probe.HasImageAnchor && (probe.Type == StepType.MouseClick || probe.HasRecordedPoint))
+                {
+                    var origin = probe.Target.Length > 0 && window != IntPtr.Zero ? WindowHelper.GetRect(window).Location : Point.Empty;
+                    recorded = new Point(origin.X + probe.X, origin.Y + probe.Y);
+                }
+                result = await ScreenLocator.LocateOnceAsync(probe, area, template, recorded);
                 if (result.Bounds.Width > 0)
                 {
                     HighlightForm.Flash(result.Bounds);
-                    if (result.Found && probe.Type is StepType.ClickImage or StepType.ClickText)
+                    if (result.Found && (probe.Type is StepType.ClickImage or StepType.ClickText || probe.HasImageAnchor))
                         Win32.SetCursorPos(result.ClickPoint.X, result.ClickPoint.Y);
                     await Task.Delay(1500); // để kịp nhìn khung đỏ trước khi cửa sổ quay lại
                 }
@@ -1643,7 +1883,8 @@ internal sealed class StepEditorForm : BaseForm
         ShowInfo("Đang chạy thử…", true);
         try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+            // Phát video: chạy hết danh sách (dừng bằng Esc); bước khác tối đa 2 phút.
+            using var cts = step.Type == StepType.PlayMedia ? new CancellationTokenSource() : new CancellationTokenSource(TimeSpan.FromMinutes(2));
             var job = new Job { Name = "Thử bước", Variables = [.. _ctx.JobVariables] };
             var ctx = new FlowContext(job, _ctx.Notifier, RunOptions.Default, id => _ctx.Jobs.FirstOrDefault(j => j.Id == id), cts.Token);
             foreach (var v in _ctx.JobVariables.Where(v => v.Name.Trim().Length > 0)) ctx.Vars[v.Name.Trim()] = v.Value;
@@ -1677,6 +1918,10 @@ internal sealed class StepEditorForm : BaseForm
                 });
             }
             ShowInfo("✔ " + summary, true);
+        }
+        catch (OperationCanceledException)
+        {
+            ShowInfo("✖ Hết 2 phút chạy thử — đã dừng bước.", false);
         }
         catch (Exception ex)
         {

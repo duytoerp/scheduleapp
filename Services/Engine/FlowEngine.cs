@@ -37,7 +37,7 @@ public static class FlowEngine
 
         foreach (var v in job.Variables)
             if (!string.IsNullOrWhiteSpace(v.Name) && !ctx.Vars.ContainsKey(v.Name.Trim()))
-                ctx.Vars[v.Name.Trim()] = ctx.Expand(v.Value);
+                ctx.Vars[v.Name.Trim()] = ctx.InitialValue(v.Name.Trim(), ctx.Expand(v.Value));
 
         var loops = new List<LoopFrame>();
         int errors = 0;

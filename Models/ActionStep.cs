@@ -57,7 +57,10 @@ public enum StepType
 
     // Kiểm thử & Dynamics 365 (model-driven app)
     Dynamics,
-    Assert
+    Assert,
+
+    /// <summary>Phát lần lượt danh sách video / nhạc bằng trình phát của ScheduleApp, chờ phát hết mới sang bước sau.</summary>
+    PlayMedia
 }
 
 public enum MouseButtonKind
@@ -165,7 +168,11 @@ public enum DataAction
     /// <summary>Thêm dòng mới vào cuối bảng.</summary>
     AppendRow,
     /// <summary>Sửa các ô của một dòng có sẵn (theo số dòng hoặc cột khóa).</summary>
-    UpdateRow
+    UpdateRow,
+    /// <summary>Ghi nội dung vào file văn bản (.txt, .log…), thay nội dung cũ.</summary>
+    WriteText,
+    /// <summary>Thêm nội dung vào cuối file văn bản.</summary>
+    AppendText
 }
 
 public enum BrowserAction
@@ -274,6 +281,19 @@ public sealed class ActionStep
     /// <summary>Hệ số scale màn hình lúc chụp hình mẫu (1 = 100%, 1.25 = 125%…); 0 = không rõ.</summary>
     public double ImageScale { get; set; }
 
+    /// <summary>
+    /// Click đã ghi kèm hình mẫu: điểm click lệch bao nhiêu so với tâm hình mẫu (px lúc chụp).
+    /// Bước "Click vào hình ảnh" dùng X, Y cho độ lệch này; click ghi lại dùng X, Y cho tọa độ dự phòng.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public int ImageOffsetX { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public int ImageOffsetY { get; set; }
+
+    /// <summary>
+    /// Phát video / nhạc: tổng thời lượng các file trong danh sách (ms) — tự tính mỗi khi danh sách thay đổi; 0 = chưa rõ
+    /// (file dùng biến, không đọc được thời lượng…).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public int MediaDurationMs { get; set; }
+
     /// <summary>Độ khớp tối thiểu của hình mẫu, tính theo %.</summary>
     public int Confidence { get; set; } = 85;
 
@@ -377,12 +397,13 @@ public sealed class ActionStep
         [StepType.MouseScroll] = "Cuộn chuột",
         [StepType.MouseDrag] = "Kéo thả chuột",
         [StepType.ContinueLoop] = "Bỏ qua, sang lần lặp kế",
-        [StepType.WriteData] = "Ghi Excel / CSV",
+        [StepType.WriteData] = "Ghi file (Excel / CSV / văn bản)",
         [StepType.HttpRequest] = "Gọi API (HTTP / REST)",
         [StepType.AskAi] = "Hỏi AI (Claude)",
         [StepType.Notify] = "Gửi thông báo",
         [StepType.Dynamics] = "Dynamics 365 (model-driven)",
-        [StepType.Assert] = "Kiểm tra (Assert)"
+        [StepType.Assert] = "Kiểm tra (Assert)",
+        [StepType.PlayMedia] = "Phát video / nhạc"
     };
 
     public static readonly Dictionary<ConditionKind, string> ConditionNames = new()
@@ -469,8 +490,18 @@ public sealed class ActionStep
     public static readonly Dictionary<DataAction, string> DataActionNames = new()
     {
         [DataAction.AppendRow] = "Thêm dòng mới vào cuối",
-        [DataAction.UpdateRow] = "Sửa ô của một dòng có sẵn"
+        [DataAction.UpdateRow] = "Sửa ô của một dòng có sẵn",
+        [DataAction.WriteText] = "Ghi file văn bản (thay nội dung cũ)",
+        [DataAction.AppendText] = "Thêm vào cuối file văn bản"
     };
+
+    /// <summary>Ghi file văn bản thay vì bảng Excel / CSV.</summary>
+    [JsonIgnore] public bool IsTextWrite => Type == StepType.WriteData && DataAction is DataAction.WriteText or DataAction.AppendText;
+
+    /// <summary>Phát video: các dòng của Text (bỏ dòng trống, ghi chú #).</summary>
+    [JsonIgnore]
+    public IReadOnlyList<string> MediaLines => Text.Replace("\r\n", "\n").Split('\n')
+        .Select(l => l.Trim()).Where(l => l.Length > 0 && !l.StartsWith('#')).ToList();
 
     public static readonly string[] HttpMethods = ["GET", "POST", "PATCH", "PUT", "DELETE"];
 
@@ -544,6 +575,8 @@ public sealed class ActionStep
             _ => 1_000
         },
         WaitForUser = type == StepType.Reminder,
+        // Phát video: mặc định toàn màn hình.
+        Force = type == StepType.PlayMedia,
         Count = type switch { StepType.Loop => 3, StepType.MouseScroll => -3, _ => 1 },
         DelayAfterMs = IsControlType(type) || type is StepType.SetVariable or StepType.LogMessage or StepType.WriteData
             or StepType.HttpRequest or StepType.AskAi or StepType.Notify or StepType.Assert ? 0 : 500
@@ -572,10 +605,19 @@ public sealed class ActionStep
     public bool UsesScreen => Type is StepType.ClickImage or StepType.WaitForImage or StepType.ClickText or StepType.WaitForText
         || (Type is StepType.If or StepType.Loop or StepType.Assert && Condition is ConditionKind.ImageOnScreen or ConditionKind.TextOnScreen)
         || (Type == StepType.SetVariable && VarSource == VarSource.ScreenText)
-        || (Type is StepType.AskAi or StepType.Notify && Force);
+        || (Type is StepType.AskAi or StepType.Notify && Force) || HasImageAnchor || Type == StepType.PlayMedia;
 
     /// <summary>Click phần tử còn giữ tọa độ lúc ghi macro — dùng khi không tìm thấy phần tử.</summary>
     [JsonIgnore] public bool HasRecordedPoint => Type == StepType.ClickElement && !string.IsNullOrWhiteSpace(Target) && (X != 0 || Y != 0);
+
+    /// <summary>Loại click có thể kèm hình mẫu để tìm lại theo hình ảnh (click chuột, click phần tử).</summary>
+    public static bool CanHaveImageAnchor(StepType t) => t is StepType.MouseClick or StepType.ClickElement;
+
+    /// <summary>
+    /// Click (thường do trình ghi macro tạo) kèm hình mẫu chụp quanh điểm click: khi chạy tìm lại chỗ đó theo hình ảnh
+    /// rồi mới dùng tọa độ — vẫn click đúng khi cửa sổ di chuyển, đổi kích thước hay bố cục xê dịch.
+    /// </summary>
+    [JsonIgnore] public bool HasImageAnchor => CanHaveImageAnchor(Type) && !string.IsNullOrEmpty(ImageData);
 
     [JsonIgnore] public bool IsImageStep =>Type is StepType.ClickImage or StepType.WaitForImage;
     [JsonIgnore] public bool IsTextStep => Type is StepType.ClickText or StepType.WaitForText;
@@ -591,8 +633,9 @@ public sealed class ActionStep
         StepType.WaitForWindow => $"Chờ cửa sổ \"{Target}\" (tối đa {FormatMs(DelayMs)})",
         StepType.FocusWindow => $"Kích hoạt cửa sổ \"{Target}\"",
         StepType.MouseClick =>
-            $"{ClickName()} chuột {ButtonName(Button)} tại ({X}, {Y})" +
-            (string.IsNullOrWhiteSpace(Target) ? " trên màn hình" : $" trong cửa sổ \"{Target}\""),
+            (HasImageAnchor ? $"{ClickName()} chuột {ButtonName(Button)} theo hình mẫu {ImageWidth}×{ImageHeight}" : $"{ClickName()} chuột {ButtonName(Button)} tại ({X}, {Y})") +
+            (string.IsNullOrWhiteSpace(Target) ? " trên màn hình" : $" trong cửa sổ \"{Target}\"") +
+            (HasImageAnchor ? $" · dự phòng ({X}, {Y})" : ""),
         StepType.TypeText => $"Gõ \"{Short(Text)}\"" + InWindow(),
         StepType.KeyPress => $"Nhấn {Text}" + InWindow(),
         StepType.RunCommand => $"Chạy lệnh: {Short(Target)}" + IntoVar(),
@@ -635,7 +678,9 @@ public sealed class ActionStep
         StepType.Goto => $"→ nhãn \"{Target}\"",
         StepType.StopFlow => (Force ? "Dừng flow (tính là lỗi)" : "Dừng flow") + (string.IsNullOrWhiteSpace(Text) ? "" : $": {Short(Text)}"),
         StepType.CallJob => $"Chạy \"{Target}\"",
-        StepType.ClickElement => $"{ClickName()} phần tử [{Short(Text)}]" + SearchArea() + (HasRecordedPoint ? $" · dự phòng ({X}, {Y})" : ""),
+        StepType.ClickElement => $"{ClickName()} phần tử [{Short(Text)}]" + SearchArea() +
+                                 (HasImageAnchor ? " · dự phòng: hình mẫu" + (HasRecordedPoint ? $", ({X}, {Y})" : "")
+                                     : HasRecordedPoint ? $" · dự phòng ({X}, {Y})" : ""),
         StepType.SetElementText => $"Nhập \"{Short(Arguments)}\" vào [{Short(Text)}]" + SearchArea(),
         StepType.WaitForElement => $"Chờ phần tử [{Short(Text)}] (tối đa {FormatMs(DelayMs)})" + SearchArea(),
         StepType.Browser => BrowserAction switch
@@ -655,6 +700,15 @@ public sealed class ActionStep
                                 (X != 0 || Y != 0 ? $" tại ({X}, {Y})" : "") + InWindow(),
         StepType.MouseDrag => $"Kéo từ ({X}, {Y}) tới ({X2}, {Y2})" + InWindow(),
         StepType.ContinueLoop => "Bỏ qua phần còn lại, sang lần lặp kế tiếp",
+        StepType.WriteData when IsTextWrite => (DataAction == DataAction.WriteText ? "Ghi vào" : "Thêm vào cuối") +
+                              $" \"{Short(Target)}\": {Short(Text.Replace("\r", "").Replace("\n", " ⏎ "))}",
+        StepType.PlayMedia => MediaLines.Count switch
+        {
+            0 => "Phát video (chưa chọn file)",
+            1 => $"Phát \"{Short(MediaName(MediaLines[0]))}\"" + (MediaDurationMs > 0 ? $" ({FormatDuration(MediaDurationMs)})" : ""),
+            int n => $"Phát lần lượt {n} mục" + (MediaDurationMs > 0 ? $" (tổng {FormatDuration(MediaDurationMs)})" : "") + ": " +
+                     Short(string.Join(" → ", MediaLines.Select(MediaName)))
+        } + (Force ? " · toàn màn hình" : ""),
         StepType.WriteData => (DataAction == DataAction.AppendRow ? "Thêm dòng vào" : $"Sửa dòng [{Short(RowRef)}] của") +
                               $" \"{Short(Target)}\"" + (string.IsNullOrWhiteSpace(Arguments) ? "" : $" [sheet {Arguments}]") +
                               $": {Short(string.Join(", ", Text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)))}",
@@ -757,6 +811,24 @@ public sealed class ActionStep
     };
 
     public static string FormatMs(int ms) => ms >= 1000 ? $"{ms / 1000.0:0.#} giây" : $"{ms} ms";
+
+    /// <summary>Thời lượng dạng đồng hồ, làm tròn tới giây: 0:12 · 4:05 · 1:02:03.</summary>
+    public static string FormatDuration(TimeSpan duration)
+    {
+        long total = (long)Math.Round(Math.Max(0, duration.TotalSeconds), MidpointRounding.AwayFromZero);
+        long h = total / 3600, m = total / 60 % 60, s = total % 60;
+        return h > 0 ? $"{h}:{m:00}:{s:00}" : $"{m}:{s:00}";
+    }
+
+    public static string FormatDuration(int ms) => FormatDuration(TimeSpan.FromMilliseconds(ms));
+
+    /// <summary>Tên ngắn của một dòng trong danh sách phát: tên file / thư mục (ổ đĩa "D:\" giữ nguyên).</summary>
+    private static string MediaName(string line)
+    {
+        var path = line.Trim().Trim('"', '\'').TrimEnd('\\', '/');
+        var name = Path.GetFileName(path);
+        return name.Length > 0 ? name : path;
+    }
 
     private static string Short(string s)
     {

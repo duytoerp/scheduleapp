@@ -175,6 +175,9 @@ internal sealed class JobEditorForm : BaseForm
         designerPanel.Controls.Add(_designer);
 
         var buttons = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, Dock = DockStyle.Fill, WrapContents = false };
+        var btnAi = SideButton("✨ Tạo bằng AI…", (_, _) => GenerateWithAi());
+        btnAi.ForeColor = Color.FromArgb(110, 60, 190);
+        buttons.Controls.Add(btnAi);
         var btnRecord = SideButton("⏺ Ghi thao tác…", async (_, _) => await RecordAsync());
         btnRecord.ForeColor = Color.FromArgb(196, 43, 28);
         btnRecord.Margin = new Padding(3, 2, 3, 12);
@@ -390,15 +393,20 @@ internal sealed class JobEditorForm : BaseForm
         {
             Text = "Dùng trong mọi ô chữ của bước bằng {{tên}}. Có sẵn: {{today}} {{now}} {{today-1:dd/MM/yyyy}} {{now+30m:HH:mm}} {{clipboard}} " +
                    "{{env:TÊN}} {{secret:Tên}} {{random:1-100}} {{job.name}} {{computer}} {{user}} {{lastOutput}} {{lastError}} {{loop.index}}. " +
-                   "Định dạng: {{biến:upper}} {{biến:N0}} {{biến:dd/MM/yyyy}}.",
-            Dock = DockStyle.Bottom,
+                   "Định dạng: {{biến:upper}} {{biến:N0}} {{biến:dd/MM/yyyy}}. Giá trị =hoten(), =email(), =sdt(), =random(1, 100)… sinh dữ liệu test mới ở mỗi lần chạy.",
             AutoSize = true,
-            MaximumSize = new Size(1100, 0),
+            MaximumSize = new Size(LogicalToDeviceUnits(900), 0),
             ForeColor = UiText.Muted,
-            Padding = new Padding(0, 4, 0, 0)
+            Margin = new Padding(0, 2, 0, 0)
         };
+        // Nút chọn giá trị ngẫu nhiên nằm cạnh dòng gợi ý để lưới biến giữ được nhiều dòng.
+        var bottom = new TableLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, ColumnCount = 2, Padding = new Padding(0, 4, 0, 0) };
+        bottom.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        bottom.Controls.Add(RandomValueMenu.GridButton(_gridVars), 0, 0);
+        bottom.Controls.Add(hint, 1, 0);
         page.Controls.Add(_gridVars);
-        page.Controls.Add(hint);
+        page.Controls.Add(bottom);
         return page;
     }
 
@@ -504,22 +512,10 @@ internal sealed class JobEditorForm : BaseForm
 
     private void LoadJob()
     {
-        var s = _job.Schedule;
         _txtName.Text = _job.Name;
         _cboGroup.Text = _job.Group;
         _chkEnabled.Checked = _job.Enabled;
-        _cboType.SelectedIndex = (int)s.Type;
-        _dtDate.Value = s.StartAt.Date;
-        _dtTime.Value = DateTime.Today + s.StartAt.TimeOfDay;
-        foreach (var c in _chkDays) c.Checked = s.Days.Contains((DayOfWeek)c.Tag!);
-        _numInterval.Value = Math.Clamp(s.IntervalMinutes, 1, 100_000);
-        _chkWindow.Checked = s.UseTimeWindow;
-        _dtWindowStart.Value = DateTime.Today + s.WindowStart;
-        _dtWindowEnd.Value = DateTime.Today + s.WindowEnd;
-        _cboMonthly.SelectedIndex = (int)s.MonthlyMode;
-        _numDayOfMonth.Value = Math.Clamp(s.DayOfMonth, 1, 31);
-        _cboWeekOfMonth.SelectedIndex = Math.Clamp(s.WeekOfMonth, 1, 5) - 1;
-        _cboMonthWeekday.SelectedIndex = Array.IndexOf(WeekOrder, s.MonthWeekday);
+        LoadSchedule(_job.Schedule);
         _numRemind.Value = Math.Clamp(_job.RemindBeforeMinutes, 0, 1440);
         _chkHolidays.Checked = _job.SkipHolidays;
         _chkWake.Checked = _job.WakeComputer;
@@ -627,6 +623,22 @@ internal sealed class JobEditorForm : BaseForm
     {
         _lstTriggers.Items.Clear();
         foreach (var t in _job.Triggers) _lstTriggers.Items.Add(t.Describe());
+    }
+
+    private void LoadSchedule(ScheduleConfig s)
+    {
+        _cboType.SelectedIndex = (int)s.Type;
+        _dtDate.Value = s.StartAt.Date;
+        _dtTime.Value = DateTime.Today + s.StartAt.TimeOfDay;
+        foreach (var c in _chkDays) c.Checked = s.Days.Contains((DayOfWeek)c.Tag!);
+        _numInterval.Value = Math.Clamp(s.IntervalMinutes, 1, 100_000);
+        _chkWindow.Checked = s.UseTimeWindow;
+        _dtWindowStart.Value = DateTime.Today + s.WindowStart;
+        _dtWindowEnd.Value = DateTime.Today + s.WindowEnd;
+        _cboMonthly.SelectedIndex = (int)s.MonthlyMode;
+        _numDayOfMonth.Value = Math.Clamp(s.DayOfMonth, 1, 31);
+        _cboWeekOfMonth.SelectedIndex = Math.Clamp(s.WeekOfMonth, 1, 5) - 1;
+        _cboMonthWeekday.SelectedIndex = Array.IndexOf(WeekOrder, s.MonthWeekday);
     }
 
     private ScheduleConfig ReadSchedule() => new()
@@ -814,15 +826,76 @@ internal sealed class JobEditorForm : BaseForm
         _designer.Focus();
     }
 
+    /// <summary>
+    /// Tính lại thời lượng các bước "Phát video / nhạc" ở nền (file có thể đã đổi, bước do AI / Telegram tạo chưa có thời lượng)
+    /// rồi cập nhật khung luồng — không thêm bước hoàn tác nếu người dùng chưa sửa gì trong lúc tính.
+    /// </summary>
+    private async Task RefreshMediaDurationsAsync()
+    {
+        var steps = _job.Steps.Where(s => s.Type == StepType.PlayMedia).ToList();
+        if (steps.Count == 0) return;
+        int version = ++_mediaRefreshVersion;
+        // Tính trên bản sao để luồng nền không chạm vào bước đang hiển thị.
+        var copies = steps.Select(s => new ActionStep { Type = StepType.PlayMedia, Text = s.Text, MediaDurationMs = s.MediaDurationMs }).ToList();
+        var variables = ReadVariables();
+        try
+        {
+            if (!await Task.Run(() => MediaInfo.FillDurationsAsync(copies, variables))) return;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Không tính được thời lượng video / nhạc: " + ex.Message);
+            return;
+        }
+        // Đã có lần tính mới hơn (vd vừa sửa biến) → bỏ kết quả cũ.
+        if (IsDisposed || version != _mediaRefreshVersion) return;
+        bool changed = false;
+        for (int i = 0; i < steps.Count; i++)
+        {
+            if (steps[i].Text != copies[i].Text || steps[i].MediaDurationMs == copies[i].MediaDurationMs) continue;
+            steps[i].MediaDurationMs = copies[i].MediaDurationMs;
+            changed = true;
+        }
+        if (!changed) return;
+        // Bản ghi hoàn tác hiện tại luôn phản ánh danh sách bước (thời lượng không phải một thao tác cần hoàn tác).
+        if (_historyPos >= 0) _history[_historyPos] = JsonSerializer.Serialize(_job.Steps, JsonDefaults.Options);
+        _designer.RefreshView();
+        UpdateStepCount();
+    }
+
+    private int _mediaRefreshVersion;
+    private readonly System.Windows.Forms.Timer _varsTimer = new() { Interval = 600 };
+
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
+        // Danh sách phát dùng {{biến}} của công việc → sửa biến thì tính lại thời lượng.
+        _varsTimer.Tick += (_, _) =>
+        {
+            _varsTimer.Stop();
+            _ = RefreshMediaDurationsAsync();
+        };
+        void VariablesChanged()
+        {
+            if (!_job.Steps.Any(s => s.Type == StepType.PlayMedia && s.Text.Contains("{{"))) return;
+            _varsTimer.Stop();
+            _varsTimer.Start();
+        }
+        _gridVars.CellValueChanged += (_, _) => VariablesChanged();
+        _gridVars.RowsRemoved += (_, _) => VariablesChanged();
+        FormClosed += (_, _) => _varsTimer.Dispose();
+        _ = RefreshMediaDurationsAsync();
         if (StartD365RecordingOnShow) BeginInvoke(new MethodInvoker(async () => await RecordD365Async()));
+        else if (StartWithAi) BeginInvoke(new MethodInvoker(GenerateWithAi));
     }
 
     /// <summary>Mở trình soạn và bắt đầu ghi thao tác Dynamics 365 ngay (nút "Ghi kịch bản D365" ở trang Kiểm thử).</summary>
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public bool StartD365RecordingOnShow { get; init; }
+
+    /// <summary>Mở trình soạn ngay vào hộp thoại tạo flow bằng AI (nút "✨ Tạo bằng AI" ở màn hình chính).</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public bool StartWithAi { get; init; }
 
     /// <summary>Ghi thao tác trên form Dynamics 365 rồi chèn các bước vào sau bước đang chọn.</summary>
     private async Task RecordD365Async()
@@ -865,6 +938,63 @@ internal sealed class JobEditorForm : BaseForm
         return Task.CompletedTask;
     }
 
+    /// <summary>Mô tả bằng lời → AI dựng flow → thay cả flow hoặc chèn sau bước đang chọn (hoàn tác được bằng Ctrl+Z).</summary>
+    private void GenerateWithAi()
+    {
+        int insertAt = _designer.SelectedIndex >= 0 ? _designer.SelectedIndex + 1 : _job.Steps.Count;
+        var context = new FlowGenerator.Context
+        {
+            JobName = _txtName.Text.Trim() == new Job().Name ? "" : _txtName.Text,
+            Steps = [.. _job.Steps],
+            InsertAt = insertAt,
+            Variables = ReadVariables(),
+            OtherJobs = _otherJobs,
+            Connections = [.. SettingsStore.Current.ApiConnections.Where(c => c.Name.Trim().Length > 0)
+                .Select(c => (c.Name.Trim(), $"URL gốc {c.BaseUrl}, xác thực {c.Auth}"))],
+            EmailTrigger = _job.Triggers.Any(t => t.Type == TriggerType.EmailReceived),
+            NotificationsEnabled = NotificationService.AnyChannelEnabled
+        };
+        using var dialog = new AiFlowForm(context);
+        if (dialog.ShowDialog(this) != DialogResult.OK || dialog.Result is not { } result) return;
+
+        if (result.Mode == FlowGenerator.Mode.Replace)
+        {
+            _job.Steps.Clear();
+            _job.Steps.AddRange(result.Steps);
+        }
+        else
+        {
+            _job.Steps.InsertRange(Math.Min(insertAt, _job.Steps.Count), result.Steps);
+        }
+        _designer.SetSteps(_job.Steps);
+        _designer.SelectStep(result.Mode == FlowGenerator.Mode.Replace ? 0 : insertAt);
+        UpdateStepCount();
+        Snapshot();
+
+        var existing = ReadVariables().Select(v => v.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var v in result.Variables.Where(v => !existing.Contains(v.Name))) _gridVars.Rows.Add(v.Name, v.Value);
+        // Bước phát video do AI tạo chưa có thời lượng → tính luôn.
+        _ = RefreshMediaDurationsAsync();
+        if (result.Mode == FlowGenerator.Mode.Replace && result.Name.Length > 0 &&
+            (string.IsNullOrWhiteSpace(_txtName.Text) || _txtName.Text.Trim() == new Job().Name))
+            _txtName.Text = result.Name;
+        // Người dùng có nói lúc nào chạy ("8h sáng các ngày làm việc", "khi có email hóa đơn"…) → đặt lịch / kích hoạt luôn.
+        if (result.Mode == FlowGenerator.Mode.Replace)
+        {
+            if (result.Schedule != null)
+            {
+                LoadSchedule(result.Schedule);
+                if (result.SkipHolidays) _chkHolidays.Checked = true;
+                UpdateScheduleUi();
+            }
+            foreach (var t in result.Triggers.Where(t => !_job.Triggers.Any(x => x.Type == t.Type && x.Value == t.Value && x.Value2 == t.Value2)))
+                _job.Triggers.Add(t);
+            if (result.Triggers.Count > 0) RefreshTriggers();
+        }
+        _designer.Focus();
+        Log.Info($"Đã {(result.Mode == FlowGenerator.Mode.Replace ? "tạo" : "chèn")} {result.Steps.Count} bước bằng AI cho \"{_txtName.Text.Trim()}\".");
+    }
+
     /// <summary>
     /// Ghi thao tác chuột/bàn phím trên các ứng dụng khác rồi chèn các bước sinh ra vào sau bước đang chọn.
     /// </summary>
@@ -904,10 +1034,12 @@ internal sealed class JobEditorForm : BaseForm
         _designer.Focus();
         bool hasSecret = recorded.Any(s => s.Text.Contains("{{secret:"));
         int elementClicks = recorded.Count(s => s.Type == StepType.ClickElement);
-        int pointClicks = recorded.Count(s => s.Type is StepType.MouseClick or StepType.MouseDrag);
+        int imageClicks = recorded.Count(s => s is { HasImageAnchor: true, Type: StepType.MouseClick });
+        int pointClicks = recorded.Count(s => s.Type == StepType.MouseDrag || s is { Type: StepType.MouseClick, HasImageAnchor: false });
         MessageBox.Show(this,
             $"Đã thêm {recorded.Count} bước từ thao tác vừa ghi.\n\n" +
-            (elementClicks > 0 ? $"✔ {elementClicks} click được ghi theo phần tử UI (không phụ thuộc vị trí cửa sổ / độ phân giải; không tìm thấy phần tử thì tự click theo tọa độ lúc ghi).\n" : "") +
+            (elementClicks > 0 ? $"✔ {elementClicks} click được ghi theo phần tử UI (không phụ thuộc vị trí cửa sổ / độ phân giải; không tìm thấy phần tử thì tìm theo hình mẫu, rồi tới tọa độ lúc ghi).\n" : "") +
+            (imageClicks > 0 ? $"✔ {imageClicks} click được ghi theo hình ảnh: khi chạy tìm lại chỗ được click (cửa sổ dời chỗ, đổi kích thước vẫn đúng), không thấy mới click theo tọa độ lúc ghi.\n" : "") +
             "Đã tự chèn bước \"Chờ cửa sổ\" khi chuyển sang cửa sổ khác." +
             (pointClicks > 0 ? $" Còn {pointClicks} thao tác theo tọa độ — nên xem lại, thay click quan trọng bằng \"Click vào hình ảnh\" nếu cần." : "") +
             (hasSecret ? "\n\n🔑 Phát hiện ô mật khẩu: chữ gõ vào đó được thay bằng {{secret:MatKhau}} — hãy thêm bí mật \"MatKhau\" trong mục 🔑 Bí mật." : ""),
@@ -918,6 +1050,14 @@ internal sealed class JobEditorForm : BaseForm
     {
         int total = _job.Steps.Count, enabled = _job.Steps.Count(s => s.Enabled);
         _lblStepCount.Text = total == enabled ? $"{total} bước" : $"{total} bước ({total - enabled} đang tắt)";
+        // Tổng thời lượng các bước "Phát video / nhạc" đang bật (≥ khi có bước chưa rõ thời lượng).
+        var media = _job.Steps.Where(s => s.Enabled && s.Type == StepType.PlayMedia).ToList();
+        if (media.Count > 0)
+        {
+            long known = media.Sum(s => (long)s.MediaDurationMs);
+            _lblStepCount.Text += known == 0 ? " · video/nhạc: chưa rõ thời lượng"
+                : $" · video/nhạc {(media.All(s => s.MediaDurationMs > 0) ? "" : "≥ ")}{ActionStep.FormatDuration(TimeSpan.FromMilliseconds(known))}";
+        }
         var structure = _designer.Structure;
         _lblStructure.Text = structure.IsValid ? "" : "⚠ " + structure.Errors[0] + (structure.Errors.Count > 1 ? $"  (+{structure.Errors.Count - 1} lỗi khác)" : "");
     }

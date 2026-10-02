@@ -12,20 +12,35 @@ public interface IRemoteHost
     string Run(string nameOrNumber);
     string Stop();
     string Status();
+
+    /// <summary>Bối cảnh cho AI khi tạo công việc mới (các công việc gọi được bằng CallJob, kết nối API, kênh thông báo).</summary>
+    FlowGenerator.Context NewJobContext();
+
+    /// <summary>Thêm công việc mới (đã có lịch / kích hoạt) vào danh sách; <paramref name="run"/> = chạy ngay. Trả về câu trả lời cho người dùng.</summary>
+    string AddJob(Job job, bool run);
 }
 
 /// <summary>
-/// Nhận lệnh điều khiển qua Telegram (long polling): /list, /run, /stop, /status, /history, /screenshot.
+/// Nhận lệnh điều khiển qua Telegram (long polling): /list, /run, /stop, /status, /history, /screenshot,
+/// và tạo công việc mới bằng AI (/new mô tả → xem trước → nhắn thêm để sửa → /ok).
 /// Chỉ chấp nhận tin nhắn từ đúng chat id trong Cài đặt — người khác nhắn cho bot sẽ bị bỏ qua.
 /// </summary>
 public sealed class TelegramBot : IDisposable
 {
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(75) };
 
+    /// <summary>Địa chỉ Bot API (kiểm thử thay bằng máy chủ giả).</summary>
+    internal static string ApiBase { get; set; } = "https://api.telegram.org";
+
     private readonly IRemoteHost _host;
+    private readonly ChatJobBuilder _builder;
     private CancellationTokenSource? _cts;
 
-    public TelegramBot(IRemoteHost host) => _host = host;
+    public TelegramBot(IRemoteHost host)
+    {
+        _host = host;
+        _builder = new ChatJobBuilder(host);
+    }
 
     public bool IsRunning => _cts != null;
 
@@ -52,7 +67,7 @@ public sealed class TelegramBot : IDisposable
 
     private async Task LoopAsync(string token, long chatId, CancellationToken ct)
     {
-        var api = $"https://api.telegram.org/bot{token}";
+        var api = $"{ApiBase}/bot{token}";
         long offset = 0;
         string lastError = "";
         bool announced = false;
@@ -113,8 +128,15 @@ public sealed class TelegramBot : IDisposable
 
     private async Task HandleAsync(string api, long chatId, string text, CancellationToken ct)
     {
-        var parts = text.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (parts.Length == 0) return;
+        if (text.Length == 0) return;
+        if (!text.StartsWith('/'))
+        {
+            // Đang có bản nháp: tin nhắn thường là yêu cầu sửa bản nháp đó.
+            if (_builder.HasDraft) Draft(api, chatId, fresh: false, () => _builder.ReviseAsync(text, ct), ct);
+            else await SendAsync(api, chatId, Help, ct);
+            return;
+        }
+        var parts = text.Split([' ', '\n'], 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var cmd = parts[0].ToLowerInvariant();
         int at = cmd.IndexOf('@'); // /run@TenBot trong nhóm
         if (at > 0) cmd = cmd[..at];
@@ -125,6 +147,20 @@ public sealed class TelegramBot : IDisposable
         {
             switch (cmd)
             {
+                case "/new" or "/tao" or "/moi":
+                    if (arg.Length == 0) { reply = await _builder.CreateAsync("", ct); break; }
+                    Draft(api, chatId, fresh: true, () => _builder.CreateAsync(arg, ct), ct);
+                    return;
+                case "/sua" or "/edit":
+                    if (arg.Length == 0 || !_builder.HasDraft) { reply = await _builder.ReviseAsync(arg, ct); break; }
+                    Draft(api, chatId, fresh: false, () => _builder.ReviseAsync(arg, ct), ct);
+                    return;
+                case "/ok" or "/luu":
+                    reply = _builder.Save(run: arg.Trim().ToLowerInvariant() is "chay" or "chạy" or "run");
+                    break;
+                case "/huy" or "/cancel":
+                    reply = _builder.Cancel();
+                    break;
                 case "/list" or "/ds":
                     reply = _host.ListJobs();
                     break;
@@ -155,8 +191,44 @@ public sealed class TelegramBot : IDisposable
         await SendAsync(api, chatId, reply, ct);
     }
 
+    /// <summary>
+    /// Dựng / sửa bản nháp bằng AI ở nền (mất 20–60 giây) để bot vẫn trả lời các lệnh khác; trong lúc chờ hiện "đang nhập…".
+    /// </summary>
+    private void Draft(string api, long chatId, bool fresh, Func<Task<string>> work, CancellationToken ct)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                if (_builder.IsBusy || !AiClient.IsConfigured)
+                {
+                    // Trả lời ngay lý do không dựng được (đang bận / chưa có khóa Claude).
+                    await SendAsync(api, chatId, await work(), ct);
+                    return;
+                }
+                await SendAsync(api, chatId, fresh ? "⏳ Đang dựng công việc bằng AI… (thường 20–60 giây)" : "⏳ Đang sửa bản nháp…", ct);
+                var task = work();
+                while (!task.IsCompleted)
+                {
+                    try { using var _ = await Http.PostAsJsonAsync($"{api}/sendChatAction", new { chat_id = chatId, action = "typing" }, ct); }
+                    catch (HttpRequestException) { }
+                    await Task.WhenAny(task, Task.Delay(4500, ct));
+                }
+                await SendAsync(api, chatId, await task, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+            catch (Exception ex)
+            {
+                Log.Warn("Telegram: lỗi khi tạo công việc — " + ex.Message);
+            }
+        }, ct);
+    }
+
     private const string Help =
         "ScheduleApp — lệnh điều khiển:\n" +
+        "/new <mô tả> — tạo công việc mới bằng AI (nói giờ chạy thì đặt lịch luôn), vd:\n" +
+        "   /new 8h sáng các ngày làm việc mở D:\\bao-cao.xlsx, làm mới dữ liệu, lưu rồi báo cho tôi\n" +
+        "   → xem bản nháp, nhắn thêm để sửa · /ok lưu · /ok chay lưu và chạy ngay · /huy bỏ\n" +
         "/list — danh sách công việc (kèm số thứ tự)\n" +
         "/run <số hoặc tên> — chạy công việc\n" +
         "/stop — dừng flow đang chạy\n" +

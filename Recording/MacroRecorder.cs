@@ -4,13 +4,15 @@ using System.Runtime.InteropServices;
 using System.Text;
 using ScheduleApp.Models;
 using ScheduleApp.Native;
+using ScheduleApp.Vision;
 
 namespace ScheduleApp.Recording;
 
 /// <summary>
 /// Ghi thao tác chuột/bàn phím toàn hệ thống (low-level hook) và chuyển thành các bước flow:
-/// click → "Click chuột" (tọa độ tương đối theo cửa sổ), chữ gõ liên tiếp → "Gõ văn bản",
-/// phím đặc biệt / tổ hợp → "Nhấn phím". Phải chạy trên luồng UI (cần vòng lặp message).
+/// click → "Click phần tử UI" nếu nhận diện được, ngược lại "Click chuột" (tọa độ tương đối theo cửa sổ), kèm hình mẫu chụp quanh
+/// điểm click để khi chạy tìm lại theo hình ảnh; chữ gõ liên tiếp → "Gõ văn bản", phím đặc biệt / tổ hợp → "Nhấn phím".
+/// Phải chạy trên luồng UI (cần vòng lặp message).
 /// </summary>
 internal sealed class MacroRecorder : IDisposable
 {
@@ -50,10 +52,17 @@ internal sealed class MacroRecorder : IDisposable
     /// </summary>
     public bool RecordElements { get; set; } = true;
 
+    /// <summary>
+    /// Chụp vùng quanh mỗi click làm hình mẫu: khi chạy tìm lại chỗ đó theo hình ảnh (cửa sổ di chuyển, đổi kích thước,
+    /// bố cục xê dịch vẫn click đúng), không thấy mới click theo tọa độ lúc ghi.
+    /// </summary>
+    public bool RecordImages { get; set; } = true;
+
     /// <summary>Số click đã được ghi thành bước "Click phần tử UI".</summary>
     public int ElementClicks => _steps.Count(s => s.Type == StepType.ClickElement);
 
     private readonly List<Task> _conversions = [];
+    private volatile bool _stopped;
 
     public void Start()
     {
@@ -73,8 +82,13 @@ internal sealed class MacroRecorder : IDisposable
     public List<ActionStep> Stop()
     {
         Unhook();
-        // Chờ các lần nhận diện phần tử còn dở (chạy nền, không cần luồng UI).
-        try { Task.WaitAll([.. _conversions], 3000); } catch (AggregateException) { }
+        _pressed?.Shot?.Dispose();
+        _pressed = null;
+        // Chờ các lần nhận diện phần tử / chọn hình mẫu còn dở (chạy nền, không cần luồng UI).
+        try { Task.WaitAll([.. _conversions], 5000); } catch (AggregateException) { }
+        _stopped = true;
+        // Lần nhận diện nào đang ghi dở vào bước thì chờ nó ghi xong (các lần sau đó bị bỏ qua).
+        foreach (var step in _steps) lock (step) { }
         FlushTyped();
         if (_steps.Count > 0) _steps[^1].DelayAfterMs = 500;
         return [.. _steps];
@@ -117,24 +131,51 @@ internal sealed class MacroRecorder : IDisposable
         return Win32.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
     }
 
-    private (Point Point, MouseButtonKind Button, IntPtr Root, IntPtr Window, string Target, long Tick,
-        Task<Automation.UiElementFinder.CapturedElement?>? Element)? _pressed;
+    internal sealed record Press(Point Point, MouseButtonKind Button, IntPtr Root, IntPtr Window, string Target, long Tick,
+        Task<Automation.UiElementFinder.CapturedElement?>? Element, Snapshot? Shot);
+
+    /// <summary>Ảnh chụp quanh điểm nhấn chuột; <paramref name="Covered"/> = phần bị cửa sổ khác che (tọa độ trong ảnh).</summary>
+    internal sealed record Snapshot(Bitmap Image, Rectangle Area, double Scale, List<Rectangle> Covered) : IDisposable
+    {
+        public void Dispose() => Image.Dispose();
+    }
+
+    private Press? _pressed;
 
     private void OnButtonDown(Point p, MouseButtonKind button)
     {
         _winAlone = false;
+        _pressed?.Shot?.Dispose();
+        _pressed = null;
         var root = WindowHelper.RootWindowAt(p);
-        if (root == IntPtr.Zero || WindowHelper.BelongsToThisApp(root))
-        {
-            _pressed = null;
-            return;
-        }
+        if (root == IntPtr.Zero || WindowHelper.BelongsToThisApp(root)) return;
+        // Chụp ngay trong hook: ứng dụng chưa nhận click nên nút chưa lõm xuống, menu chưa mở/đóng.
+        var shot = RecordImages ? Snap(p, root) : null;
         // Xác định cửa sổ đích ngay lúc nhấn: popup (menu, gợi ý…) thường đóng ngay sau click.
         var (window, target) = ResolveTarget(root);
         // Đọc phần tử dưới chuột ngay lúc nhấn (trước khi click làm giao diện thay đổi), chạy nền để hook trả về ngay.
         var element = RecordElements && target.Length > 0 ? Task.Run(() => CaptureElement(p)) : null;
-        _pressed = (p, button, root, window, target, Environment.TickCount64, element);
+        _pressed = new Press(p, button, root, window, target, Environment.TickCount64, element, shot);
     }
+
+    private static Snapshot? Snap(Point p, IntPtr root)
+    {
+        try
+        {
+            double scale = PowerHelper.ScaleAt(p);
+            var area = ClickAnchor.CaptureArea(p, scale);
+            if (area.Width < 16 || area.Height < 16) return null;
+            var covered = WindowHelper.CoveringRects(root, p, area).Select(r => ToShot(r, area)).ToList();
+            return new Snapshot(ScreenCapture.Capture(area), area, scale, covered);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine(ex);
+            return null;
+        }
+    }
+
+    private static Rectangle ToShot(Rectangle r, Rectangle area) => new(r.X - area.X, r.Y - area.Y, r.Width, r.Height);
 
     private static Automation.UiElementFinder.CapturedElement? CaptureElement(Point p)
     {
@@ -150,22 +191,56 @@ internal sealed class MacroRecorder : IDisposable
         // Tên quá dài thường là nội dung thay đổi theo thời gian (gợi ý tìm kiếm, tiêu đề email, tên tài liệu…) → khó tìm lại.
         !System.Text.RegularExpressions.Regex.IsMatch(e.Selector, @"Name=[^;]{61,}");
 
-    /// <summary>Khi nhận diện xong, đổi bước "Click chuột" thành "Click phần tử UI" (giữ tọa độ để tham khảo).</summary>
-    private void ConvertToElement(ActionStep step, IntPtr root, Task<Automation.UiElementFinder.CapturedElement?> capture)
+    /// <summary>
+    /// Nhận diện chạy nền sau mỗi click (giữ tọa độ lúc ghi làm dự phòng):
+    /// phần tử UI rõ ràng → đổi thành "Click phần tử UI"; ảnh chụp lúc nhấn → hình mẫu để khi chạy tìm lại theo hình ảnh.
+    /// </summary>
+    internal void Recognize(ActionStep step, Press down)
     {
-        _conversions.Add(capture.ContinueWith(t =>
+        if (down.Element == null && down.Shot == null) return;
+        _conversions.Add(Task.Run(async () =>
         {
-            var e = t.IsCompletedSuccessfully ? t.Result : null;
-            if (!IsGoodElement(e, root)) return;
-            lock (step)
+            using var shot = down.Shot;
+            Automation.UiElementFinder.CapturedElement? e = null;
+            if (down.Element != null)
             {
-                if (step.Type != StepType.MouseClick) return;
-                step.Type = StepType.ClickElement;
-                step.Text = e!.Selector;
-                // Không thấy phần tử sau 5 giây → click theo tọa độ lúc ghi (X, Y được giữ lại).
-                step.DelayMs = 5_000;
+                try { e = await down.Element; }
+                catch (Exception ex) { Debug.WriteLine(ex); }
             }
-        }, TaskScheduler.Default));
+
+            // Click phần tử chỉ tìm được trong cửa sổ đích có tên (không áp dụng cho taskbar / Start ghi bằng tọa độ màn hình).
+            if (down.Target.Length > 0 && IsGoodElement(e, down.Root))
+            {
+                lock (step)
+                {
+                    if (_stopped || step.Type != StepType.MouseClick) return;
+                    step.Type = StepType.ClickElement;
+                    step.Text = e!.Selector;
+                    // Không thấy phần tử sau 5 giây → tìm theo hình mẫu / click theo tọa độ lúc ghi.
+                    step.DelayMs = 5_000;
+                }
+            }
+
+            if (shot == null) return;
+            ClickAnchor.Choice? choice;
+            try
+            {
+                Rectangle? bounds = e != null && e.Window == down.Root ? ToShot(e.Bounds, shot.Area) : null;
+                choice = ClickAnchor.Choose(shot.Image, new Point(down.Point.X - shot.Area.X, down.Point.Y - shot.Area.Y), bounds, shot.Scale, shot.Covered);
+                if (choice == null) return;
+                lock (step)
+                {
+                    if (_stopped || !ActionStep.CanHaveImageAnchor(step.Type)) return;
+                    ClickAnchor.Apply(step, shot.Image, choice, shot.Scale);
+                    // Chờ hình mẫu xuất hiện tối đa 5 giây rồi mới click theo tọa độ.
+                    if (step.Type == StepType.MouseClick) step.DelayMs = ClickAnchor.DefaultTimeoutMs;
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine(ex);
+            }
+        }));
     }
 
     /// <summary>Thả chuột: di chuyển xa điểm nhấn → kéo thả, ngược lại → click.</summary>
@@ -182,6 +257,7 @@ internal sealed class MacroRecorder : IDisposable
 
         if (Math.Abs(p.X - down.Point.X) > 8 || Math.Abs(p.Y - down.Point.Y) > 8)
         {
+            down.Shot?.Dispose();
             Add(new ActionStep
             {
                 Type = StepType.MouseDrag, Target = target, X = x, Y = y,
@@ -196,7 +272,8 @@ internal sealed class MacroRecorder : IDisposable
             now - _lastTick <= Win32.GetDoubleClickTime() &&
             Math.Abs(last.X - x) <= 4 && Math.Abs(last.Y - y) <= 4)
         {
-            last.DoubleClick = true;
+            down.Shot?.Dispose();
+            lock (last) last.DoubleClick = true;
             _lastTick = now;
             Changed?.Invoke();
             return;
@@ -204,8 +281,7 @@ internal sealed class MacroRecorder : IDisposable
 
         var click = new ActionStep { Type = StepType.MouseClick, Target = target, X = x, Y = y, Button = down.Button };
         Add(click, now, now);
-        // Click phần tử chỉ tìm được trong cửa sổ đích có tên (không áp dụng cho taskbar / Start ghi bằng tọa độ màn hình).
-        if (down.Element != null && target.Length > 0) ConvertToElement(click, down.Root, down.Element);
+        Recognize(click, down);
     }
 
     /// <summary>Cuộn chuột: các lần cuộn liên tiếp trong cùng cửa sổ được gộp thành một bước.</summary>

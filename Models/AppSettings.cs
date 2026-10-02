@@ -18,6 +18,9 @@ public sealed class AppSettings
     /// <summary>Trình ghi macro: ghi click vào nút/ô nhập thành "Click phần tử UI" thay vì tọa độ.</summary>
     public bool RecordElements { get; set; } = true;
 
+    /// <summary>Trình ghi macro: chụp hình mẫu quanh mỗi click để khi chạy tìm lại theo hình ảnh rồi mới dùng tọa độ.</summary>
+    public bool RecordImages { get; set; } = true;
+
     /// <summary>Cổng remote debugging của Chrome/Edge cho các bước "Trình duyệt".</summary>
     public int BrowserPort { get; set; } = 9222;
 
@@ -32,6 +35,9 @@ public sealed class AppSettings
 
     /// <summary>Kết nối API dùng cho bước "Gọi API" (URL gốc + cách xác thực).</summary>
     public List<ApiConnection> ApiConnections { get; set; } = [];
+
+    /// <summary>Giá trị biến đã điền ở màn hình "Thiết lập mẫu" (vd tenant, d365Url) — tự điền sẵn khi thêm mẫu khác dùng cùng biến.</summary>
+    public Dictionary<string, string> TemplateValues { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     public AiSettings Ai { get; set; } = new();
 

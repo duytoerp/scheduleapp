@@ -81,6 +81,13 @@ internal static class HelpContent
             - **⤵ Chạy từ bước chọn**: bỏ qua các bước phía trên.
             - **Điểm dừng** (`F9`) và **⏭ Chạy từng bước**: flow dừng trước bước, hiện giá trị mọi biến. `F10` bước tiếp, `F5` chạy tiếp, `Shift+F5` dừng.
             - **Phiên bản cũ…**: mỗi lần lưu, bản trước được giữ lại (30 bản) để khôi phục.
+            ## Ghi thao tác (macro)
+            Bấm **● Ghi thao tác…**, thao tác bình thường trên ứng dụng khác rồi **Dừng & lưu** (`Ctrl+Shift+Q`). Các bước được chèn sau bước đang chọn.
+            - Click vào nút / ô có tên → *Click phần tử UI*; còn lại → *Click chuột*.
+            - Mỗi click được chụp **hình mẫu** quanh chỗ bấm (ảnh thu nhỏ hiện bên phải thẻ bước). Khi chạy, chỗ đó được tìm lại theo hình ảnh nên cửa sổ dời chỗ, đổi kích thước hay bố cục xê dịch vẫn click đúng; không thấy sau 5 giây mới click theo tọa độ lúc ghi.
+            - Nút giống hệt nhau lặp lại (vd *Sửa* ở mỗi dòng): hình mẫu lấy rộng ra cả phần bên cạnh để phân biệt; vẫn còn chỗ giống thì chọn chỗ gần vị trí lúc ghi nhất.
+            - Bấm vào vùng trống, ít chi tiết → giữ tọa độ như cũ.
+            - Mở bước để xem hình mẫu (dấu chữ thập đỏ là điểm sẽ click), **✂ Chụp hình mẫu** lại, **✕ Bỏ hình mẫu**, chỉnh *Độ khớp* hoặc bấm **Thử tìm trên màn hình**.
             ## Phím tắt trong khung luồng
             - `↑` `↓` chọn bước · `Ctrl+↑` `Ctrl+↓` di chuyển · `Space` bật/tắt · `Delete` xóa
             - `Ctrl+C` / `Ctrl+V` sao chép bước (cả sang công việc khác) · `Ctrl+D` nhân bản · `Ctrl+Z` / `Ctrl+Y` hoàn tác / làm lại
@@ -102,7 +109,17 @@ internal static class HelpContent
             2. Gán / đổi trong flow bằng bước **Gán biến** (giá trị, phép tính, clipboard, output lệnh, trích JSON, hỏi người dùng…).
             ## Bí mật
             Mật khẩu, token lưu trong **Bí mật** (mã hóa bằng tài khoản Windows của bạn), dùng bằng `{{secret:Tên}}`. Giá trị không hiện lại, được che `***` trong nhật ký và không bị xuất ra file khi chia sẻ công việc.
-            > Định dạng giá trị: `{{ten:upper}}`, `{{ten:trim}}`, `{{ten:nodiacritics}}` (bỏ dấu), `{{tien:N0}}` (1.234.568), `{{ten:json}}` (đặt vào chuỗi JSON an toàn).
+            ## Dữ liệu test ngẫu nhiên
+            Giá trị biến viết như công thức Excel, bắt đầu bằng `=`, được **sinh mới ở mỗi lần chạy** (giá trị đã dùng ghi trong nhật ký để tái hiện lần chạy lỗi). Bấm **⚄ Giá trị ngẫu nhiên** ở tab Biến, màn hình Thiết lập mẫu hoặc Môi trường để chọn nhanh:
+            - `=hoten()` · `=hoten(nữ)` · `=ho()` · `=ten()` — họ tên người Việt.
+            - `=email()` · `=email(cty.vn)` · `=sdt()` (di động 10 số) · `=diachi()` · `=thanhpho()` · `=congty()` · `=cccd()`.
+            - `=random(1, 100)` · `=random(1, 100, 2)` (2 số lẻ) · `=chuso(6)` · `=chuoi(8)` · `=guid()`.
+            - `=chon(Mới; Đang xử lý; Đã đóng)` — chọn một giá trị · `=ngay(-30, 0)` · `=ngay(1, 90, yyyy-MM-dd)` — ngày so với hôm nay.
+            Dùng thẳng trong ô chữ: `{{=hoten()}}` (mỗi lần thay ra một giá trị khác — muốn dùng lại cùng giá trị cho bước Kiểm tra thì đặt vào biến).
+            ## Thiết lập mẫu
+            Thêm từ **Mẫu có sẵn** thì màn hình *Thiết lập mẫu* hỏi một lần các giá trị của riêng bạn: biến (`tenant`, `d365Url`, tài khoản test…), bí mật, kết nối API và đường dẫn file / thư mục — của mẫu và các công việc dùng chung nó gọi tới. Giá trị còn là chữ mẫu được đánh dấu ⚠; giá trị đã điền được nhớ để tự điền cho mẫu sau.
+            Sửa lại bất cứ lúc nào: chuột phải công việc → **⚙ Thiết lập biến & bí mật…**, hoặc **⋯ Thêm → Thiết lập biến & bí mật (mọi công việc)…** để đổi một giá trị cho tất cả công việc cùng lúc.
+            > Định dạng giá trị: `{{ten:upper}}`, `{{ten:trim}}`, `{{duongDan:unquote}}` (bỏ dấu nháy bao quanh), `{{ten:nodiacritics}}` (bỏ dấu), `{{tien:N0}}` (1.234.568), `{{ten:json}}` (đặt vào chuỗi JSON an toàn).
             """,
             new HelpAction("Mở Bí mật", CmdSecrets)),
 
@@ -118,6 +135,12 @@ internal static class HelpContent
             ## Xem lại
             - **Lịch sử chạy**: mọi lần chạy, kết quả, bước lỗi, ảnh chụp màn hình lúc lỗi, thống kê theo ngày.
             - Kênh thông báo (Telegram, email SMTP, webhook Teams/Slack) khai báo trong **Cài đặt → Thông báo**, có nút *Gửi thử*.
+            ## Điều khiển & tạo công việc qua Telegram
+            Bật **Nhận lệnh điều khiển** trong **Cài đặt → Thông báo**, rồi nhắn cho bot (chỉ đúng chat id đã cấu hình):
+            - `/list` · `/run 3` · `/stop` · `/status` · `/history` · `/screenshot`
+            - `/new <mô tả>`: AI dựng công việc mới, nói giờ chạy thì đặt lịch luôn (vd `/new 8h sáng các ngày làm việc mở D:\bao-cao.xlsx, lưu rồi báo tôi`). Bot gửi bản nháp để xem trước.
+            - Nhắn thêm để sửa bản nháp → `/ok` lưu (nhóm *Telegram*) · `/ok chay` lưu và chạy ngay · `/huy` bỏ.
+            > Cần khóa Claude trong **Cài đặt → Tích hợp**. Xem kỹ bản nháp trước khi `/ok chay`, nhất là các bước click / gõ phím.
             """,
             new HelpAction("Lịch sử chạy", CmdHistory), new HelpAction("Cài đặt", CmdSettings)),
 

@@ -25,6 +25,10 @@ public sealed class VariableDef
 {
     public string Name { get; set; } = "";
     public string Value { get; set; } = "";
+
+    /// <summary>Giải thích ngắn cho người dùng (mẫu có sẵn) — hiện trong màn hình "Thiết lập mẫu".</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Description { get; set; }
 }
 
 /// <summary>Một công việc: lịch chạy + danh sách bước thao tác.</summary>

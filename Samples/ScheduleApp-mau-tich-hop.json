@@ -719,7 +719,8 @@
     "Variables": [
       {
         "Name": "tenant",
-        "Value": "ten-cong-ty"
+        "Value": "ten-cong-ty",
+        "Description": "Phần đầu địa chỉ Dynamics 365 của công ty: https://<tenant>.crm5.dynamics.com (vd contoso)."
       }
     ],
     "MissedRunPolicy": "Skip",
@@ -2131,7 +2132,8 @@
     "Variables": [
       {
         "Name": "nguong",
-        "Value": "26500"
+        "Value": "26500",
+        "Description": "Ngưỡng tỷ giá USD/VND — vượt mức này thì gửi cảnh báo."
       }
     ],
     "MissedRunPolicy": "Skip",

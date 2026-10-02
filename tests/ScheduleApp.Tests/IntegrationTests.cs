@@ -102,6 +102,29 @@ internal sealed class MiniHttpServer : IDisposable
                 all = buffer.ToArray();
             }
             var body = Encoding.UTF8.GetString(all, headerEnd + 4, Math.Min(length, all.Length - headerEnd - 4));
+            if (headers.TryGetValue("Transfer-Encoding", out var te) && te.Contains("chunked", StringComparison.OrdinalIgnoreCase))
+            {
+                // Thân gửi theo từng khúc (vd JsonContent của PostAsJsonAsync): đọc tới khúc rỗng cuối cùng rồi ghép lại.
+                while (IndexOf(all.AsSpan(headerEnd + 4).ToArray(), "0\r\n\r\n"u8.ToArray()) < 0)
+                {
+                    int n = await stream.ReadAsync(chunk);
+                    if (n == 0) break;
+                    buffer.Write(chunk, 0, n);
+                    all = buffer.ToArray();
+                }
+                var raw = all.AsSpan(headerEnd + 4).ToArray();
+                var decoded = new MemoryStream();
+                for (int pos = 0; pos < raw.Length;)
+                {
+                    int lineEnd = IndexOf(raw[pos..], "\r\n"u8.ToArray());
+                    if (lineEnd < 0) break;
+                    int size = Convert.ToInt32(Encoding.ASCII.GetString(raw, pos, lineEnd).Split(';')[0].Trim(), 16);
+                    if (size == 0) break;
+                    decoded.Write(raw, pos + lineEnd + 2, size);
+                    pos += lineEnd + 2 + size + 2;
+                }
+                body = Encoding.UTF8.GetString(decoded.ToArray());
+            }
             lock (Requests) Requests.Add((parts[0], parts[1], headers, body));
             var (status, respBody) = _handler(parts[0], parts[1], headers, body);
             var bytes = Encoding.UTF8.GetBytes(respBody);

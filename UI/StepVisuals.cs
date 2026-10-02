@@ -15,7 +15,7 @@ internal static class StepVisuals
 
     public static readonly (string Name, StepType[] Types)[] Categories =
     [
-        ("Ứng dụng", [StepType.LaunchApp, StepType.CloseApp, StepType.RunCommand]),
+        ("Ứng dụng", [StepType.LaunchApp, StepType.CloseApp, StepType.RunCommand, StepType.PlayMedia]),
         ("Cửa sổ", [StepType.WaitForWindow, StepType.FocusWindow]),
         ("Chuột & bàn phím", [StepType.MouseClick, StepType.TypeText, StepType.KeyPress, StepType.MouseScroll, StepType.MouseDrag]),
         ("Phần tử UI (ổn định nhất)", [StepType.ClickElement, StepType.SetElementText, StepType.WaitForElement]),
@@ -41,6 +41,7 @@ internal static class StepVisuals
         StepType.HttpRequest or StepType.AskAi or StepType.Notify => Color.FromArgb(0, 128, 96),
         StepType.Dynamics => Color.FromArgb(116, 39, 116),
         StepType.Assert => Color.FromArgb(0, 118, 140),
+        StepType.PlayMedia => Color.FromArgb(196, 43, 92),
         _ => Color.FromArgb(16, 124, 16)
     };
 
@@ -88,6 +89,7 @@ internal static class StepVisuals
         StepType.Notify => "\uE715",
         StepType.Dynamics => "\uE8A5",
         StepType.Assert => "\uE9D5",
+        StepType.PlayMedia => "\uE714",
         _ => ""
     };
 

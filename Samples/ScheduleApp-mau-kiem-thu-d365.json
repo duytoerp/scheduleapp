@@ -7,8 +7,8 @@
     "Schedule": { "Type": "Manual" },
     "StopOnError": true,
     "Variables": [
-      { "Name": "d365Url", "Value": "https://tenorg.crm5.dynamics.com/main.aspx?appid=00000000-0000-0000-0000-000000000000" },
-      { "Name": "taiKhoanTest", "Value": "qa.test@tenorg.onmicrosoft.com" }
+      { "Name": "d365Url", "Value": "https://tenorg.crm5.dynamics.com/main.aspx?appid=00000000-0000-0000-0000-000000000000", "Description": "URL của app Dynamics 365 cần kiểm thử — mở app trong trình duyệt rồi sao chép nguyên địa chỉ (có appid=…)." },
+      { "Name": "taiKhoanTest", "Value": "qa.test@tenorg.onmicrosoft.com", "Description": "Email tài khoản test dùng cho bước Đăng nhập Microsoft (mật khẩu và khóa MFA nhập ở phần Bí mật)." }
     ],
     "Steps": [
       {
@@ -163,7 +163,7 @@
     "IsTestCase": true,
     "Tags": "security, smoke",
     "Variables": [
-      { "Name": "vaiTro", "Value": "Salesperson" }
+      { "Name": "vaiTro", "Value": "Salesperson", "Description": "Tên vai trò bảo mật (security role) mà tài khoản đang chạy phải có." }
     ],
     "Steps": [
       { "Type": "CallJob", "JobRef": "5d6e0b51-0d5f-4c4e-9c43-1d365a000001", "Target": "C1 · Mở Dynamics 365 (dùng chung cho các kịch bản)", "DelayAfterMs": 0 },

@@ -71,9 +71,14 @@ internal sealed class EnvironmentsForm : BaseForm
             Padding = new Padding(0, 8, 0, 0)
         };
         var right = new Panel { Dock = DockStyle.Fill };
+        var varsHeader = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, Margin = new Padding(0) };
+        varsHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        varsHeader.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        varsHeader.Controls.Add(new Label { Text = "Biến", AutoSize = true, Font = Theme.BoldFont, Margin = new Padding(0, 6, 0, 0) }, 0, 0);
+        varsHeader.Controls.Add(RandomValueMenu.GridButton(_vars), 1, 0);
         right.Controls.Add(_vars);
         right.Controls.Add(hint);
-        right.Controls.Add(new Label { Text = "Biến", Dock = DockStyle.Top, Height = 24, Font = Theme.BoldFont });
+        right.Controls.Add(varsHeader);
 
         var bottom = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, 10, 0, 0) };
         var cancel = new Button { Text = "Hủy", AutoSize = true, MinimumSize = new Size(90, 0), DialogResult = DialogResult.Cancel };

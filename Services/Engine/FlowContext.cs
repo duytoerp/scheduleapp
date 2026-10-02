@@ -113,6 +113,18 @@ public sealed class FlowContext
 
     public string Expand(string? template) => Expander.Expand(template ?? "");
 
+    /// <summary>
+    /// Giá trị ban đầu của biến (biến của công việc, của môi trường, dòng dữ liệu kiểm thử): công thức "=hàm(...)" sinh dữ liệu
+    /// ngẫu nhiên mới ở mỗi lần chạy (vd =hoten(), =email()) — giá trị sinh ra được ghi nhật ký để tái hiện lần chạy lỗi.
+    /// </summary>
+    public string InitialValue(string name, string value)
+    {
+        if (!TestData.IsFormula(value)) return value;
+        var generated = TestData.Evaluate(value);
+        Log.Info($"   🎲 {{{{{name}}}}} = \"{generated}\"   ({value.Trim()})");
+        return generated;
+    }
+
     /// <summary>Bản sao của bước với các trường văn bản đã thay {{biến}}.</summary>
     public ActionStep ExpandStep(ActionStep s)
     {
@@ -120,7 +132,13 @@ public sealed class FlowContext
         copy.Target = Expand(s.Target);
         copy.Arguments = Expand(s.Arguments);
         // Ghi Excel: mỗi dòng "Cột=giá trị" được thay biến riêng lúc ghi (giá trị có thể chứa xuống dòng).
-        copy.Text = s.Type == StepType.WriteData ? s.Text : Expand(s.Text);
+        copy.Text = s.Type switch
+        {
+            StepType.WriteData => s.Text,
+            // Phát video: bỏ dòng ghi chú (#) trước khi thay biến — biến trong ghi chú không làm lỗi bước.
+            StepType.PlayMedia => string.Join("\n", s.MediaLines.Select(Expand)),
+            _ => Expand(s.Text)
+        };
         copy.RowRef = Expand(s.RowRef);
         copy.Headers = Expand(s.Headers);
         copy.Message = Expand(s.Message);

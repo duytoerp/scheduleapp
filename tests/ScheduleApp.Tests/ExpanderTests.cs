@@ -10,7 +10,8 @@ public class ExpanderTests
         ["tien"] = "1234567.5",
         ["ngay"] = "2026-10-01",
         ["ds"] = "chuối\nan\n\nbưởi\nan\n",
-        ["quote"] = "Nói \"xin chào\"\nrồi đi"
+        ["quote"] = "Nói \"xin chào\"\nrồi đi",
+        ["path"] = " \"D:\\Video\\01 giới thiệu.mp4\" "
     });
 
     [Theory]
@@ -28,6 +29,7 @@ public class ExpanderTests
     [InlineData("{{ds:item(9)}}", "")]
     [InlineData("{{ds:join(, )}}", "chuối, an, bưởi, an")]
     [InlineData("{{ds:unique}}", "chuối\nan\nbưởi")]
+    [InlineData("{{path:unquote}}", @"D:\Video\01 giới thiệu.mp4")]
     [InlineData("{{quote:json}}", "Nói \\\"xin chào\\\"\\nrồi đi")]
     public void Formats(string template, string expected) => Assert.Equal(expected, X.Expand(template));
 
