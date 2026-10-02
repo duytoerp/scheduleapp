@@ -90,7 +90,13 @@ internal sealed class FakeUi : IUserNotifier
     public void Notify(string title, string text, bool isError) { }
     public IDisposable ClearScreenForAutomation() => new Noop();
     public Task<string?> PromptAsync(string title, string message, string defaultValue, bool password, CancellationToken ct) => Task.FromResult<string?>("nhập: " + defaultValue);
-    public Task<DebugCommand> DebugPauseAsync(string jobName, int stepIndex, string stepText, string reason, IReadOnlyDictionary<string, string> variables, CancellationToken ct) => Task.FromResult(DebugCommand.Continue);
+    /// <summary>Các lần flow tạm dừng gỡ lỗi: (công việc, vị trí bước, lý do).</summary>
+    public List<(string Job, int Step, string Reason)> Pauses { get; } = [];
+    public Task<DebugCommand> DebugPauseAsync(string jobName, int stepIndex, string stepText, string reason, IReadOnlyDictionary<string, string> variables, CancellationToken ct)
+    {
+        lock (Pauses) Pauses.Add((jobName, stepIndex, reason));
+        return Task.FromResult(DebugCommand.Continue);
+    }
     public Task<bool> AskContinueAsync(string title, string message, CancellationToken ct) => Task.FromResult(true);
     private sealed class Noop : IDisposable { public void Dispose() { } }
 }

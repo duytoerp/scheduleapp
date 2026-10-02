@@ -62,10 +62,13 @@ public static class FlowEngine
 
             if (!marker)
             {
-                if (isRoot && (ctx.StepMode || (ctx.Options.UseBreakpoints && step.Breakpoint)))
+                // Tạm dừng theo yêu cầu (nút trên khung trạng thái) có hiệu lực cả trong công việc con đang được gọi.
+                bool pause = ctx.TakePauseRequest();
+                if (pause || (isRoot && (ctx.StepMode || (ctx.Options.UseBreakpoints && step.Breakpoint))))
                 {
+                    if (pause) Log.Info($"{indent}   ⏸ Tạm dừng trước bước {pc + 1} theo yêu cầu.");
                     var cmd = await ctx.Ui.DebugPauseAsync(job.Name, pc, $"{pc + 1}. {step.Describe()}",
-                        ctx.StepMode ? "Chạy từng bước" : "Điểm dừng", ctx.Vars, ctx.Ct);
+                        pause ? "Tạm dừng" : ctx.StepMode ? "Chạy từng bước" : "Điểm dừng", ctx.Vars, ctx.Ct);
                     if (cmd == DebugCommand.Stop) throw new OperationCanceledException("Người dùng dừng khi gỡ lỗi.");
                     ctx.StepMode = cmd == DebugCommand.Step;
                 }

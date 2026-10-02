@@ -23,8 +23,12 @@ internal static class InputSimulator
         ["playpause"] = 0xB3, ["nexttrack"] = 0xB0, ["prevtrack"] = 0xB1
     };
 
+    /// <summary>Gọi ngay trước khi chuột giả lập tới một điểm (trên luồng của flow) — khung trạng thái flow dùng để né khỏi chỗ sắp click.</summary>
+    public static Action<Point>? BeforePointer { get; set; }
+
     public static void Click(int x, int y, MouseButtonKind button, bool doubleClick)
     {
+        BeforePointer?.Invoke(new Point(x, y));
         Win32.SetCursorPos(x, y);
         Thread.Sleep(60);
         var (down, up) = button switch
@@ -80,6 +84,7 @@ internal static class InputSimulator
     /// <summary>Di chuột tới tọa độ màn hình bằng SendInput (sinh sự kiện di chuột thật, khác SetCursorPos).</summary>
     public static void MoveTo(int x, int y)
     {
+        BeforePointer?.Invoke(new Point(x, y));
         var vs = SystemInformation.VirtualScreen;
         var input = Mouse(0x0001 | 0x8000 | 0x4000); // MOVE | ABSOLUTE | VIRTUALDESK
         input.U.mi.dx = (int)Math.Round((x - vs.Left) * 65535.0 / Math.Max(1, vs.Width - 1));

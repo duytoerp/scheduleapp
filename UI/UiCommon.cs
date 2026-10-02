@@ -84,7 +84,7 @@ internal static class ScreenHelper
 
         foreach (var f in Application.OpenForms.Cast<Form>().ToList())
         {
-            if (!f.Visible || f.WindowState == FormWindowState.Minimized || f is ReminderForm or CaptureOverlay) continue;
+            if (!f.Visible || f.WindowState == FormWindowState.Minimized || f is ReminderForm or CaptureOverlay or RunOverlay) continue;
             moved.Add((f, f.Location, f.WindowState));
             if (f.WindowState == FormWindowState.Maximized) f.WindowState = FormWindowState.Normal;
             f.Location = offscreen;

@@ -18,6 +18,8 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
     private readonly TriggerManager _triggers;
     private readonly UserInputGuard _guard = new();
     private readonly TelegramBot _bot;
+    private readonly RunOverlay _overlay = new();
+    private DebugToolbar? _debugBar;
     private UpdateInfo? _pendingUpdate;
 
     private readonly ListView _list = new()
@@ -458,8 +460,32 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         Log.Written += line =>
         {
             if (IsDisposed || !IsHandleCreated) return;
-            BeginInvoke(new MethodInvoker(() => AppendLog(line)));
+            BeginInvoke(new MethodInvoker(() =>
+            {
+                AppendLog(line);
+                if (_overlay.Visible) _overlay.AddLog(line);
+            }));
         };
+
+        // Khung trạng thái ở góc phải dưới màn hình: bước đang chạy, Tạm dừng / Bước tiếp / Chạy tiếp / Dừng.
+        _runner.Progress += p =>
+        {
+            if (IsDisposed) return;
+            BeginInvoke(new MethodInvoker(() =>
+            {
+                if (_overlay.IsDisposed) return;
+                if (SettingsStore.Current.ShowRunOverlay) _overlay.ShowProgress(p);
+                else _overlay.Hide();
+            }));
+        };
+        _overlay.PauseClicked += () =>
+        {
+            if (_runner.RequestPause()) _overlay.MarkPauseRequested();
+        };
+        _overlay.StepClicked += () => _debugBar?.Finish(DebugCommand.Step);
+        _overlay.ContinueClicked += () => _debugBar?.Finish(DebugCommand.Continue);
+        _overlay.StopClicked += _runner.StopAll;
+        InputSimulator.BeforePointer = _overlay.Avoid;
 
         _runner.StatusChanged += text =>
         {
@@ -1147,6 +1173,8 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        InputSimulator.BeforePointer = null;
+        _overlay.Dispose();
         _uiTimer.Stop();
         _scheduler.Dispose();
         _triggers.Dispose();
@@ -1270,7 +1298,15 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
             {
                 try { bar.BeginInvoke(new MethodInvoker(bar.Close)); } catch (InvalidOperationException) { }
             });
-            bar.FormClosed += (_, _) => registration.Dispose();
+            _debugBar = bar;
+            _overlay.SetPaused(reason, stepText);
+            bar.FormClosed += (_, _) =>
+            {
+                registration.Dispose();
+                if (_debugBar != bar) return;
+                _debugBar = null;
+                _overlay.SetPaused(null, null);
+            };
             _ = bar.Result.ContinueWith(t => tcs.TrySetResult(t.Result), TaskScheduler.Default);
             bar.Show();
         }));

@@ -27,8 +27,25 @@ public sealed class FlowRunner
     /// <summary>Flow bắt đầu / kết thúc chạy (true = bắt đầu). Có thể phát từ luồng nền.</summary>
     public event Action<bool>? RunningChanged;
 
+    /// <summary>Tiến độ flow đang chạy (bắt đầu, từng bước, kết thúc) — cho khung trạng thái ở góc màn hình. Có thể phát từ luồng nền.</summary>
+    public event Action<RunProgress>? Progress;
+
     /// <summary>Kiểm tra trước mỗi bước (chế độ an toàn).</summary>
     public Func<FlowContext, Task>? BeforeStep { get; set; }
+
+    private FlowContext? _active;
+
+    /// <summary>Tạm dừng flow đang chạy trước bước kế tiếp (rồi chờ Bước tiếp / Chạy tiếp / Dừng). False nếu không có flow nào đang chạy.</summary>
+    public bool RequestPause()
+    {
+        lock (_sync)
+        {
+            if (_active == null) return false;
+            _active.RequestPause();
+        }
+        Log.Info("⏸ Đã yêu cầu tạm dừng — flow sẽ dừng trước bước kế tiếp.");
+        return true;
+    }
 
     public FlowRunner(IUserNotifier ui, Func<Guid, Job?> findJob)
     {
@@ -76,6 +93,7 @@ public sealed class FlowRunner
 
         bool entered = false;
         var started = DateTime.Now;
+        RunProgress? progress = null;
         try
         {
             if (_gate.CurrentCount == 0) Log.Info($"[{job.Name}] chờ trong hàng đợi…");
@@ -86,6 +104,8 @@ public sealed class FlowRunner
 
             // Kịch bản kiểm thử chạy riêng lẻ (theo lịch, thủ công…) cũng có báo cáo của nó; chạy theo bộ thì bộ tự ghi báo cáo chung.
             options ??= RunOptions.Default;
+            progress = new RunProgress(job.Id, job.Name, trigger, started, -1, job.Steps.Count, "", options.IsTest);
+            Progress?.Invoke(progress);
             string? reportFolder = null;
             if (job.IsTestCase && options.Recorder == null)
             {
@@ -93,7 +113,10 @@ public sealed class FlowRunner
                 options = options.With(new TestRecorder(Path.Combine(reportFolder, "shots")));
             }
 
-            var result = await Task.Run(() => RunFlowAsync(job, trigger, options, stopToken));
+            var p = progress;
+            var result = await Task.Run(() => RunFlowAsync(job, trigger, options, p, stopToken));
+            Progress?.Invoke(progress with { Ok = result.Ok, Message = result.Message, FailedStep = result.FailedStep });
+            progress = null;
             string? report = null;
             if (reportFolder != null)
             {
@@ -135,6 +158,7 @@ public sealed class FlowRunner
         finally
         {
             lock (_sync) _pending.Remove(job.Id);
+            if (progress != null) Progress?.Invoke(progress with { Ok = false, Message = "Đã dừng" });
             if (entered)
             {
                 _gate.Release();
@@ -157,7 +181,7 @@ public sealed class FlowRunner
         Log.Warn("■ Đã yêu cầu dừng tất cả flow.");
     }
 
-    private async Task<FlowResult> RunFlowAsync(Job job, string trigger, RunOptions options, CancellationToken ct)
+    private async Task<FlowResult> RunFlowAsync(Job job, string trigger, RunOptions options, RunProgress progress, CancellationToken ct)
     {
         int total = job.Steps.Count;
         var wrapped = new RunOptions
@@ -171,10 +195,25 @@ public sealed class FlowRunner
             StepStarted = i =>
             {
                 StatusChanged?.Invoke($"Đang chạy \"{job.Name}\" — bước {i + 1}/{total}: {job.Steps[i].Describe()}");
+                Progress?.Invoke(progress with { Step = i, StepText = Log.Redact(job.Steps[i].Describe()), StepStarted = DateTime.Now });
                 options.StepStarted?.Invoke(i);
             }
         };
         var ctx = new FlowContext(job, _ui, wrapped, _findJob, ct) { BeforeStep = BeforeStep };
+        lock (_sync) _active = ctx;
+        try
+        {
+            return await RunFlowCoreAsync(job, trigger, options, ctx, total);
+        }
+        finally
+        {
+            lock (_sync)
+                if (_active == ctx) _active = null;
+        }
+    }
+
+    private async Task<FlowResult> RunFlowCoreAsync(Job job, string trigger, RunOptions options, FlowContext ctx, int total)
+    {
         ctx.Vars["job.name"] = job.Name;
         ctx.Vars["run.trigger"] = trigger;
         ctx.Vars["run.start"] = DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss");
@@ -260,4 +299,16 @@ public sealed class FlowRunner
         }
         return false;
     }
+}
+
+/// <summary>
+/// Trạng thái flow đang chạy cho khung trạng thái: <see cref="Step"/> = -1 khi vừa bắt đầu (chưa tới bước nào);
+/// <see cref="Ok"/> khác null khi flow đã kết thúc.
+/// </summary>
+public sealed record RunProgress(Guid JobId, string JobName, string Trigger, DateTime Started, int Step, int Total, string StepText, bool IsTest)
+{
+    public DateTime StepStarted { get; init; } = Started;
+    public bool? Ok { get; init; }
+    public string Message { get; init; } = "";
+    public int FailedStep { get; init; } = -1;
 }

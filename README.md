@@ -51,6 +51,8 @@ Tick **Khởi động cùng Windows** để app tự chạy (ẩn ở khay) khi 
 
 **Dừng khẩn cấp:** `Ctrl+Shift+Q` (phím tắt toàn hệ thống) — dừng flow đang chạy và hủy các flow đang chờ.
 
+**Khung trạng thái khi flow chạy:** góc phải dưới màn hình hiện công việc đang chạy, **bước mấy / tổng số bước**, mô tả bước, thời gian đã chạy (cả flow và bước hiện tại) và dòng nhật ký mới nhất. Nút **⏸ Tạm dừng** dừng flow trước bước kế tiếp (kể cả trong công việc con) → **⏭ Bước tiếp** chạy từng bước một, **▶ Chạy tiếp** chạy bình thường; **■ Dừng** dừng ngay. Khung không lấy focus (phím giả lập vẫn vào đúng ứng dụng), không lọt vào ảnh chụp màn hình (tìm theo hình ảnh, ảnh lỗi) và tự dời sang góc khác khi flow sắp click vào chỗ nó đang che; kéo để đổi chỗ. Tắt ở *Cài đặt → Chung*.
+
 ## Ví dụ mẫu
 
 Nút **Mẫu có sẵn…** mở kho mẫu nhúng trong ứng dụng; ba file trong [Samples/](Samples/) cũng nhập được bằng **Thêm → Nhập công việc…**. Mẫu có lịch hoặc trình kích hoạt được tắt sẵn — xem lại rồi tick để bật.

@@ -91,6 +91,14 @@ public sealed class FlowContext
     /// <summary>Đang ở chế độ chạy từng bước.</summary>
     public bool StepMode { get; set; }
 
+    private int _pauseRequested;
+
+    /// <summary>Người dùng bấm "Tạm dừng" trên khung trạng thái: dừng trước bước kế tiếp (gọi được từ luồng bất kỳ).</summary>
+    public void RequestPause() => Interlocked.Exchange(ref _pauseRequested, 1);
+
+    /// <summary>Có yêu cầu tạm dừng chưa xử lý không — đồng thời xóa yêu cầu.</summary>
+    public bool TakePauseRequest() => Interlocked.Exchange(ref _pauseRequested, 0) == 1;
+
     /// <summary>Bước thực thi gần nhất bị lỗi (cho điều kiện "Bước trước bị lỗi").</summary>
     public bool LastStepFailed { get; set; }
 

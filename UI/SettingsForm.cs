@@ -14,6 +14,7 @@ internal sealed class SettingsForm : BaseForm
     private readonly NumericUpDown _numKeep = new() { Minimum = 0, Maximum = 3650, Width = 70 };
     private readonly CheckBox _chkSafe = new() { Text = "Chế độ an toàn: tạm dừng flow và hỏi khi tôi dùng chuột/bàn phím trong lúc flow chạy", AutoSize = true };
     private readonly CheckBox _chkAwake = new() { Text = "Không cho máy ngủ / tắt màn hình khi flow đang chạy", AutoSize = true };
+    private readonly CheckBox _chkOverlay = new() { Text = "Hiện khung trạng thái ở góc phải màn hình khi flow đang chạy", AutoSize = true };
     private readonly NumericUpDown _numPort = new() { Minimum = 1024, Maximum = 65535, Width = 90 };
 
     // Ngày nghỉ
@@ -115,6 +116,9 @@ internal sealed class SettingsForm : BaseForm
         var col = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, Dock = DockStyle.Fill, AutoScroll = true };
         col.Controls.Add(_chkScreenshot);
         col.Controls.Add(Line(Caption("   Tự xóa ảnh lỗi cũ hơn (ngày, 0 = giữ mãi):"), _numKeep));
+        col.Controls.Add(_chkOverlay);
+        col.Controls.Add(Hint("Cho biết flow nào đang chạy, đang ở bước mấy và chạy được bao lâu; có nút ⏸ Tạm dừng (dừng trước bước kế tiếp rồi chạy từng bước) " +
+                              "và ■ Dừng. Khung không lấy focus, không lọt vào ảnh chụp màn hình và tự dời sang góc khác nếu flow cần click vào chỗ nó đang che."));
         col.Controls.Add(_chkSafe);
         col.Controls.Add(Hint("Khi bật, nếu bạn click / gõ phím vào ứng dụng khác lúc flow đang chạy, flow tạm dừng trước bước kế tiếp và hỏi chạy tiếp hay dừng. " +
                               "Tránh việc flow gõ nhầm vào chỗ bạn đang làm."));
@@ -361,6 +365,7 @@ internal sealed class SettingsForm : BaseForm
         _numKeep.Value = Math.Clamp(_s.KeepScreenshotsDays, 0, 3650);
         _chkSafe.Checked = _s.SafeMode;
         _chkAwake.Checked = _s.PreventSleepWhileRunning;
+        _chkOverlay.Checked = _s.ShowRunOverlay;
         _numPort.Value = Math.Clamp(_s.BrowserPort, 1024, 65535);
         _txtHolidays.Text = string.Join(Environment.NewLine, _s.Holidays);
 
@@ -459,6 +464,7 @@ internal sealed class SettingsForm : BaseForm
         _s.KeepScreenshotsDays = (int)_numKeep.Value;
         _s.SafeMode = _chkSafe.Checked;
         _s.PreventSleepWhileRunning = _chkAwake.Checked;
+        _s.ShowRunOverlay = _chkOverlay.Checked;
         _s.BrowserPort = (int)_numPort.Value;
         _s.Holidays = holidays;
         _s.Telegram = ReadTelegram();

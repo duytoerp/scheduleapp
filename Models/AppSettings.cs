@@ -12,6 +12,9 @@ public sealed class AppSettings
     /// <summary>Tạm dừng flow khi người dùng dùng chuột/bàn phím trong lúc flow đang chạy.</summary>
     public bool SafeMode { get; set; }
 
+    /// <summary>Hiện khung trạng thái ở góc phải dưới màn hình khi flow đang chạy (bước đang chạy, Tạm dừng / Dừng).</summary>
+    public bool ShowRunOverlay { get; set; } = true;
+
     /// <summary>Không cho máy ngủ / tắt màn hình khi flow đang chạy.</summary>
     public bool PreventSleepWhileRunning { get; set; } = true;
 

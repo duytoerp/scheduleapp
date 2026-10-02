@@ -158,7 +158,8 @@ internal sealed class DebugToolbar : BaseForm
         else if (e.KeyCode == Keys.F5) Finish(DebugCommand.Continue);
     }
 
-    private void Finish(DebugCommand cmd)
+    /// <summary>Chọn lệnh như bấm nút (khung trạng thái flow cũng gọi được).</summary>
+    public void Finish(DebugCommand cmd)
     {
         _result.TrySetResult(cmd);
         Close();

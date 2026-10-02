@@ -47,6 +47,7 @@ internal static class HelpContent
             5. Bấm **Lưu**. Công việc tự chạy theo lịch khi đang được tick ở danh sách chính.
             > Bấm nút X chỉ thu ScheduleApp xuống khay hệ thống, lịch vẫn chạy. Muốn thoát hẳn: chuột phải biểu tượng ở khay → **Thoát**.
             ! Dừng khẩn cấp mọi flow bằng `Ctrl+Shift+Q` (dùng được ở bất kỳ đâu).
+            > Khi flow chạy, khung trạng thái ở góc phải dưới màn hình cho biết flow đang ở bước nào, có nút **⏸ Tạm dừng** và **■ Dừng**.
             > Ở bất kỳ cửa sổ nào của ScheduleApp, nhấn `F1` để mở hướng dẫn đúng chủ đề đang làm.
             """,
             new HelpAction("＋ Thêm công việc", CmdNewJob), new HelpAction("Mẫu có sẵn…", CmdTemplates)),
@@ -80,6 +81,7 @@ internal static class HelpContent
             - **▶ Chạy thử flow** (`F5`): thẻ đang chạy tô xanh, bước lỗi tô đỏ.
             - **⤵ Chạy từ bước chọn**: bỏ qua các bước phía trên.
             - **Điểm dừng** (`F9`) và **⏭ Chạy từng bước**: flow dừng trước bước, hiện giá trị mọi biến. `F10` bước tiếp, `F5` chạy tiếp, `Shift+F5` dừng.
+            - **Khung trạng thái** ở góc phải dưới màn hình (khi flow chạy, kể cả theo lịch): đang ở bước mấy / tổng số bước, chạy được bao lâu, dòng nhật ký mới nhất. **⏸ Tạm dừng** dừng trước bước kế tiếp rồi **⏭ Bước tiếp** từng bước một hoặc **▶ Chạy tiếp**; **■ Dừng** dừng ngay. Khung tự dời sang góc khác khi flow cần click vào chỗ nó che; tắt ở *Cài đặt → Chung*.
             - **Phiên bản cũ…**: mỗi lần lưu, bản trước được giữ lại (30 bản) để khôi phục.
             ## Ghi thao tác (macro)
             Bấm **● Ghi thao tác…**, thao tác bình thường trên ứng dụng khác rồi **Dừng & lưu** (`Ctrl+Shift+Q`). Các bước được chèn sau bước đang chọn.
