@@ -5,46 +5,83 @@ using ScheduleApp.Models;
 namespace ScheduleApp.UI;
 
 /// <summary>
-/// Khung thiết kế flow dạng thẻ: Bắt đầu → các bước → Kết thúc. Khối Nếu/Lặp được thụt lề.
-/// Hỗ trợ kéo thả từ hộp công cụ, kéo thẻ để sắp xếp (cả khối), thả file từ Explorer, bàn phím, menu chuột phải,
-/// điểm dừng (F9), sao chép/dán (Ctrl+C/V) và tô sáng bước đang chạy.
+/// Khung thiết kế flow dạng sơ đồ kiểu n8n: nút vuông nối bằng dây cong từ trái sang phải, khối Nếu tách nhánh đúng/sai,
+/// khối Lặp có dây quay về. Kéo thao tác từ hộp công cụ thả lên dây để chèn, bấm "+" trên dây để chọn thao tác,
+/// kéo nút sang dây khác để di chuyển (cả khối), kéo nền để cuộn, Ctrl + lăn chuột để thu phóng, bản đồ thu nhỏ ở góc.
+/// Thứ tự chạy vẫn là danh sách bước — vị trí trên sơ đồ được tự tính từ thứ tự đó.
 /// </summary>
-internal sealed class FlowDesigner : ScrollableControl
+internal sealed class FlowDesigner : Control
 {
-    private const TextFormatFlags TextFlags =
-        TextFormatFlags.PreserveGraphicsTranslateTransform | TextFormatFlags.NoPrefix |
-        TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter;
+    private const TextFormatFlags CenterText =
+        TextFormatFlags.NoPrefix | TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak |
+        TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding;
+
+    private const TextFormatFlags OneLine =
+        TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
 
     private const string ClipboardFormat = "ScheduleApp.Steps";
+    private const float MinZoom = 0.25f, MaxZoom = 2f;
 
+    private static readonly Color CanvasColor = Color.FromArgb(246, 247, 249);
+    private static readonly Color DotColor = Color.FromArgb(212, 216, 223);
+    private static readonly Color EdgeColor = Color.FromArgb(150, 157, 168);
+    private static readonly Color PortColor = Color.FromArgb(120, 127, 138);
+    private static readonly Color NodeBorder = Color.FromArgb(196, 201, 209);
     private static readonly Color StartColor = Color.FromArgb(16, 124, 16);
-    private static readonly Color EndColor = Color.FromArgb(120, 120, 120);
-    private static readonly Color ConnectorColor = Color.FromArgb(160, 166, 176);
-    private static readonly Color DropColor = Color.FromArgb(0, 120, 212);
+    private static readonly Color HotColor = Color.FromArgb(0, 120, 212);
     private static readonly Color RunColor = Color.FromArgb(0, 150, 255);
+    private static readonly Color DoneColor = Color.FromArgb(34, 154, 68);
     private static readonly Color ErrorColor = Color.FromArgb(200, 40, 30);
     private static readonly Color BreakpointColor = Color.FromArgb(220, 40, 40);
+    private static readonly Color TrueColor = Color.FromArgb(34, 140, 60);
+    private static readonly Color FalseColor = Color.FromArgb(196, 60, 48);
+    private static readonly Color TextColor = Color.FromArgb(40, 42, 46);
+    private static readonly Color MutedColor = Color.FromArgb(110, 114, 122);
 
     private List<ActionStep> _steps = [];
     private FlowStructure _structure = FlowStructure.Build([]);
-    private int[] _tops = [];
+    private FlowGraphLayout _layout = null!;
+
+    // Khung nhìn: điểm màn hình = điểm sơ đồ × _zoom + _pan.
+    private float _zoom = 1f;
+    private PointF _pan;
+    private bool _viewReady;
+
     private int _selected = -1;
     private int _hover = -1;
-    private int _dropIndex = -1;
-    private int _pressIndex = -1;
+    private int _hoverEdge = -1;
+    private int _hoverButton = -1;
+    private int _dropEdge = -1;
     private int _running = -1;
     private int _failed = -1;
+    private readonly HashSet<int> _done = [];
+
+    // Chuột: kéo nút, kéo nền, kéo trên bản đồ thu nhỏ.
+    private int _pressNode = -1;
     private Point _pressPoint;
+    private int _dragNode = -1;
+    private Point _dragPos;
+    private bool _panning;
+    private bool _panMoved;
+    private Point _panMouse;
+    private PointF _panStart;
+    private bool _minimapDrag;
+
+    private readonly System.Windows.Forms.Timer _spinTimer = new() { Interval = 60 };
+    private float _spin;
 
     private readonly ContextMenuStrip _menu = new();
+    private readonly ContextMenuStrip _canvasMenu = new();
     private readonly ToolStripMenuItem _miToggle;
     private readonly ToolStripMenuItem _miBreakpoint;
-    private readonly ToolStripMenuItem _miRunFrom;
-    private readonly ToolTip _tip = new();
+    private readonly ToolTip _tip = new() { InitialDelay = 400 };
+    private string _tipText = "";
     private readonly Dictionary<ActionStep, (string Data, Bitmap Image)> _thumbs = [];
-    private Font _titleFont = null!;
-    private Font _iconFont = null!;
-    private Font _pillFont = null!;
+
+    // Font theo mức thu phóng (tạo lại khi đổi) và font cố định cho nút điều khiển.
+    private float _fontZoom = -1;
+    private Font? _titleFont, _subFont, _smallFont, _glyphFont, _badgeFont;
+    private Font _uiGlyph = null!, _uiFont = null!;
 
     public event EventHandler? SelectionChanged;
     public event EventHandler? StepsChanged;
@@ -52,7 +89,7 @@ internal sealed class FlowDesigner : ScrollableControl
     /// <summary>Yêu cầu mở trình soạn cho bước tại vị trí này.</summary>
     public event Action<int>? EditRequested;
 
-    /// <summary>Người dùng thả một loại thao tác mới vào vị trí này.</summary>
+    /// <summary>Người dùng chọn / thả một loại thao tác mới để chèn vào vị trí này.</summary>
     public event Action<StepType, int>? AddRequested;
 
     /// <summary>Yêu cầu chạy thử từ bước này.</summary>
@@ -62,28 +99,40 @@ internal sealed class FlowDesigner : ScrollableControl
     {
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint |
                  ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
-        AutoScroll = true;
         AllowDrop = true;
         TabStop = true;
-        BackColor = Color.FromArgb(243, 245, 249);
-        CreateFonts();
+        BackColor = CanvasColor;
+        CreateFixedFonts();
+        Rebuild();
 
         _menu.Items.Add("Sửa…  (Enter)", null, (_, _) => { if (_selected >= 0) EditRequested?.Invoke(_selected); });
-        _menu.Items.Add("Nhân bản", null, (_, _) => DuplicateSelected());
+        _menu.Items.Add("Nhân bản  (Ctrl+D)", null, (_, _) => DuplicateSelected());
         _miToggle = new ToolStripMenuItem("Tắt bước", null, (_, _) => ToggleSelected());
         _menu.Items.Add(_miToggle);
         _miBreakpoint = new ToolStripMenuItem("Điểm dừng  (F9)", null, (_, _) => ToggleBreakpoint());
         _menu.Items.Add(_miBreakpoint);
-        _miRunFrom = new ToolStripMenuItem("▶ Chạy thử từ bước này", null, (_, _) => { if (_selected >= 0) RunFromRequested?.Invoke(_selected); });
-        _menu.Items.Add(_miRunFrom);
+        _menu.Items.Add("▶ Chạy thử từ bước này", null, (_, _) => { if (_selected >= 0) RunFromRequested?.Invoke(_selected); });
         _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add("Thêm bước sau bước này…  (Tab)", null, (_, _) => OpenPickerAfterSelected());
         _menu.Items.Add("Sao chép  (Ctrl+C)", null, (_, _) => CopySelected());
         _menu.Items.Add("Dán sau bước này  (Ctrl+V)", null, (_, _) => Paste());
         _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add("Lên  (Ctrl+↑)", null, (_, _) => MoveSelected(-1));
-        _menu.Items.Add("Xuống  (Ctrl+↓)", null, (_, _) => MoveSelected(1));
+        _menu.Items.Add("Lên trước  (Ctrl+←)", null, (_, _) => MoveSelected(-1));
+        _menu.Items.Add("Xuống sau  (Ctrl+→)", null, (_, _) => MoveSelected(1));
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add("Xóa  (Delete)", null, (_, _) => DeleteSelected());
+
+        _canvasMenu.Items.Add("Thêm bước vào cuối…  (Tab)", null, (_, _) => OpenPicker(StubEdge, ToScreenPoint(StubEdge.Mid)));
+        _canvasMenu.Items.Add("Dán vào cuối  (Ctrl+V)", null, (_, _) => { SelectStep(-1); Paste(); });
+        _canvasMenu.Items.Add(new ToolStripSeparator());
+        _canvasMenu.Items.Add("Vừa khung  (1)", null, (_, _) => ZoomToFit());
+        _canvasMenu.Items.Add("Thu phóng 100%  (0)", null, (_, _) => ResetZoom());
+
+        _spinTimer.Tick += (_, _) =>
+        {
+            _spin = (_spin + 24) % 360;
+            if (_layout.IsVisible(_running)) Invalidate(Rectangle.Inflate(ToScreen(_layout.Bounds[_running]!.Value), S(12), S(12)));
+        };
     }
 
     // ───────────────────────────── API ─────────────────────────────
@@ -94,32 +143,41 @@ internal sealed class FlowDesigner : ScrollableControl
 
     public FlowStructure Structure => _structure;
 
+    internal FlowGraphLayout Graph => _layout;
+
+    internal float Zoom => _zoom;
+
+    internal PointF Pan => _pan;
+
     /// <summary>Gắn danh sách bước (sửa trực tiếp trên danh sách này).</summary>
     public void SetSteps(List<ActionStep> steps)
     {
         _steps = steps;
         _selected = Math.Min(_selected, steps.Count - 1);
+        _done.Clear();
         RefreshView();
     }
 
     public void RefreshView()
     {
         PruneThumbnails();
-        _structure = FlowStructure.Build(_steps);
-        Relayout();
+        Rebuild();
         Invalidate();
     }
 
-    /// <summary>Tô sáng bước đang chạy (-1 = bỏ tô).</summary>
+    /// <summary>Tô sáng bước đang chạy (-1 = bỏ tô). Bước chạy trước đó được đánh dấu đã chạy xong (dấu ✓ xanh).</summary>
     public void SetRunning(int index)
     {
         if (_running == index) return;
+        if (_running >= 0) _done.Add(_running);
         _running = index;
         if (index >= 0)
         {
             _failed = -1;
             if (index < _steps.Count) EnsureVisible(index);
+            _spinTimer.Start();
         }
+        else _spinTimer.Stop();
         Invalidate();
     }
 
@@ -127,7 +185,21 @@ internal sealed class FlowDesigner : ScrollableControl
     public void SetFailed(int index)
     {
         _failed = index;
-        if (index >= 0 && index < _steps.Count) SelectStep(index);
+        if (index >= 0)
+        {
+            _done.Remove(index);
+            if (index < _steps.Count) SelectStep(index);
+        }
+        Invalidate();
+    }
+
+    /// <summary>Xóa trạng thái lần chạy trước (đang chạy, đã chạy, lỗi) — gọi trước khi chạy thử.</summary>
+    public void ResetRunState()
+    {
+        _done.Clear();
+        _running = -1;
+        _failed = -1;
+        _spinTimer.Stop();
         Invalidate();
     }
 
@@ -209,7 +281,7 @@ internal sealed class FlowDesigner : ScrollableControl
         Changed();
     }
 
-    /// <summary>Di chuyển bước (hoặc cả khối) lên/xuống một vị trí — đổi chỗ với bước liền kề.</summary>
+    /// <summary>Di chuyển bước (hoặc cả khối) lên trước/xuống sau một vị trí — đổi chỗ với bước liền kề.</summary>
     public void MoveSelected(int delta)
     {
         if (_selected < 0) return;
@@ -232,21 +304,65 @@ internal sealed class FlowDesigner : ScrollableControl
         }
     }
 
-    private void MoveStep(int from, int insertAt)
+    /// <summary>
+    /// Chuyển bước (hoặc cả khối) <paramref name="from"/> vào dây <paramref name="edge"/>.
+    /// Dây nhánh "sai" chưa có "Không thì" thì tạo "Không thì" trước. Trả về false nếu không đổi gì.
+    /// </summary>
+    internal bool MoveToEdge(int from, GraphEdge edge)
     {
-        if (from < 0 || from >= _steps.Count) return;
+        if (from < 0 || from >= _steps.Count) return false;
         var (start, end) = BlockRange(from);
-        if (insertAt >= start && insertAt <= end + 1)
+        int index = edge.InsertIndex;
+        if (index > start && index <= end) return false;                                    // thả vào trong chính khối đó
+        if (!edge.NeedsElse && (index == start || index == end + 1)) return false;           // đúng chỗ cũ
+
+        var block = _steps.GetRange(start, end - start + 1);
+        var anchor = index < _steps.Count ? _steps[index] : null;
+        _steps.RemoveRange(start, block.Count);
+        int at = anchor == null ? _steps.Count : _steps.FindIndex(s => ReferenceEquals(s, anchor));
+        if (edge.NeedsElse) _steps.Insert(at++, ActionStep.CreateDefault(StepType.Else));
+        _steps.InsertRange(at, block);
+        Changed();
+        SelectStep(at);
+        return true;
+    }
+
+    /// <summary>Thêm thao tác <paramref name="type"/> vào dây <paramref name="edge"/> (mở trình soạn bước qua <see cref="AddRequested"/>).</summary>
+    internal void AddViaEdge(StepType type, GraphEdge edge)
+    {
+        int index = Math.Clamp(edge.InsertIndex, 0, _steps.Count);
+        if (edge.NeedsElse && type == StepType.Else)
         {
-            SelectStep(from);
+            InsertStep(index, ActionStep.CreateDefault(StepType.Else));
             return;
         }
-        var block = _steps.GetRange(start, end - start + 1);
-        _steps.RemoveRange(start, block.Count);
-        if (insertAt > end) insertAt -= block.Count;
-        _steps.InsertRange(insertAt, block);
+        ActionStep? addedElse = null;
+        if (edge.NeedsElse)
+        {
+            // Tạm chèn "Không thì" để bước mới vào nhánh sai; bỏ ra nếu người dùng hủy trình soạn.
+            addedElse = ActionStep.CreateDefault(StepType.Else);
+            _steps.Insert(index++, addedElse);
+            Rebuild();
+        }
+        int before = _steps.Count;
+        AddRequested?.Invoke(type, index);
+        if (addedElse != null && _steps.Count == before)
+        {
+            _steps.Remove(addedElse);
+            Rebuild();
+            Invalidate();
+        }
+    }
+
+    /// <summary>Chèn các bước (thả file, dán) vào dây.</summary>
+    private void InsertViaEdge(GraphEdge edge, IReadOnlyList<ActionStep> steps)
+    {
+        if (steps.Count == 0) return;
+        int index = Math.Clamp(edge.InsertIndex, 0, _steps.Count);
+        if (edge.NeedsElse) _steps.Insert(index++, ActionStep.CreateDefault(StepType.Else));
+        _steps.InsertRange(index, steps);
         Changed();
-        SelectStep(insertAt);
+        SelectStep(index);
     }
 
     public void CopySelected()
@@ -285,331 +401,747 @@ internal sealed class FlowDesigner : ScrollableControl
 
     private void Changed()
     {
-        _structure = FlowStructure.Build(_steps);
-        Relayout();
+        Rebuild();
         Invalidate();
         StepsChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    // ───────────────────────────── Bố cục ─────────────────────────────
+    private void Rebuild()
+    {
+        _structure = FlowStructure.Build(_steps);
+        _layout = FlowGraphLayout.Build(_steps, _structure, FlowGraphLayout.Metrics.Scaled(S));
+        _hover = _hoverEdge = _dropEdge = -1;
+    }
+
+    // ───────────────────────────── Khung nhìn ─────────────────────────────
 
     private int S(int v) => LogicalToDeviceUnits(v);
-    private int CardH => S(64);
-    private int MarkerH => S(34);
-    private int Gap => S(28);
-    private int TopMargin => S(16);
-    private int PillH => S(30);
-    private int EmptyH => S(84);
-    private int Indent => S(30);
-    private int Gutter => S(26);
-    private int BaseW => Math.Max(S(300), Math.Min(ClientSize.Width - S(40) - Gutter, S(700)));
-    private int BaseX => Math.Max(S(20) + Gutter, (ClientSize.Width - BaseW) / 2);
-    private int CenterX => BaseX + BaseW / 2;
-    private int FirstCardY => TopMargin + PillH + Gap;
 
-    private int CardHeight(int i) => StepVisuals.IsMarker(_steps[i].Type) ? MarkerH : CardH;
+    private PointF ToScreenPoint(PointF p) => new(p.X * _zoom + _pan.X, p.Y * _zoom + _pan.Y);
 
-    private void Relayout()
+    private Rectangle ToScreen(RectangleF r)
     {
-        _tops = new int[_steps.Count];
-        int y = FirstCardY;
-        for (int i = 0; i < _steps.Count; i++)
+        var p = ToScreenPoint(r.Location);
+        return Rectangle.Round(new RectangleF(p.X, p.Y, r.Width * _zoom, r.Height * _zoom));
+    }
+
+    private PointF ToContent(Point p) => new((p.X - _pan.X) / _zoom, (p.Y - _pan.Y) / _zoom);
+
+    /// <summary>Thu phóng quanh điểm <paramref name="anchor"/> trên màn hình (điểm đó đứng yên).</summary>
+    internal void SetZoom(float zoom, Point anchor)
+    {
+        zoom = Math.Clamp(zoom, MinZoom, MaxZoom);
+        var c = ToContent(anchor);
+        _zoom = zoom;
+        _pan = new PointF(anchor.X - c.X * zoom, anchor.Y - c.Y * zoom);
+        Invalidate();
+    }
+
+    private Point ViewCenter => new(ClientSize.Width / 2, ClientSize.Height / 2);
+
+    public void ZoomIn() => SetZoom(_zoom * 1.2f, ViewCenter);
+
+    public void ZoomOut() => SetZoom(_zoom / 1.2f, ViewCenter);
+
+    public void ResetZoom() => SetZoom(1f, ViewCenter);
+
+    /// <summary>
+    /// Thu phóng cho cả sơ đồ vừa khung (tối đa 100%, không nhỏ hơn <paramref name="minZoom"/>);
+    /// vẫn không vừa thì canh trái từ nút Bắt đầu.
+    /// </summary>
+    public void ZoomToFit(float minZoom = MinZoom)
+    {
+        var b = _layout.ContentBounds;
+        b.Inflate(S(30), S(30));
+        float w = Math.Max(1, ClientSize.Width), h = Math.Max(1, ClientSize.Height - S(50));
+        _zoom = Math.Clamp(Math.Min(w / b.Width, h / b.Height), minZoom, 1f);
+        float x = b.Width * _zoom <= w ? (w - b.Width * _zoom) / 2 - b.X * _zoom : -b.X * _zoom;
+        float y = b.Height * _zoom <= h ? (h - b.Height * _zoom) / 2 - b.Y * _zoom : -b.Y * _zoom;
+        _pan = new PointF(x, y);
+        _viewReady = true;
+        Invalidate();
+    }
+
+    private void PanBy(float dx, float dy)
+    {
+        _pan = new PointF(_pan.X + dx, _pan.Y + dy);
+        Invalidate();
+    }
+
+    /// <summary>Cuộn ít nhất để nút (kèm chữ bên dưới) nằm trong khung.</summary>
+    private void EnsureVisible(int i)
+    {
+        if (!_layout.IsVisible(i) || ClientSize.Width <= 0) return;
+        if (!_viewReady) return;
+        var r = ToScreen(_layout.Bounds[i]!.Value);
+        r = Rectangle.FromLTRB(r.Left - S(20), r.Top - S(44), r.Right + S(20), r.Bottom + (int)(_layout.Size.Label * _zoom));
+        int m = S(12);
+        float dx = r.Left < m ? m - r.Left : r.Right > ClientSize.Width - m ? ClientSize.Width - m - r.Right : 0;
+        float dy = r.Top < m ? m - r.Top : r.Bottom > ClientSize.Height - m ? ClientSize.Height - m - r.Bottom : 0;
+        if (dx != 0 || dy != 0) PanBy(dx, dy);
+    }
+
+    // ───────────────────────────── Dò chuột ─────────────────────────────
+
+    private GraphEdge StubEdge => _layout.Edges.First(e => e.Kind == GraphEdgeKind.Stub);
+
+    /// <summary>Nút (bước hoặc nút gộp) dưới chuột, -1 nếu không có.</summary>
+    private int NodeAt(Point p)
+    {
+        var c = ToContent(p);
+        for (int i = _steps.Count - 1; i >= 0; i--)
+            if (_layout.Bounds[i] is { } r && r.Contains(c)) return i;
+        return -1;
+    }
+
+    private bool StartAt(Point p) => _layout.StartBounds.Contains(ToContent(p));
+
+    private bool StubAt(Point p)
+    {
+        var r = ToScreen(_layout.StubBounds);
+        r.Inflate(S(4), S(4));
+        return r.Contains(p);
+    }
+
+    private Rectangle PlusRect(GraphEdge edge)
+    {
+        var m = ToScreenPoint(edge.Mid);
+        int d = Math.Max(S(20), (int)(S(24) * _zoom));
+        return new Rectangle((int)(m.X - d / 2f), (int)(m.Y - d / 2f), d, d);
+    }
+
+    /// <summary>Dây gần chuột (trong vài điểm ảnh) hoặc nút "+" của dây đang di chuột.</summary>
+    private int EdgeAt(Point p)
+    {
+        if (_hoverEdge >= 0 && _hoverEdge < _layout.Edges.Count && PlusRect(_layout.Edges[_hoverEdge]).Contains(p)) return _hoverEdge;
+        var c = ToContent(p);
+        float limit = S(8) / _zoom, best = float.MaxValue;
+        int found = -1;
+        for (int k = 0; k < _layout.Edges.Count; k++)
         {
-            _tops[i] = y;
-            y += CardHeight(i) + Gap;
+            var e = _layout.Edges[k];
+            if (e.Kind == GraphEdgeKind.Stub) continue;
+            float d = FlowGraphLayout.DistanceTo(e, c);
+            if (d <= limit && d < best)
+            {
+                best = d;
+                found = k;
+            }
         }
-        AutoScrollMinSize = new Size(0, ContentHeight);
+        return found;
     }
 
-    private int DepthOf(int i) => i < _structure.Depth.Length ? Math.Min(_structure.Depth[i], 8) : 0;
-
-    private Rectangle CardRect(int i)
+    /// <summary>Dây gần nhất để thả (không giới hạn khoảng cách); bỏ qua các dây nằm trong khối đang kéo.</summary>
+    internal int NearestEdge(PointF content, int dragging = -1)
     {
-        int depth = DepthOf(i);
-        int x = BaseX + depth * Indent;
-        int w = Math.Max(S(180), BaseW - depth * Indent);
-        int top = i < _tops.Length ? _tops[i] : FirstCardY;
-        return new Rectangle(x, top, w, CardHeight(i));
+        var (start, end) = dragging >= 0 ? BlockRange(dragging) : (-1, -2);
+        if (_layout.StubBounds.Contains(content)) return _layout.Edges.FindIndex(e => e.Kind == GraphEdgeKind.Stub);
+        float best = float.MaxValue;
+        int found = -1;
+        for (int k = 0; k < _layout.Edges.Count; k++)
+        {
+            var e = _layout.Edges[k];
+            if (dragging >= 0 && e.InsertIndex > start && e.InsertIndex <= end) continue;
+            float d = Math.Min(FlowGraphLayout.DistanceTo(e, content), FlowGraphLayout.Distance(e.Mid, content));
+            if (d < best)
+            {
+                best = d;
+                found = k;
+            }
+        }
+        return found;
     }
 
-    private Rectangle EmptyRect => new(BaseX, FirstCardY, BaseW, EmptyH);
-    private Rectangle StartPill => new(CenterX - S(70), TopMargin, S(140), PillH);
+    // Thanh công cụ nổi phía trên nút đang di chuột (như n8n): chạy từ đây · bật/tắt · xóa · thêm.
+    private static readonly (string Glyph, string Fallback, string Tip)[] ToolbarButtons =
+    [
+        ("", "▶", "Chạy thử từ bước này"),
+        ("", "⏻", "Bật / tắt bước (Space)"),
+        ("", "✕", "Xóa bước (Delete)"),
+        ("", "⋯", "Thêm…")
+    ];
 
-    private Rectangle EndPill
+    private bool ShowsToolbar(int i) =>
+        i >= 0 && _layout.IsStepNode(i) && _zoom >= 0.45f && _dragNode < 0 && !_panning;
+
+    private Rectangle ToolbarRect(int i)
+    {
+        var r = ToScreen(_layout.Bounds[i]!.Value);
+        int b = S(26), gap = S(2), w = ToolbarButtons.Length * b + (ToolbarButtons.Length - 1) * gap + S(6);
+        return new Rectangle(r.X + r.Width / 2 - w / 2, r.Top - b - S(12), w, b + S(6));
+    }
+
+    private Rectangle ToolbarButton(int i, int k)
+    {
+        var t = ToolbarRect(i);
+        int b = S(26), gap = S(2);
+        return new Rectangle(t.X + S(3) + k * (b + gap), t.Y + S(3), b, b);
+    }
+
+    private int ToolbarButtonAt(Point p)
+    {
+        if (!ShowsToolbar(_hover)) return -1;
+        for (int k = 0; k < ToolbarButtons.Length; k++)
+            if (ToolbarButton(_hover, k).Contains(p)) return k;
+        return -1;
+    }
+
+    /// <summary>Vùng giữ trạng thái di chuột của nút: cả nút, thanh công cụ và khoảng trống giữa hai thứ.</summary>
+    private bool InHoverZone(int i, Point p)
+    {
+        if (!ShowsToolbar(i)) return false;
+        var r = ToScreen(_layout.Bounds[i]!.Value);
+        return Rectangle.Union(r, ToolbarRect(i)).Contains(p);
+    }
+
+    // Nút thu phóng ở góc trái dưới.
+    private static readonly (string Glyph, string Fallback, string Tip)[] ZoomButtons =
+    [
+        ("", "⤢", "Vừa khung (phím 1)"),
+        ("", "+", "Phóng to (Ctrl + lăn chuột)"),
+        ("", "−", "Thu nhỏ (Ctrl + lăn chuột)"),
+        ("", "", "Về 100% (phím 0)")
+    ];
+
+    private Rectangle ZoomButton(int k)
+    {
+        int b = S(32), gap = S(6), y = ClientSize.Height - S(12) - b, x = S(12);
+        for (int j = 0; j < k; j++) x += b + gap;
+        return new Rectangle(x, y, k == 3 ? S(58) : b, b);
+    }
+
+    private int ZoomButtonAt(Point p)
+    {
+        for (int k = 0; k < ZoomButtons.Length; k++)
+            if (ZoomButton(k).Contains(p)) return k;
+        return -1;
+    }
+
+    private void ClickZoomButton(int k)
+    {
+        switch (k)
+        {
+            case 0: ZoomToFit(); break;
+            case 1: ZoomIn(); break;
+            case 2: ZoomOut(); break;
+            default: ResetZoom(); break;
+        }
+    }
+
+    // Bản đồ thu nhỏ ở góc phải dưới — chỉ hiện khi sơ đồ lớn hơn khung.
+    private bool MinimapVisible
     {
         get
         {
-            int y = _steps.Count == 0 ? EmptyRect.Bottom + Gap : CardRect(_steps.Count - 1).Bottom + Gap;
-            return new Rectangle(CenterX - S(70), y, S(140), PillH);
+            if (_steps.Count == 0 || ClientSize.Width < S(420) || ClientSize.Height < S(260)) return false;
+            var b = ToScreen(_layout.ContentBounds);
+            return b.Left < 0 || b.Top < 0 || b.Right > ClientSize.Width || b.Bottom > ClientSize.Height;
         }
     }
 
-    private int ContentHeight => EndPill.Bottom + S(24);
+    private Rectangle MinimapRect => new(ClientSize.Width - S(212), ClientSize.Height - S(142), S(200), S(130));
 
-    private Point ToContent(Point client) => new(client.X - AutoScrollPosition.X, client.Y - AutoScrollPosition.Y);
-
-    private int HitCard(Point client)
+    private (float Scale, PointF Offset) MinimapTransform()
     {
-        var p = ToContent(client);
-        for (int i = 0; i < _steps.Count; i++)
-            if (CardRect(i).Contains(p)) return i;
-        return -1;
+        var m = Rectangle.Inflate(MinimapRect, -S(6), -S(6));
+        var b = _layout.ContentBounds;
+        float k = Math.Min(m.Width / b.Width, m.Height / b.Height);
+        return (k, new PointF(m.X + (m.Width - b.Width * k) / 2 - b.X * k, m.Y + (m.Height - b.Height * k) / 2 - b.Y * k));
     }
 
-    /// <summary>Bấm vào vùng lề trái của thẻ (để bật/tắt điểm dừng).</summary>
-    private int HitGutter(Point client)
+    /// <summary>Đưa điểm trên bản đồ thu nhỏ về giữa khung.</summary>
+    private void CenterOnMinimap(Point p)
     {
-        var p = ToContent(client);
-        for (int i = 0; i < _steps.Count; i++)
-        {
-            var r = CardRect(i);
-            if (p.Y >= r.Top && p.Y < r.Bottom && p.X >= r.X - Gutter && p.X < r.X) return i;
-        }
-        return -1;
-    }
-
-    /// <summary>Vị trí chèn (0..Count) tương ứng với tọa độ chuột.</summary>
-    private int DropIndexAt(Point client)
-    {
-        int y = ToContent(client).Y;
-        int index = 0;
-        for (int i = 0; i < _steps.Count; i++)
-            if (y > CardRect(i).Top + CardHeight(i) / 2) index = i + 1;
-        return index;
-    }
-
-    private void EnsureVisible(int i)
-    {
-        var r = CardRect(i);
-        int top = -AutoScrollPosition.Y;
-        if (r.Top - Gap < top) ScrollTo(r.Top - Gap);
-        else if (r.Bottom + Gap > top + ClientSize.Height) ScrollTo(r.Bottom + Gap - ClientSize.Height);
-    }
-
-    private void ScrollTo(int y)
-    {
-        AutoScrollPosition = new Point(0, Math.Max(0, y));
+        var (k, o) = MinimapTransform();
+        var c = new PointF((p.X - o.X) / k, (p.Y - o.Y) / k);
+        _pan = new PointF(ClientSize.Width / 2f - c.X * _zoom, ClientSize.Height / 2f - c.Y * _zoom);
         Invalidate();
     }
 
     // ───────────────────────────── Vẽ ─────────────────────────────
 
-    private void CreateFonts()
+    private void CreateFixedFonts()
     {
-        _titleFont?.Dispose();
-        _iconFont?.Dispose();
-        _pillFont?.Dispose();
-        _titleFont = new Font(Font.FontFamily, Font.Size + 0.5f, FontStyle.Bold);
-        _iconFont = StepVisuals.CreateIconFont(Font, 4f);
-        _pillFont = new Font(Font.FontFamily, Font.Size, FontStyle.Bold);
+        _uiGlyph?.Dispose();
+        _uiFont?.Dispose();
+        _uiGlyph = StepVisuals.CreateIconFont(Font.FontFamily, Font.Size + 1.5f);
+        _uiFont = new Font(Font.FontFamily, Font.Size - 0.5f, FontStyle.Bold);
+    }
+
+    private void DisposeZoomFonts()
+    {
+        foreach (var f in new[] { _titleFont, _subFont, _smallFont, _glyphFont, _badgeFont }) f?.Dispose();
+        _titleFont = _subFont = _smallFont = _glyphFont = _badgeFont = null;
+        _fontZoom = -1;
+    }
+
+    private void EnsureFonts()
+    {
+        if (Math.Abs(_fontZoom - _zoom) < 0.001f && _titleFont != null) return;
+        DisposeZoomFonts();
+        float z = _zoom, size = Font.Size;
+        _titleFont = new Font(Font.FontFamily, Math.Max(1f, (size + 0.5f) * z), FontStyle.Bold);
+        _subFont = new Font(Font.FontFamily, Math.Max(1f, (size - 0.5f) * z));
+        _smallFont = new Font(Font.FontFamily, Math.Max(1f, (size - 1.5f) * z));
+        _glyphFont = StepVisuals.CreateIconFont(Font.FontFamily, (size + 13f) * z);
+        _badgeFont = StepVisuals.CreateIconFont(Font.FontFamily, (size - 1f) * z);
+        _fontZoom = z;
     }
 
     protected override void OnFontChanged(EventArgs e)
     {
         base.OnFontChanged(e);
-        CreateFonts();
+        CreateFixedFonts();
+        DisposeZoomFonts();
         RefreshView();
     }
 
-    protected override void OnResize(EventArgs e)
+    protected override void OnDpiChangedAfterParent(EventArgs e)
     {
-        base.OnResize(e);
-        Relayout();
+        base.OnDpiChangedAfterParent(e);
+        CreateFixedFonts();
+        DisposeZoomFonts();
+        RefreshView();
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        RefreshView();
     }
 
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
+        // Lần đầu: vừa khung nhưng không nhỏ quá 70% để chữ còn đọc được (bản đồ thu nhỏ giúp đi tới phần còn lại).
+        if (!_viewReady && ClientSize.Width > S(100)) ZoomToFit(0.7f);
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.TranslateTransform(AutoScrollPosition.X, AutoScrollPosition.Y);
+        EnsureFonts();
 
-        var start = StartPill;
-        DrawPill(g, start, "Bắt đầu", StartColor);
-        var prev = new Point(start.X + start.Width / 2, start.Bottom);
+        DrawGrid(g, e.ClipRectangle);
+        foreach (var j in _layout.Jumps) DrawJump(g, j);
+        for (int k = 0; k < _layout.Edges.Count; k++)
+            DrawEdge(g, _layout.Edges[k], k == _hoverEdge || k == _dropEdge);
 
+        var view = Rectangle.Inflate(ClientRectangle, S(120), S(120));
+        DrawStart(g);
+        for (int i = 0; i < _steps.Count; i++)
+        {
+            if (_layout.Bounds[i] is not { } b) continue;
+            var r = ToScreen(b);
+            if (!view.IntersectsWith(r)) continue;
+            if (_layout.IsMerge[i]) DrawMerge(g, i, r);
+            else DrawNode(g, i, r);
+        }
+        DrawStub(g);
+
+        int plus = _dropEdge >= 0 ? _dropEdge : _hoverEdge;
+        if (plus >= 0 && plus < _layout.Edges.Count && _layout.Edges[plus].Kind != GraphEdgeKind.Stub)
+            DrawPlus(g, PlusRect(_layout.Edges[plus]), _dropEdge >= 0);
+
+        if (ShowsToolbar(_hover)) DrawToolbar(g, _hover);
+        if (_dragNode >= 0) DrawGhost(g);
+        DrawZoomControls(g);
+        if (MinimapVisible) DrawMinimap(g);
+    }
+
+    private void DrawGrid(Graphics g, Rectangle clip)
+    {
+        float step = S(20) * _zoom;
+        while (step < 9) step *= 2;
+        float x0 = _pan.X % step, y0 = _pan.Y % step;
+        if (x0 < 0) x0 += step;
+        if (y0 < 0) y0 += step;
+        float dot = Math.Max(1.2f, 1.6f * _zoom);
+        using var brush = new SolidBrush(DotColor);
+        for (float x = x0; x < clip.Right; x += step)
+        {
+            if (x < clip.Left - step) continue;
+            for (float y = y0; y < clip.Bottom; y += step)
+                if (y >= clip.Top - step) g.FillRectangle(brush, x - dot / 2, y - dot / 2, dot, dot);
+        }
+    }
+
+    private PointF[] ScreenPoints(PointF[] pts) => pts.Select(ToScreenPoint).ToArray();
+
+    private void DrawEdge(Graphics g, GraphEdge edge, bool hot)
+    {
+        var pts = ScreenPoints(edge.Points);
+        using var pen = new Pen(hot ? HotColor : EdgeColor, Math.Max(1.5f, (hot ? 3f : 2f) * _zoom))
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+            LineJoin = LineJoin.Round
+        };
+        g.DrawLines(pen, pts);
+        if (edge.Kind == GraphEdgeKind.Stub) return;
+
+        // Mũi tên ở đầu vào.
+        var tip = pts[^1];
+        var before = pts[^2];
+        for (int k = pts.Length - 2; k >= 0 && FlowGraphLayout.Distance(pts[k], tip) < 3; k--) before = pts[k];
+        float len = FlowGraphLayout.Distance(before, tip);
+        if (len < 0.01f) return;
+        float ux = (tip.X - before.X) / len, uy = (tip.Y - before.Y) / len, a = Math.Max(4f, 7f * _zoom), w = a * 0.6f;
+        var head = new PointF[]
+        {
+            tip,
+            new(tip.X - ux * a - uy * w, tip.Y - uy * a + ux * w),
+            new(tip.X - ux * a + uy * w, tip.Y - uy * a - ux * w)
+        };
+        using var brush = new SolidBrush(pen.Color);
+        g.FillPolygon(brush, head);
+    }
+
+    /// <summary>Dây nét đứt cong phía trên: "Nhảy tới nhãn" (tím) hoặc "khi lỗi nhảy tới nhãn" (đỏ).</summary>
+    private void DrawJump(Graphics g, GraphJump j)
+    {
+        var a = _layout.Bounds[j.From]!.Value;
+        var b = _layout.Bounds[j.To]!.Value;
+        var p1 = ToScreenPoint(new PointF(a.X + a.Width / 2, a.Top));
+        var p2 = ToScreenPoint(new PointF(b.X + b.Width / 2, b.Top));
+        float top = ToScreenPoint(new PointF(0, _layout.JumpTop(j))).Y;
+        var color = j.OnError ? Color.FromArgb(200, ErrorColor) : Color.FromArgb(170, 120, 70, 200);
+        using var pen = new Pen(color, Math.Max(1.2f, 1.6f * _zoom)) { DashStyle = DashStyle.Dash, EndCap = LineCap.ArrowAnchor };
+        g.DrawBezier(pen, p1, new PointF(p1.X, top), new PointF(p2.X, top), p2);
+    }
+
+    private void DrawPlus(Graphics g, Rectangle r, bool active)
+    {
+        using var path = StepVisuals.RoundRect(r, S(5));
+        using (var fill = new SolidBrush(active ? HotColor : Color.White)) g.FillPath(fill, path);
+        using (var pen = new Pen(active ? HotColor : Color.FromArgb(120, 127, 138), S(1))) g.DrawPath(pen, path);
+        DrawCross(g, r, active ? Color.White : TextColor);
+    }
+
+    private void DrawCross(Graphics g, Rectangle r, Color color)
+    {
+        float cx = r.X + r.Width / 2f, cy = r.Y + r.Height / 2f, h = r.Width * 0.27f;
+        using var pen = new Pen(color, Math.Max(1.5f, r.Width / 11f)) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        g.DrawLine(pen, cx - h, cy, cx + h, cy);
+        g.DrawLine(pen, cx, cy - h, cx, cy + h);
+    }
+
+    private void DrawStart(Graphics g)
+    {
+        var r = ToScreen(_layout.StartBounds);
+        int big = r.Height / 2, small = Math.Max(2, (int)(8 * _zoom));
+        using var path = new GraphicsPath();
+        path.AddArc(r.X, r.Y, big * 2 - 1, big * 2 - 1, 90, 180);
+        path.AddArc(r.Right - small * 2, r.Y, small * 2, small * 2, 270, 90);
+        path.AddArc(r.Right - small * 2, r.Bottom - small * 2, small * 2, small * 2, 0, 90);
+        path.CloseFigure();
+        DrawShadow(g, path);
+        using (var fill = new SolidBrush(Color.White)) g.FillPath(fill, path);
+        using (var pen = new Pen(NodeBorder, 1)) g.DrawPath(pen, path);
+        TextRenderer.DrawText(g, StepVisuals.UiGlyph("", "▶"), _glyphFont, r, StartColor,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+        DrawOutPort(g, new PointF(r.Right, r.Y + r.Height / 2f));
+        DrawLabels(g, r, "Bắt đầu", "theo lịch, kích hoạt hoặc chạy tay", null, TextColor);
+    }
+
+    private void DrawStub(Graphics g)
+    {
+        var r = ToScreen(_layout.StubBounds);
+        bool active = _dropEdge >= 0 && _dropEdge < _layout.Edges.Count && _layout.Edges[_dropEdge].Kind == GraphEdgeKind.Stub;
         if (_steps.Count == 0)
         {
-            var empty = EmptyRect;
-            DrawConnector(g, prev, new Point(empty.X + empty.Width / 2, empty.Top));
-            DrawEmptyHint(g, empty, _dropIndex == 0);
-            prev = new Point(empty.X + empty.Width / 2, empty.Bottom);
-        }
-
-        DrawBlockGuides(g);
-
-        for (int i = 0; i < _steps.Count; i++)
-        {
-            var r = CardRect(i);
-            var top = new Point(r.X + S(36), r.Top);
-            DrawConnector(g, prev, top);
-            if (_dropIndex == i) DrawDropIndicator(g, r, (prev.Y + r.Top) / 2);
-            DrawCard(g, i, r);
-            prev = new Point(r.X + S(36), r.Bottom);
-        }
-
-        var end = EndPill;
-        DrawConnector(g, prev, new Point(end.X + end.Width / 2, end.Top));
-        if (_steps.Count > 0 && _dropIndex == _steps.Count) DrawDropIndicator(g, CardRect(_steps.Count - 1), (prev.Y + end.Top) / 2);
-        DrawPill(g, end, "Kết thúc", EndColor);
-    }
-
-    /// <summary>Thanh dọc nhạt bên trái mỗi khối Nếu/Lặp.</summary>
-    private void DrawBlockGuides(Graphics g)
-    {
-        for (int i = 0; i < _steps.Count; i++)
-        {
-            if (_steps[i].Type is not (StepType.If or StepType.Loop) || _structure.Match[i] <= i) continue;
-            var a = CardRect(i);
-            var b = CardRect(_structure.Match[i]);
-            var color = StepVisuals.Tint(StepVisuals.Accent(_steps[i].Type), _steps[i].Enabled ? 0.55f : 0.8f);
-            using var brush = new SolidBrush(color);
-            g.FillRectangle(brush, a.X + S(6), a.Bottom, S(4), b.Top - a.Bottom);
-        }
-    }
-
-    private void DrawPill(Graphics g, Rectangle r, string text, Color color)
-    {
-        using var path = StepVisuals.RoundRect(r, r.Height / 2);
-        using (var fill = new SolidBrush(StepVisuals.Tint(color, 0.85f))) g.FillPath(fill, path);
-        using (var pen = new Pen(color, S(1))) g.DrawPath(pen, path);
-        TextRenderer.DrawText(g, text, _pillFont, r, color, TextFlags | TextFormatFlags.HorizontalCenter);
-    }
-
-    /// <summary>Mũi tên nối hai thẻ; nếu lệch ngang (thụt lề) thì vẽ dạng gấp khúc.</summary>
-    private void DrawConnector(Graphics g, Point from, Point to)
-    {
-        int arrow = S(5);
-        using var pen = new Pen(ConnectorColor, S(2));
-        if (Math.Abs(from.X - to.X) < 2)
-        {
-            g.DrawLine(pen, from.X, from.Y, to.X, to.Y - arrow);
-        }
-        else
-        {
-            int mid = (from.Y + to.Y) / 2;
-            g.DrawLines(pen, [from, new Point(from.X, mid), new Point(to.X, mid), new Point(to.X, to.Y - arrow)]);
-        }
-        using var brush = new SolidBrush(ConnectorColor);
-        g.FillPolygon(brush, [new Point(to.X - arrow, to.Y - arrow - 1), new Point(to.X + arrow, to.Y - arrow - 1), to]);
-    }
-
-    private void DrawDropIndicator(Graphics g, Rectangle card, int y)
-    {
-        int left = card.X + S(8), right = card.Right - S(8), dot = S(8);
-        using var pen = new Pen(DropColor, S(3));
-        g.DrawLine(pen, left, y, right, y);
-        using var brush = new SolidBrush(DropColor);
-        g.FillEllipse(brush, left - dot / 2, y - dot / 2, dot, dot);
-        g.FillEllipse(brush, right - dot / 2, y - dot / 2, dot, dot);
-    }
-
-    private void DrawEmptyHint(Graphics g, Rectangle r, bool active)
-    {
-        using var path = StepVisuals.RoundRect(r, S(8));
-        using (var fill = new SolidBrush(active ? StepVisuals.Tint(DropColor, 0.88f) : Color.FromArgb(250, 251, 253))) g.FillPath(fill, path);
-        using (var pen = new Pen(active ? DropColor : Color.FromArgb(170, 176, 186), S(2)) { DashStyle = DashStyle.Dash }) g.DrawPath(pen, path);
-        TextRenderer.DrawText(g,
-            "Kéo một thao tác từ hộp công cụ bên trái và thả vào đây\n(hoặc kéo file .exe / shortcut từ Explorer vào)",
-            Font, r, active ? DropColor : Color.FromArgb(110, 110, 110),
-            TextFormatFlags.PreserveGraphicsTranslateTransform | TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak |
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
-    }
-
-    private void DrawCard(Graphics g, int i, Rectangle r)
-    {
-        var step = _steps[i];
-        bool selected = i == _selected;
-        bool hover = i == _hover && !selected;
-        bool invalid = i < _structure.Invalid.Length && _structure.Invalid[i];
-        bool running = i == _running;
-        bool failed = i == _failed;
-        bool marker = StepVisuals.IsMarker(step.Type);
-        var accent = step.Enabled ? StepVisuals.Accent(step.Type) : Color.FromArgb(160, 160, 160);
-        int radius = S(8);
-
-        if (running || failed)
-        {
-            var glow = Rectangle.Inflate(r, S(4), S(4));
-            using var glowPath = StepVisuals.RoundRect(glow, radius + S(3));
-            using var glowBrush = new SolidBrush(Color.FromArgb(70, failed ? ErrorColor : RunColor));
-            g.FillPath(glowBrush, glowPath);
-        }
-
-        // Bóng đổ
-        var shadowRect = r;
-        shadowRect.Offset(0, S(2));
-        using (var shadowPath = StepVisuals.RoundRect(shadowRect, radius))
-        using (var shadow = new SolidBrush(Color.FromArgb(selected ? 45 : 22, 0, 0, 0)))
-            g.FillPath(shadow, shadowPath);
-
-        using var path = StepVisuals.RoundRect(r, radius);
-        var bg = !step.Enabled ? Color.FromArgb(246, 246, 246) : marker ? StepVisuals.Tint(accent, 0.92f) : Color.White;
-        using (var fill = new SolidBrush(bg)) g.FillPath(fill, path);
-
-        // Dải màu bên trái theo nhóm thao tác
-        var state = g.Save();
-        g.SetClip(path, CombineMode.Intersect);
-        using (var strip = new SolidBrush(invalid ? ErrorColor : accent)) g.FillRectangle(strip, r.X, r.Y, S(6), r.Height);
-        g.Restore(state);
-
-        var borderColor = invalid ? ErrorColor : running ? RunColor : failed ? ErrorColor
-            : selected ? accent : hover ? Color.FromArgb(150, 150, 150) : Color.FromArgb(218, 220, 224);
-        using (var pen = new Pen(borderColor, selected || invalid || running || failed ? S(2) : 1)) g.DrawPath(pen, path);
-
-        // Điểm dừng
-        if (step.Breakpoint)
-        {
-            int d = S(14);
-            using var bp = new SolidBrush(BreakpointColor);
-            g.FillEllipse(bp, r.X - Gutter + (Gutter - d) / 2, r.Y + (r.Height - d) / 2, d, d);
-        }
-
-        var title = $"{i + 1}. {ActionStep.TypeNames[step.Type]}" + (step.Enabled ? "" : "   (đã tắt)");
-        if (marker)
-        {
-            TextRenderer.DrawText(g, $"{title}   —   {step.Describe()}", Font, new Rectangle(r.X + S(16), r.Y, r.Width - S(24), r.Height),
-                invalid ? ErrorColor : Color.FromArgb(70, 70, 70), TextFlags);
+            using var path = StepVisuals.RoundRect(r, Math.Max(3, (int)(8 * _zoom)));
+            using (var fill = new SolidBrush(active ? StepVisuals.Tint(HotColor, 0.88f) : Color.White)) g.FillPath(fill, path);
+            using (var pen = new Pen(active ? HotColor : Color.FromArgb(150, 156, 166), Math.Max(1.5f, 2 * _zoom)) { DashStyle = DashStyle.Dash }) g.DrawPath(pen, path);
+            DrawCross(g, Rectangle.Inflate(r, -r.Width / 4, -r.Height / 4), active ? HotColor : MutedColor);
+            DrawLabels(g, r, "Thêm bước đầu tiên", "Bấm +, nhấn Tab hoặc kéo thao tác từ hộp công cụ vào đây", null, TextColor);
             return;
         }
-
-        var circle = new Rectangle(r.X + S(18), r.Y + (r.Height - S(36)) / 2, S(36), S(36));
-        StepVisuals.DrawIcon(g, step.Type, circle, _iconFont, step.Enabled, TextFormatFlags.PreserveGraphicsTranslateTransform);
-
-        int textX = circle.Right + S(12);
-        int textW = r.Right - textX - S(36);
-
-        // Hình mẫu (click theo hình, click đã ghi…) thu nhỏ ở bên phải — nhìn là biết bước sẽ click vào đâu.
-        if (Thumbnail(step) is { } thumb)
+        bool hot = active || StubAt(PointToClient(MousePosition)) && _dragNode < 0;
+        using (var path = StepVisuals.RoundRect(r, Math.Max(2, (int)(5 * _zoom))))
         {
-            double k = Math.Min(Math.Min((double)S(100) / thumb.Width, (double)(r.Height - S(16)) / thumb.Height), S(100) / 100.0);
+            using (var fill = new SolidBrush(active ? HotColor : Color.White)) g.FillPath(fill, path);
+            using var pen = new Pen(hot ? HotColor : Color.FromArgb(150, 156, 166), Math.Max(1f, 1.5f * _zoom));
+            g.DrawPath(pen, path);
+        }
+        DrawCross(g, r, active ? Color.White : hot ? HotColor : MutedColor);
+    }
+
+    private void DrawShadow(Graphics g, GraphicsPath path)
+    {
+        using var shadow = (GraphicsPath)path.Clone();
+        using var m = new Matrix();
+        m.Translate(0, Math.Max(1, 2 * _zoom));
+        shadow.Transform(m);
+        using var brush = new SolidBrush(Color.FromArgb(24, 0, 0, 0));
+        g.FillPath(brush, shadow);
+    }
+
+    private void DrawOutPort(Graphics g, PointF p)
+    {
+        float d = Math.Max(5, 11 * _zoom);
+        using var brush = new SolidBrush(PortColor);
+        g.FillEllipse(brush, p.X - d / 2, p.Y - d / 2, d, d);
+    }
+
+    private void DrawInPort(Graphics g, Rectangle r)
+    {
+        float w = Math.Max(3, 6 * _zoom), h = Math.Max(6, 16 * _zoom);
+        using var brush = new SolidBrush(PortColor);
+        g.FillRectangle(brush, r.X - w / 2, r.Y + r.Height / 2f - h / 2, w, h);
+    }
+
+    /// <summary>Tên thao tác (đậm) + mô tả (xám) + ghi chú (thử lại, xử lý lỗi) dưới nút.</summary>
+    private void DrawLabels(Graphics g, Rectangle node, string title, string subtitle, string? extra, Color titleColor)
+    {
+        if (_titleFont!.Size < 3.5f) return;
+        int w = (int)(_layout.Size.LabelWidth * _zoom);
+        int x = node.X + node.Width / 2 - w / 2, y = node.Bottom + (int)(6 * _zoom);
+        int bottom = node.Bottom + (int)(_layout.Size.Label * _zoom);
+        int titleLine = TextRenderer.MeasureText(g, "Ag", _titleFont, Size.Empty, TextFormatFlags.NoPadding).Height;
+        int titleH = Math.Min(TextRenderer.MeasureText(g, title, _titleFont, new Size(w, int.MaxValue), CenterText).Height, titleLine * 2);
+        TextRenderer.DrawText(g, title, _titleFont, new Rectangle(x, y, w, titleH), titleColor, CenterText);
+        y += titleH + (int)(2 * _zoom);
+        if (_zoom < 0.45f) return;
+
+        int subLine = TextRenderer.MeasureText(g, "Ag", _subFont, Size.Empty, TextFormatFlags.NoPadding).Height;
+        int extraH = string.IsNullOrEmpty(extra) ? 0 : subLine;
+        int subH = Math.Min(Math.Min(TextRenderer.MeasureText(g, subtitle, _subFont, new Size(w, int.MaxValue), CenterText).Height, subLine * 2),
+            Math.Max(0, bottom - y - extraH));
+        if (subH >= subLine)
+        {
+            TextRenderer.DrawText(g, subtitle, _subFont, new Rectangle(x, y, w, subH), MutedColor, CenterText);
+            y += subH;
+        }
+        if (extraH > 0 && y + extraH <= bottom + subLine / 2)
+            TextRenderer.DrawText(g, extra, _smallFont, new Rectangle(x, y, w, extraH), Color.FromArgb(160, 100, 0), CenterText);
+    }
+
+    private void DrawNode(Graphics g, int i, Rectangle r)
+    {
+        var step = _steps[i];
+        bool selected = i == _selected, hover = i == _hover;
+        bool invalid = i < _structure.Invalid.Length && _structure.Invalid[i];
+        bool running = i == _running, failed = i == _failed, done = _done.Contains(i) && !running && !failed;
+        var accent = step.Enabled ? StepVisuals.Accent(step.Type) : Color.FromArgb(160, 160, 160);
+        int radius = Math.Max(3, (int)(8 * _zoom));
+        float z = _zoom;
+
+        using var path = StepVisuals.RoundRect(r, radius);
+        if (selected || running || failed)
+        {
+            var halo = Rectangle.Inflate(r, (int)Math.Max(3, 5 * z), (int)Math.Max(3, 5 * z));
+            using var haloPath = StepVisuals.RoundRect(halo, radius + (int)(5 * z));
+            using var haloBrush = new SolidBrush(Color.FromArgb(failed ? 60 : 50, failed ? ErrorColor : running ? RunColor : HotColor));
+            g.FillPath(haloBrush, haloPath);
+        }
+        DrawShadow(g, path);
+        using (var fill = new SolidBrush(step.Enabled ? Color.White : Color.FromArgb(243, 243, 244))) g.FillPath(fill, path);
+
+        // Biểu tượng hoặc hình mẫu (click theo hình…) ở giữa nút.
+        var inner = Rectangle.Inflate(r, -(int)(12 * z), -(int)(12 * z));
+        if (Thumbnail(step) is { } thumb && inner.Width > 4)
+        {
+            double k = Math.Min((double)inner.Width / thumb.Width, (double)inner.Height / thumb.Height);
+            k = Math.Min(k, 2 * z);
             int w = Math.Max(1, (int)(thumb.Width * k)), h = Math.Max(1, (int)(thumb.Height * k));
-            var box = new Rectangle(r.Right - S(36) - w, r.Y + (r.Height - h) / 2, w, h);
+            var box = new Rectangle(r.X + (r.Width - w) / 2, r.Y + (r.Height - h) / 2, w, h);
             var mode = g.InterpolationMode;
             g.InterpolationMode = InterpolationMode.HighQualityBicubic;
             g.DrawImage(thumb, box);
             g.InterpolationMode = mode;
-            using (var pen = new Pen(Color.FromArgb(200, 204, 210))) g.DrawRectangle(pen, box.X - 1, box.Y - 1, box.Width + 1, box.Height + 1);
-            textW -= w + S(12);
+            using var pen = new Pen(Color.FromArgb(200, 204, 210));
+            g.DrawRectangle(pen, box.X - 1, box.Y - 1, box.Width + 1, box.Height + 1);
         }
+        else
+        {
+            TextRenderer.DrawText(g, StepVisuals.IconText(step.Type), _glyphFont, r, accent,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding |
+                TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
+        }
+
+        // Dải màu nhóm thao tác ở cạnh trái.
+        var state = g.Save();
+        g.SetClip(path, CombineMode.Intersect);
+        using (var strip = new SolidBrush(invalid ? ErrorColor : accent)) g.FillRectangle(strip, r.X, r.Y, Math.Max(2, 4 * z), r.Height);
+        g.Restore(state);
+
+        if (!step.Enabled)
+        {
+            using var strike = new Pen(Color.FromArgb(150, 150, 150), Math.Max(1, 1.5f * z));
+            g.DrawLine(strike, r.X + radius, r.Bottom - radius, r.Right - radius, r.Y + radius);
+        }
+
+        var border = invalid || failed ? ErrorColor : running ? RunColor : done ? DoneColor : selected ? HotColor
+            : hover ? Color.FromArgb(130, 136, 146) : NodeBorder;
+        bool thick = invalid || failed || running || done || selected;
+        using (var pen = new Pen(border, thick ? Math.Max(1.5f, 2.2f * z) : 1)) g.DrawPath(pen, path);
+
+        if (running)
+        {
+            var ring = Rectangle.Inflate(r, (int)(5 * z), (int)(5 * z));
+            using var arc = new Pen(RunColor, Math.Max(2, 3 * z)) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            g.DrawArc(arc, ring, _spin, 70);
+            g.DrawArc(arc, ring, _spin + 180, 70);
+        }
+
+        // Số thứ tự bước (góc trái trên).
+        if (z >= 0.55f)
+            TextRenderer.DrawText(g, (i + 1).ToString(), _smallFont, new Rectangle(r.X + (int)(7 * z), r.Y + (int)(4 * z), r.Width / 2, (int)(16 * z)),
+                MutedColor, OneLine);
+
+        // Huy hiệu trạng thái (góc phải dưới).
+        string? badge = failed || invalid ? StepVisuals.UiGlyph("", "!") : done ? StepVisuals.UiGlyph("", "✓") : null;
+        if (badge != null && z >= 0.4f)
+        {
+            var color = failed || invalid ? ErrorColor : DoneColor;
+            TextRenderer.DrawText(g, badge, _badgeFont, new Rectangle(r.Right - (int)(24 * z), r.Bottom - (int)(22 * z), (int)(20 * z), (int)(18 * z)),
+                color, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+        }
+
+        if (step.Breakpoint)
+        {
+            float d = Math.Max(8, 14 * z);
+            using var bp = new SolidBrush(BreakpointColor);
+            using var ring = new Pen(Color.White, Math.Max(1, 2 * z));
+            g.FillEllipse(bp, r.X - d / 2, r.Y - d / 2, d, d);
+            g.DrawEllipse(ring, r.X - d / 2, r.Y - d / 2, d, d);
+        }
+
+        DrawInPort(g, r);
+        float cy = r.Y + r.Height / 2f;
+        if (_layout.IsIfBlock(i))
+        {
+            DrawPortLabel(g, new PointF(r.Right, cy - r.Height / 4f), FlowGraphLayout.TruePort, TrueColor);
+            DrawPortLabel(g, new PointF(r.Right, cy + r.Height / 4f), FlowGraphLayout.FalsePort, FalseColor);
+        }
+        else if (_layout.IsLoopBlock(i))
+        {
+            DrawPortLabel(g, new PointF(r.Right, cy - r.Height / 4f), FlowGraphLayout.DonePort, MutedColor);
+            DrawPortLabel(g, new PointF(r.Right, cy + r.Height / 4f), FlowGraphLayout.LoopPort, StepVisuals.Accent(StepType.Loop));
+        }
+        else DrawOutPort(g, new PointF(r.Right, cy));
+
+        var title = ActionStep.TypeNames[step.Type] + (step.Enabled ? "" : " (đã tắt)");
         var extras = new List<string>();
-        if (step.Retries > 0) extras.Add($"⟳{step.Retries}");
+        if (step.Retries > 0) extras.Add($"thử lại {step.Retries} lần");
         if (step.OnError == ErrorAction.Continue) extras.Add("bỏ qua lỗi");
         if (step.OnError == ErrorAction.GotoLabel) extras.Add($"lỗi → {step.ErrorLabel}");
-        if (invalid) extras.Add("⚠ lỗi cấu trúc");
-        if (extras.Count > 0) title += "   [" + string.Join(" · ", extras) + "]";
+        if (invalid) extras.Add("lỗi cấu trúc");
+        DrawLabels(g, r, title, step.Describe(), extras.Count > 0 ? string.Join(" · ", extras) : null,
+            invalid ? ErrorColor : step.Enabled ? TextColor : MutedColor);
+    }
 
-        TextRenderer.DrawText(g, title, _titleFont, new Rectangle(textX, r.Y + S(9), textW, S(22)),
-            invalid ? ErrorColor : step.Enabled ? Color.FromArgb(32, 32, 32) : Color.FromArgb(130, 130, 130), TextFlags);
-        TextRenderer.DrawText(g, step.Describe(), Font, new Rectangle(textX, r.Y + S(33), textW, S(22)),
-            Color.FromArgb(96, 96, 96), TextFlags);
+    private void DrawPortLabel(Graphics g, PointF port, string text, Color color)
+    {
+        DrawOutPort(g, port);
+        if (_zoom < 0.5f) return;
+        var size = TextRenderer.MeasureText(g, text, _smallFont, Size.Empty, TextFormatFlags.NoPadding);
+        var rect = new Rectangle((int)(port.X + 8 * _zoom), (int)(port.Y - size.Height - 2 * _zoom), size.Width + 2, size.Height);
+        TextRenderer.DrawText(g, text, _smallFont, rect, color, OneLine);
+    }
 
-        // Tay nắm kéo (6 chấm)
-        using var dots = new SolidBrush(Color.FromArgb(hover || selected ? 140 : 190, 140, 140, 140));
-        int dot = Math.Max(2, S(3)), gx = r.Right - S(22), gy = r.Y + r.Height / 2 - S(8);
-        for (int row = 0; row < 3; row++)
-            for (int col = 0; col < 2; col++)
-                g.FillEllipse(dots, gx + col * S(6), gy + row * S(6), dot, dot);
+    /// <summary>Nút gộp tròn của "Hết Nếu".</summary>
+    private void DrawMerge(Graphics g, int i, Rectangle r)
+    {
+        bool invalid = i < _structure.Invalid.Length && _structure.Invalid[i];
+        var color = invalid ? ErrorColor : i == _selected ? HotColor : i == _hover ? Color.FromArgb(120, 126, 136) : NodeBorder;
+        using (var fill = new SolidBrush(Color.White)) g.FillEllipse(fill, r);
+        using (var pen = new Pen(color, Math.Max(1.2f, (i == _selected ? 2.2f : 1.5f) * _zoom))) g.DrawEllipse(pen, r);
+        var dot = Rectangle.Inflate(r, -r.Width / 3, -r.Height / 3);
+        using var brush = new SolidBrush(StepVisuals.Accent(StepType.If));
+        g.FillEllipse(brush, dot);
+    }
+
+    private void DrawToolbar(Graphics g, int i)
+    {
+        var t = ToolbarRect(i);
+        using (var path = StepVisuals.RoundRect(t, S(6)))
+        {
+            DrawShadow(g, path);
+            using var fill = new SolidBrush(Color.White);
+            g.FillPath(fill, path);
+            using var pen = new Pen(NodeBorder);
+            g.DrawPath(pen, path);
+        }
+        for (int k = 0; k < ToolbarButtons.Length; k++)
+        {
+            var b = ToolbarButton(i, k);
+            if (k == _hoverButton)
+            {
+                using var path = StepVisuals.RoundRect(b, S(4));
+                using var hb = new SolidBrush(Color.FromArgb(236, 238, 242));
+                g.FillPath(hb, path);
+            }
+            var glyph = ToolbarButtons[k];
+            var color = k == 2 && k == _hoverButton ? ErrorColor : k == 1 && !_steps[i].Enabled ? HotColor : TextColor;
+            TextRenderer.DrawText(g, StepVisuals.UiGlyph(glyph.Glyph, glyph.Fallback), _uiGlyph, b, color,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+        }
+    }
+
+    private void DrawGhost(Graphics g)
+    {
+        if (_dragNode < 0 || _dragNode >= _steps.Count) return;
+        int n = (int)(_layout.Size.Node * _zoom);
+        var r = new Rectangle(_dragPos.X - n / 2, _dragPos.Y - n / 2, n, n);
+        var step = _steps[_dragNode];
+        using var path = StepVisuals.RoundRect(r, Math.Max(3, (int)(8 * _zoom)));
+        using (var fill = new SolidBrush(Color.FromArgb(215, 255, 255, 255))) g.FillPath(fill, path);
+        using (var pen = new Pen(HotColor, Math.Max(1.5f, 2 * _zoom)) { DashStyle = DashStyle.Dash }) g.DrawPath(pen, path);
+        TextRenderer.DrawText(g, StepVisuals.IconText(step.Type), _glyphFont, r, StepVisuals.Accent(step.Type),
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+        var (start, end) = BlockRange(_dragNode);
+        if (end > start)
+        {
+            var note = new Rectangle(r.X - n / 2, r.Bottom + S(4), n * 2, S(18));
+            TextRenderer.DrawText(g, $"cả khối ({end - start + 1} bước)", _uiFont, note, HotColor, OneLine | TextFormatFlags.HorizontalCenter);
+        }
+    }
+
+    private void DrawZoomControls(Graphics g)
+    {
+        var mouse = PointToClient(MousePosition);
+        for (int k = 0; k < ZoomButtons.Length; k++)
+        {
+            var b = ZoomButton(k);
+            using var path = StepVisuals.RoundRect(b, S(6));
+            using (var fill = new SolidBrush(b.Contains(mouse) ? Color.FromArgb(236, 238, 242) : Color.White)) g.FillPath(fill, path);
+            using (var pen = new Pen(NodeBorder)) g.DrawPath(pen, path);
+            bool text = k == 3;
+            TextRenderer.DrawText(g, text ? $"{Math.Round(_zoom * 100)}%" : StepVisuals.UiGlyph(ZoomButtons[k].Glyph, ZoomButtons[k].Fallback),
+                text ? _uiFont : _uiGlyph, b, TextColor,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+        }
+    }
+
+    private void DrawMinimap(Graphics g)
+    {
+        var m = MinimapRect;
+        using (var path = StepVisuals.RoundRect(m, S(6)))
+        {
+            using var fill = new SolidBrush(Color.FromArgb(235, 255, 255, 255));
+            g.FillPath(fill, path);
+            using var pen = new Pen(NodeBorder);
+            g.DrawPath(pen, path);
+        }
+        var (k, o) = MinimapTransform();
+        RectangleF Map(RectangleF r) => new(r.X * k + o.X, r.Y * k + o.Y, Math.Max(2, r.Width * k), Math.Max(2, r.Height * k));
+
+        var state = g.Save();
+        g.SetClip(m);
+        using (var start = new SolidBrush(StepVisuals.Tint(StartColor, 0.4f))) g.FillRectangle(start, Map(_layout.StartBounds));
+        for (int i = 0; i < _steps.Count; i++)
+        {
+            if (_layout.Bounds[i] is not { } b) continue;
+            var color = i == _running ? RunColor : i == _failed ? ErrorColor : i == _selected ? HotColor
+                : StepVisuals.Tint(StepVisuals.Accent(_steps[i].Type), _layout.IsMerge[i] ? 0.6f : 0.3f);
+            using var brush = new SolidBrush(color);
+            g.FillRectangle(brush, Map(b));
+        }
+        var tl = ToContent(Point.Empty);
+        var br = ToContent(new Point(ClientSize.Width, ClientSize.Height));
+        var view = Map(RectangleF.FromLTRB(tl.X, tl.Y, br.X, br.Y));
+        using (var vf = new SolidBrush(Color.FromArgb(30, HotColor))) g.FillRectangle(vf, view);
+        using (var vp = new Pen(HotColor, S(1))) g.DrawRectangle(vp, view.X, view.Y, view.Width, view.Height);
+        g.Restore(state);
     }
 
     // ───────────────────────────── Chuột ─────────────────────────────
@@ -619,28 +1151,98 @@ internal sealed class FlowDesigner : ScrollableControl
         base.OnMouseDown(e);
         Focus();
 
-        int gutter = HitGutter(e.Location);
-        if (e.Button == MouseButtons.Left && gutter >= 0)
+        if (e.Button == MouseButtons.Middle)
         {
-            SelectStep(gutter);
-            ToggleBreakpoint();
+            StartPan(e.Location);
             return;
         }
 
-        int i = HitCard(e.Location);
-        if (e.Button is MouseButtons.Left or MouseButtons.Right) SelectStep(i);
-
-        if (e.Button == MouseButtons.Left && i >= 0)
+        if (e.Button == MouseButtons.Left)
         {
-            _pressIndex = i;
-            _pressPoint = e.Location;
+            if (ZoomButtonAt(e.Location) is int zb and >= 0)
+            {
+                ClickZoomButton(zb);
+                return;
+            }
+            if (MinimapVisible && MinimapRect.Contains(e.Location))
+            {
+                _minimapDrag = true;
+                Capture = true;
+                CenterOnMinimap(e.Location);
+                return;
+            }
+            if (ToolbarButtonAt(e.Location) is int tb and >= 0)
+            {
+                ClickToolbar(_hover, tb, e.Location);
+                return;
+            }
         }
-        else if (e.Button == MouseButtons.Right && i >= 0)
+
+        int i = NodeAt(e.Location);
+        if (e.Button == MouseButtons.Right)
         {
-            _miToggle.Text = _steps[i].Enabled ? "Tắt bước  (Space)" : "Bật bước  (Space)";
-            _miBreakpoint.Checked = _steps[i].Breakpoint;
-            _miBreakpoint.Enabled = !StepVisuals.IsMarker(_steps[i].Type);
-            _menu.Show(this, e.Location);
+            if (i >= 0)
+            {
+                SelectStep(i);
+                _miToggle.Text = _steps[i].Enabled ? "Tắt bước  (Space)" : "Bật bước  (Space)";
+                _miBreakpoint.Checked = _steps[i].Breakpoint;
+                _miBreakpoint.Enabled = !StepVisuals.IsMarker(_steps[i].Type);
+                _menu.Show(this, e.Location);
+            }
+            else _canvasMenu.Show(this, e.Location);
+            return;
+        }
+        if (e.Button != MouseButtons.Left) return;
+
+        if (i >= 0)
+        {
+            SelectStep(i);
+            if (_layout.IsStepNode(i))
+            {
+                _pressNode = i;
+                _pressPoint = e.Location;
+            }
+            return;
+        }
+        if (StubAt(e.Location))
+        {
+            OpenPicker(StubEdge, new Point(ToScreen(_layout.StubBounds).Right + S(8), ToScreen(_layout.StubBounds).Top));
+            return;
+        }
+        int edge = EdgeAt(e.Location);
+        if (edge >= 0 && PlusRect(_layout.Edges[edge]).Contains(e.Location))
+        {
+            var plus = PlusRect(_layout.Edges[edge]);
+            OpenPicker(_layout.Edges[edge], new Point(plus.Right + S(8), plus.Top));
+            return;
+        }
+        StartPan(e.Location);
+    }
+
+    private void StartPan(Point p)
+    {
+        _panning = true;
+        _panMoved = false;
+        _panMouse = p;
+        _panStart = _pan;
+        Capture = true;
+        Cursor = Cursors.SizeAll;
+    }
+
+    private void ClickToolbar(int i, int button, Point p)
+    {
+        SelectStep(i);
+        switch (button)
+        {
+            case 0: RunFromRequested?.Invoke(i); break;
+            case 1: ToggleSelected(); break;
+            case 2: DeleteSelected(); break;
+            default:
+                _miToggle.Text = _steps[i].Enabled ? "Tắt bước  (Space)" : "Bật bước  (Space)";
+                _miBreakpoint.Checked = _steps[i].Breakpoint;
+                _miBreakpoint.Enabled = !StepVisuals.IsMarker(_steps[i].Type);
+                _menu.Show(this, p);
+                break;
         }
     }
 
@@ -648,7 +1250,21 @@ internal sealed class FlowDesigner : ScrollableControl
     {
         base.OnMouseMove(e);
 
-        if (_pressIndex >= 0 && e.Button == MouseButtons.Left)
+        if (_minimapDrag)
+        {
+            CenterOnMinimap(e.Location);
+            return;
+        }
+        if (_panning)
+        {
+            int dx = e.X - _panMouse.X, dy = e.Y - _panMouse.Y;
+            if (Math.Abs(dx) + Math.Abs(dy) > 2) _panMoved = true;
+            _pan = new PointF(_panStart.X + dx, _panStart.Y + dy);
+            Invalidate();
+            return;
+        }
+
+        if (_pressNode >= 0 && e.Button == MouseButtons.Left)
         {
             var dragBox = new Rectangle(
                 _pressPoint.X - SystemInformation.DragSize.Width / 2,
@@ -656,42 +1272,106 @@ internal sealed class FlowDesigner : ScrollableControl
                 SystemInformation.DragSize.Width, SystemInformation.DragSize.Height);
             if (!dragBox.Contains(e.Location))
             {
-                int from = _pressIndex;
-                _pressIndex = -1;
-                var data = new DataObject();
-                data.SetData(StepVisuals.StepIndexFormat, from.ToString());
-                DoDragDrop(data, DragDropEffects.Move);
-                _dropIndex = -1;
-                Invalidate();
-                return;
+                _dragNode = _pressNode;
+                _pressNode = -1;
+                _hover = -1;
+                Capture = true;
+                Cursor = Cursors.SizeAll;
             }
         }
 
-        int hover = HitCard(e.Location);
-        if (hover != _hover)
+        if (_dragNode >= 0)
+        {
+            _dragPos = e.Location;
+            AutoPanNear(e.Location);
+            _dropEdge = NearestEdge(ToContent(e.Location), _dragNode);
+            Invalidate();
+            return;
+        }
+
+        UpdateHover(e.Location);
+    }
+
+    /// <summary>Kéo gần mép khung thì tự cuộn theo.</summary>
+    private void AutoPanNear(Point p)
+    {
+        int m = S(28), v = S(14);
+        float dx = p.X < m ? v : p.X > ClientSize.Width - m ? -v : 0;
+        float dy = p.Y < m ? v : p.Y > ClientSize.Height - m ? -v : 0;
+        if (dx != 0 || dy != 0) PanBy(dx, dy);
+    }
+
+    private void UpdateHover(Point p)
+    {
+        int button = ToolbarButtonAt(p);
+        int hover = button >= 0 || InHoverZone(_hover, p) && NodeAt(p) is var n && (n < 0 || n == _hover) ? _hover : NodeAt(p);
+        int edge = hover < 0 ? EdgeAt(p) : -1;
+        bool stub = hover < 0 && edge < 0 && StubAt(p);
+        int zoomButton = ZoomButtonAt(p);
+
+        if (hover != _hover || edge != _hoverEdge || button != _hoverButton)
         {
             _hover = hover;
-            Cursor = hover >= 0 ? Cursors.Hand : HitGutter(e.Location) >= 0 ? Cursors.Hand : Cursors.Default;
-            var tip = hover >= 0 && hover < _structure.Invalid.Length && _structure.Invalid[hover]
-                ? string.Join("\n", _structure.Errors.Where(x => x.StartsWith($"Bước {hover + 1}:")))
-                : "";
-            _tip.SetToolTip(this, tip);
+            _hoverEdge = edge;
+            _hoverButton = button;
             Invalidate();
         }
+        else if (zoomButton >= 0 || stub) Invalidate();
+
+        Cursor = button >= 0 || zoomButton >= 0 || stub || edge >= 0 ? Cursors.Hand
+            : hover >= 0 ? (_layout.IsStepNode(hover) ? Cursors.SizeAll : Cursors.Hand)
+            : MinimapVisible && MinimapRect.Contains(p) ? Cursors.Hand : Cursors.Default;
+
+        string tip = button >= 0 ? ToolbarButtons[button].Tip
+            : zoomButton >= 0 ? ZoomButtons[zoomButton].Tip
+            : stub ? "Thêm bước vào cuối flow"
+            : edge >= 0 ? (_layout.Edges[edge].NeedsElse ? "Thêm bước vào nhánh \"sai\" (tự tạo \"Không thì\")" : "Bấm + để thêm bước vào đây")
+            : hover >= 0 ? NodeTip(hover)
+            : "";
+        if (tip != _tipText)
+        {
+            _tipText = tip;
+            _tip.SetToolTip(this, tip);
+        }
+    }
+
+    private string NodeTip(int i)
+    {
+        var errors = _structure.Errors.Where(x => x.StartsWith($"Bước {i + 1}:")).ToList();
+        if (errors.Count > 0) return string.Join("\n", errors);
+        if (_layout.IsMerge[i]) return "Hết Nếu — hai nhánh gộp lại, chạy tiếp các bước sau";
+        return $"{i + 1}. {ActionStep.TypeNames[_steps[i].Type]}\n{_steps[i].Describe()}\nNhấp đúp để sửa · kéo thả lên dây khác để di chuyển";
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
-        _pressIndex = -1;
+        if (_dragNode >= 0)
+        {
+            int from = _dragNode, target = _dropEdge;
+            _dragNode = -1;
+            _dropEdge = -1;
+            Capture = false;
+            if (target >= 0 && target < _layout.Edges.Count) MoveToEdge(from, _layout.Edges[target]);
+            Invalidate();
+        }
+        if (_panning)
+        {
+            _panning = false;
+            Capture = false;
+            if (!_panMoved && e.Button == MouseButtons.Left) SelectStep(-1);
+        }
+        _minimapDrag = false;
+        _pressNode = -1;
+        UpdateHover(e.Location);
     }
 
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
-        if (_hover != -1)
+        if (_hover != -1 || _hoverEdge != -1 || _hoverButton != -1)
         {
-            _hover = -1;
+            _hover = _hoverEdge = _hoverButton = -1;
             Invalidate();
         }
     }
@@ -699,29 +1379,66 @@ internal sealed class FlowDesigner : ScrollableControl
     protected override void OnMouseDoubleClick(MouseEventArgs e)
     {
         base.OnMouseDoubleClick(e);
-        int i = HitCard(e.Location);
-        if (e.Button == MouseButtons.Left && i >= 0) EditRequested?.Invoke(i);
-    }
-
-    protected override void OnScroll(ScrollEventArgs se)
-    {
-        base.OnScroll(se);
-        Invalidate();
+        if (e.Button != MouseButtons.Left || ToolbarButtonAt(e.Location) >= 0) return;
+        int i = NodeAt(e.Location);
+        if (i >= 0 && _layout.IsStepNode(i)) EditRequested?.Invoke(i);
+        else if (i < 0 && StartAt(e.Location)) OpenPicker(_layout.Edges.First(x => x.InsertIndex == 0), new Point(e.X + S(8), e.Y));
     }
 
     protected override void OnMouseWheel(MouseEventArgs e)
     {
         base.OnMouseWheel(e);
-        Invalidate();
+        if ((ModifierKeys & Keys.Control) != 0) SetZoom(_zoom * (e.Delta > 0 ? 1.12f : 1 / 1.12f), e.Location);
+        else if ((ModifierKeys & Keys.Shift) != 0) PanBy(e.Delta * 0.6f, 0);
+        else PanBy(0, e.Delta * 0.6f);
     }
 
-    // ───────────────────────────── Kéo thả ─────────────────────────────
+    protected override void WndProc(ref Message m)
+    {
+        const int WM_MOUSEHWHEEL = 0x020E;
+        if (m.Msg == WM_MOUSEHWHEEL)
+        {
+            int delta = (short)((long)m.WParam >> 16 & 0xFFFF);
+            PanBy(-delta * 0.6f, 0);
+            m.Result = 1;
+            return;
+        }
+        base.WndProc(ref m);
+    }
+
+    // ───────────────────────────── Chọn thao tác ─────────────────────────────
+
+    private void OpenPicker(GraphEdge edge, Point clientAnchor)
+    {
+        if (AddRequested == null) return;
+        var picker = new NodePicker(this, edge.NeedsElse ? "Thêm bước vào nhánh \"sai\"" : edge.Kind == GraphEdgeKind.Stub ? "Thêm bước vào cuối" : "Thêm bước vào đây");
+        picker.Picked += type => BeginInvoke(new MethodInvoker(() => AddViaEdge(type, edge)));
+        picker.ShowAt(this, PointToScreen(clientAnchor));
+    }
+
+    private void OpenPicker(GraphEdge edge, PointF clientAnchor) => OpenPicker(edge, Point.Round(clientAnchor));
+
+    /// <summary>Tab: chọn thao tác để chèn ngay sau bước (hoặc khối) đang chọn; chưa chọn gì thì thêm vào cuối.</summary>
+    private void OpenPickerAfterSelected()
+    {
+        var edge = StubEdge;
+        if (_selected >= 0)
+        {
+            int index = BlockRange(_selected).End + 1;
+            edge = _layout.Edges.FirstOrDefault(x => x.InsertIndex == index && !x.NeedsElse && x.Kind != GraphEdgeKind.LoopBack)
+                ?? _layout.Edges.FirstOrDefault(x => x.InsertIndex == index && !x.NeedsElse) ?? edge;
+        }
+        var p = ToScreenPoint(edge.Mid);
+        if (!ClientRectangle.Contains(Point.Round(p))) p = new PointF(ClientSize.Width / 3f, ClientSize.Height / 4f);
+        OpenPicker(edge, new PointF(p.X + S(14), p.Y));
+    }
+
+    // ───────────────────────────── Kéo thả từ ngoài ─────────────────────────────
 
     private static DragDropEffects EffectFor(DragEventArgs e)
     {
         var data = e.Data;
         if (data == null) return DragDropEffects.None;
-        if (data.GetDataPresent(StepVisuals.StepIndexFormat)) return DragDropEffects.Move;
         if (data.GetDataPresent(StepVisuals.StepTypeFormat) || data.GetDataPresent(DataFormats.FileDrop)) return DragDropEffects.Copy;
         return DragDropEffects.None;
     }
@@ -730,29 +1447,23 @@ internal sealed class FlowDesigner : ScrollableControl
     {
         base.OnDragEnter(e);
         e.Effect = EffectFor(e);
-        UpdateDropIndex(e);
+        UpdateDropEdge(e);
     }
 
     protected override void OnDragOver(DragEventArgs e)
     {
         base.OnDragOver(e);
         e.Effect = EffectFor(e);
-        if (e.Effect != DragDropEffects.None)
-        {
-            // Tự cuộn khi kéo gần mép trên/dưới.
-            var client = PointToClient(new Point(e.X, e.Y));
-            if (client.Y < S(30)) ScrollTo(-AutoScrollPosition.Y - S(16));
-            else if (client.Y > ClientSize.Height - S(30)) ScrollTo(-AutoScrollPosition.Y + S(16));
-        }
-        UpdateDropIndex(e);
+        if (e.Effect != DragDropEffects.None) AutoPanNear(PointToClient(new Point(e.X, e.Y)));
+        UpdateDropEdge(e);
     }
 
-    private void UpdateDropIndex(DragEventArgs e)
+    private void UpdateDropEdge(DragEventArgs e)
     {
-        int index = e.Effect == DragDropEffects.None ? -1 : DropIndexAt(PointToClient(new Point(e.X, e.Y)));
-        if (index != _dropIndex)
+        int edge = e.Effect == DragDropEffects.None ? -1 : NearestEdge(ToContent(PointToClient(new Point(e.X, e.Y))));
+        if (edge != _dropEdge)
         {
-            _dropIndex = index;
+            _dropEdge = edge;
             Invalidate();
         }
     }
@@ -760,56 +1471,65 @@ internal sealed class FlowDesigner : ScrollableControl
     protected override void OnDragLeave(EventArgs e)
     {
         base.OnDragLeave(e);
-        _dropIndex = -1;
+        _dropEdge = -1;
         Invalidate();
     }
 
     protected override void OnDragDrop(DragEventArgs e)
     {
         base.OnDragDrop(e);
-        int index = _dropIndex >= 0 ? _dropIndex : _steps.Count;
-        _dropIndex = -1;
+        int target = _dropEdge >= 0 ? _dropEdge : _layout.Edges.FindIndex(x => x.Kind == GraphEdgeKind.Stub);
+        _dropEdge = -1;
         Invalidate();
+        var edge = _layout.Edges[target];
 
         var data = e.Data;
         if (data == null) return;
-
-        if (data.GetDataPresent(StepVisuals.StepIndexFormat))
-        {
-            if (int.TryParse(data.GetData(StepVisuals.StepIndexFormat) as string, out int from)) MoveStep(from, index);
-        }
-        else if (data.GetDataPresent(StepVisuals.StepTypeFormat))
+        if (data.GetDataPresent(StepVisuals.StepTypeFormat))
         {
             if (Enum.TryParse<StepType>(data.GetData(StepVisuals.StepTypeFormat) as string, out var type))
             {
                 // Mở trình soạn sau khi thao tác kéo thả kết thúc hẳn.
-                BeginInvoke(new MethodInvoker(() => AddRequested?.Invoke(type, index)));
+                BeginInvoke(new MethodInvoker(() => AddViaEdge(type, edge)));
             }
         }
         else if (data.GetData(DataFormats.FileDrop) is string[] files)
         {
-            foreach (var file in files)
+            InsertViaEdge(edge, files.Select(file =>
             {
                 var step = ActionStep.CreateDefault(StepType.LaunchApp);
                 step.Target = file;
-                InsertStep(index++, step);
-            }
+                return step;
+            }).ToList());
         }
     }
 
     // ───────────────────────────── Bàn phím ─────────────────────────────
 
+    // Tab (không kèm phím khác) mở hộp chọn thao tác như n8n; Shift+Tab vẫn chuyển ô. Esc chỉ giữ lại khi đang kéo nút.
     protected override bool IsInputKey(Keys keyData) =>
-        (keyData & Keys.KeyCode) is Keys.Up or Keys.Down or Keys.Enter or Keys.Space || base.IsInputKey(keyData);
+        (keyData & Keys.KeyCode) is Keys.Up or Keys.Down or Keys.Left or Keys.Right or Keys.Enter or Keys.Space
+        || keyData == Keys.Tab || keyData == Keys.Escape && _dragNode >= 0
+        || base.IsInputKey(keyData);
+
+    /// <summary>Bước hiện trên sơ đồ liền trước / liền sau bước đang chọn (bỏ qua "Không thì", "Hết lặp" đã ẩn).</summary>
+    private int NeighborVisible(int delta)
+    {
+        if (_steps.Count == 0) return -1;
+        int i = _selected < 0 ? (delta > 0 ? -1 : _steps.Count) : _selected;
+        for (int k = i + delta; k >= 0 && k < _steps.Count; k += delta)
+            if (_layout.IsVisible(k)) return k;
+        return _selected;
+    }
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
         switch (e.KeyCode)
         {
-            case Keys.Up when e.Control: MoveSelected(-1); break;
-            case Keys.Down when e.Control: MoveSelected(1); break;
-            case Keys.Up: SelectStep(_selected <= 0 ? 0 : _selected - 1); break;
-            case Keys.Down: SelectStep(Math.Min(_steps.Count - 1, _selected + 1)); break;
+            case Keys.Up or Keys.Left when e.Control: MoveSelected(-1); break;
+            case Keys.Down or Keys.Right when e.Control: MoveSelected(1); break;
+            case Keys.Up or Keys.Left: SelectStep(NeighborVisible(-1)); break;
+            case Keys.Down or Keys.Right: SelectStep(NeighborVisible(1)); break;
             case Keys.Home: SelectStep(0); break;
             case Keys.End: SelectStep(_steps.Count - 1); break;
             case Keys.Delete: DeleteSelected(); break;
@@ -818,8 +1538,18 @@ internal sealed class FlowDesigner : ScrollableControl
             case Keys.C when e.Control: CopySelected(); break;
             case Keys.V when e.Control: Paste(); break;
             case Keys.D when e.Control: DuplicateSelected(); break;
+            case Keys.Oemplus or Keys.Add when e.Control: ZoomIn(); break;
+            case Keys.OemMinus or Keys.Subtract when e.Control: ZoomOut(); break;
+            case Keys.D0 or Keys.NumPad0 when !e.Shift && !e.Alt: ResetZoom(); break;
+            case Keys.D1 or Keys.NumPad1 when !e.Control && !e.Shift && !e.Alt: ZoomToFit(); break;
+            case Keys.Tab when !e.Control && !e.Alt && !e.Shift: OpenPickerAfterSelected(); break;
+            case Keys.Escape when _dragNode >= 0:
+                _dragNode = _dropEdge = -1;
+                Capture = false;
+                Invalidate();
+                break;
             case Keys.Enter:
-                if (_selected >= 0) EditRequested?.Invoke(_selected);
+                if (_selected >= 0 && _layout.IsStepNode(_selected)) EditRequested?.Invoke(_selected);
                 break;
             default:
                 base.OnKeyDown(e);
@@ -869,11 +1599,13 @@ internal sealed class FlowDesigner : ScrollableControl
         {
             foreach (var (_, image) in _thumbs.Values) image.Dispose();
             _thumbs.Clear();
+            _spinTimer.Dispose();
             _menu.Dispose();
+            _canvasMenu.Dispose();
             _tip.Dispose();
-            _titleFont.Dispose();
-            _iconFont.Dispose();
-            _pillFont.Dispose();
+            DisposeZoomFonts();
+            _uiGlyph.Dispose();
+            _uiFont.Dispose();
         }
         base.Dispose(disposing);
     }

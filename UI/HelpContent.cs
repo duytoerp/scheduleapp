@@ -67,18 +67,25 @@ internal static class HelpContent
             """),
 
         new("flow", "Bắt đầu", "Dựng flow bằng kéo thả",
-            "Hộp công cụ, khung luồng, sắp xếp bước, chạy thử và gỡ lỗi.",
+            "Hộp công cụ, sơ đồ flow kiểu n8n, thêm / di chuyển bước, chạy thử và gỡ lỗi.",
             """
-            Trình soạn công việc có 3 vùng: **Hộp công cụ** (trái), **khung luồng** Bắt đầu → các bước → Kết thúc (giữa), nút lệnh (phải).
+            Trình soạn công việc có 3 vùng: **Hộp công cụ** có ô tìm kiếm (trái), **sơ đồ flow** (giữa), nút lệnh (phải). Bấm **⤢ Mở rộng sơ đồ** (`F11`) để ẩn các tab phía trên.
+            ## Đọc sơ đồ
+            - Flow đi từ trái sang phải: **Bắt đầu** → các bước (tên, mô tả dưới nút) → nút **+** cuối flow.
+            - **Nếu**: dây **đúng** đi lên, dây **sai** đi xuống, hai nhánh gộp lại ở nút tròn *Hết Nếu*.
+            - **Lặp**: dây **lặp** xuống thân vòng lặp (hàng dưới) rồi quay về nút Lặp; dây **xong** đi tiếp sang bước sau.
+            - Dây nét đứt phía trên: *Nhảy tới nhãn* (tím), *khi lỗi nhảy tới nhãn* (đỏ).
+            - Vị trí nút tự tính theo thứ tự bước — thứ tự chạy vẫn như danh sách bước.
             ## Thêm và sửa bước
-            1. Kéo một thao tác từ hộp công cụ, thả vào chỗ muốn chèn (đường kẻ xanh báo vị trí). Hoặc nhấp đúp thao tác để chèn sau bước đang chọn.
+            1. Di chuột lên một dây → bấm **+** → gõ tìm thao tác (không dấu cũng được) → chọn. Hoặc kéo thao tác từ hộp công cụ thả lên dây (dây sẽ chèn tô xanh). Chọn một bước rồi nhấn `Tab` để chèn ngay sau bước đó.
             2. Điền thông tin trong form soạn bước → **OK**. Bấm **▶ Thử bước này** để chạy riêng bước đó ngay.
-            3. Nhấp đúp thẻ (hoặc `Enter`) để sửa lại. Kéo thẻ lên/xuống để sắp xếp.
-            - Thêm *Nếu* / *Lặp* sẽ tự chèn *Hết Nếu* / *Hết lặp*. Các bước bên trong được thụt lề.
-            - Thẻ viền đỏ là lỗi cấu trúc (thiếu *Hết Nếu*, nhãn không tồn tại…). Di chuột lên thẻ để xem chi tiết.
+            3. Nhấp đúp nút (hoặc `Enter`) để sửa lại. Kéo nút thả lên dây khác để di chuyển — kéo *Nếu* / *Lặp* là di chuyển cả khối.
+            - Thêm *Nếu* / *Lặp* sẽ tự chèn *Hết Nếu* / *Hết lặp*. Thêm vào dây "sai" khi chưa có nhánh sai sẽ tự tạo *Không thì*.
+            - Di chuột lên nút: thanh công cụ ▶ chạy từ đây · ⏻ bật/tắt · 🗑 xóa · ⋯ menu.
+            - Nút viền đỏ là lỗi cấu trúc (thiếu *Hết Nếu*, nhãn không tồn tại…). Di chuột lên nút để xem chi tiết.
             - Tùy chọn ít dùng (thử lại khi lỗi, xử lý lỗi, nghỉ sau bước, bật/tắt, điểm dừng) nằm trong mục **▸ Nâng cao** của form soạn bước.
             ## Chạy thử và gỡ lỗi
-            - **▶ Chạy thử flow** (`F5`): thẻ đang chạy tô xanh, bước lỗi tô đỏ.
+            - **▶ Chạy thử flow** (`F5`): nút đang chạy viền xanh dương có vòng quay, nút chạy xong có dấu ✓ xanh lá, bước lỗi viền đỏ.
             - **⤵ Chạy từ bước chọn**: bỏ qua các bước phía trên.
             - **Điểm dừng** (`F9`) và **⏭ Chạy từng bước**: flow dừng trước bước, hiện giá trị mọi biến. `F10` bước tiếp, `F5` chạy tiếp, `Shift+F5` dừng.
             - **Khung trạng thái** ở góc phải dưới màn hình (khi flow chạy, kể cả theo lịch): đang ở bước mấy / tổng số bước, chạy được bao lâu, dòng nhật ký mới nhất. **⏸ Tạm dừng** dừng trước bước kế tiếp rồi **⏭ Bước tiếp** từng bước một hoặc **▶ Chạy tiếp**; **■ Dừng** dừng ngay. Khung tự dời sang góc khác khi flow cần click vào chỗ nó che; tắt ở *Cài đặt → Chung*.
@@ -90,8 +97,10 @@ internal static class HelpContent
             - Nút giống hệt nhau lặp lại (vd *Sửa* ở mỗi dòng): hình mẫu lấy rộng ra cả phần bên cạnh để phân biệt; vẫn còn chỗ giống thì chọn chỗ gần vị trí lúc ghi nhất.
             - Bấm vào vùng trống, ít chi tiết → giữ tọa độ như cũ.
             - Mở bước để xem hình mẫu (dấu chữ thập đỏ là điểm sẽ click), **✂ Chụp hình mẫu** lại, **✕ Bỏ hình mẫu**, chỉnh *Độ khớp* hoặc bấm **Thử tìm trên màn hình**.
-            ## Phím tắt trong khung luồng
-            - `↑` `↓` chọn bước · `Ctrl+↑` `Ctrl+↓` di chuyển · `Space` bật/tắt · `Delete` xóa
+            ## Phím tắt và chuột trên sơ đồ
+            - Kéo nền (hoặc chuột giữa) để cuộn · lăn chuột cuộn dọc, `Shift` + lăn cuộn ngang · bản đồ thu nhỏ góc phải dưới
+            - `Ctrl` + lăn chuột thu phóng · `1` vừa khung · `0` về 100% · nút ⊕ ⊖ góc trái dưới
+            - `←` `→` chọn bước · `Ctrl+←` `Ctrl+→` di chuyển · `Tab` thêm bước sau bước chọn · `Space` bật/tắt · `F9` điểm dừng · `Delete` xóa
             - `Ctrl+C` / `Ctrl+V` sao chép bước (cả sang công việc khác) · `Ctrl+D` nhân bản · `Ctrl+Z` / `Ctrl+Y` hoàn tác / làm lại
             """,
             new HelpAction("＋ Thêm công việc", CmdNewJob)),

@@ -105,6 +105,19 @@ internal static class StepVisuals
     public static Font CreateIconFont(Font baseFont, float extraSize) =>
         new(IconFamilyLazy.Value ?? baseFont.FontFamily.Name, baseFont.Size + extraSize);
 
+    /// <summary>Font icon cỡ <paramref name="size"/> pt (không có Segoe Fluent / MDL2 thì dùng font chữ thường).</summary>
+    public static Font CreateIconFont(FontFamily fallback, float size) =>
+        new(IconFamilyLazy.Value ?? fallback.Name, Math.Max(1f, size));
+
+    /// <summary>Máy có font icon Segoe Fluent Icons / Segoe MDL2 Assets.</summary>
+    public static bool HasIconFont => IconFamilyLazy.Value != null;
+
+    /// <summary>Ký tự icon của loại bước (không có font icon thì là chữ cái đầu tên thao tác).</summary>
+    public static string IconText(StepType type) => IconFamilyLazy.Value != null ? Glyph(type) : ActionStep.TypeNames[type][..1];
+
+    /// <summary>Ký tự icon giao diện (mã Segoe MDL2) hoặc ký tự thay thế khi máy không có font icon.</summary>
+    public static string UiGlyph(string glyph, string fallback) => IconFamilyLazy.Value != null ? glyph : fallback;
+
     /// <summary>Pha màu với trắng (amount = 0 → giữ nguyên, 1 → trắng).</summary>
     public static Color Tint(Color c, float amount) => Color.FromArgb(
         (int)(c.R + (255 - c.R) * amount),
@@ -119,6 +132,25 @@ internal static class StepVisuals
         TextRenderer.DrawText(g, text, iconFont, circle, accent,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding |
             TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | extraFlags);
+    }
+
+    /// <summary>Chuỗi để tìm kiếm: chữ thường, bỏ dấu tiếng Việt ("Nhập chữ" → "nhap chu").</summary>
+    public static string Fold(string text)
+    {
+        var d = text.Trim().ToLowerInvariant().Replace('đ', 'd').Normalize(System.Text.NormalizationForm.FormD);
+        var sb = new System.Text.StringBuilder(d.Length);
+        foreach (var c in d)
+            if (System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.NonSpacingMark) sb.Append(c);
+        return sb.ToString().Normalize(System.Text.NormalizationForm.FormC);
+    }
+
+    /// <summary>Loại thao tác khớp từ khóa tìm kiếm (tên thao tác, tên nhóm hoặc tên tiếng Anh); từ khóa trống = khớp tất cả.</summary>
+    public static bool Matches(StepType type, string category, string query)
+    {
+        var q = Fold(query);
+        if (q.Length == 0) return true;
+        var hay = Fold(ActionStep.TypeNames[type] + " " + category + " " + type);
+        return q.Split(' ', StringSplitOptions.RemoveEmptyEntries).All(hay.Contains);
     }
 
     public static GraphicsPath RoundRect(Rectangle r, int radius)

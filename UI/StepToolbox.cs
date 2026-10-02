@@ -23,12 +23,60 @@ internal sealed class StepToolbox : ListBox
         BackColor = Color.White;
         _iconFont = StepVisuals.CreateIconFont(Font, 2f);
         _headerFont = new Font(Font.FontFamily, Font.Size - 0.5f, FontStyle.Bold);
+        SetFilter("");
+    }
 
+    /// <summary>Bấm một lần là chọn (dùng trong hộp chọn bước khi bấm "+" trên sơ đồ).</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public bool SingleClickActivates { get; set; }
+
+    /// <summary>Chỉ hiện các thao tác khớp từ khóa (không phân biệt dấu); nhóm không còn thao tác nào thì ẩn.</summary>
+    public void SetFilter(string query)
+    {
+        BeginUpdate();
+        Items.Clear();
         foreach (var (name, types) in StepVisuals.Categories)
         {
+            var match = types.Where(t => StepVisuals.Matches(t, name, query)).ToList();
+            if (match.Count == 0) continue;
             Items.Add(name);
-            foreach (var t in types) Items.Add(t);
+            foreach (var t in match) Items.Add(t);
         }
+        EndUpdate();
+        _hover = -1;
+    }
+
+    /// <summary>Các thao tác đang hiện (theo thứ tự).</summary>
+    public IReadOnlyList<StepType> VisibleTypes => Items.OfType<StepType>().ToList();
+
+    /// <summary>Chọn thao tác đầu tiên đang hiện (khi bấm ↓ từ ô tìm kiếm).</summary>
+    public void SelectFirst()
+    {
+        for (int i = 0; i < Items.Count; i++)
+            if (Items[i] is StepType)
+            {
+                SelectedIndex = i;
+                return;
+            }
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.Enter && SelectedIndex >= 0 && Items[SelectedIndex] is StepType type)
+        {
+            e.Handled = e.SuppressKeyPress = true;
+            ItemActivated?.Invoke(type);
+            return;
+        }
+        base.OnKeyDown(e);
+    }
+
+    protected override void OnMouseClick(MouseEventArgs e)
+    {
+        base.OnMouseClick(e);
+        if (!SingleClickActivates || e.Button != MouseButtons.Left) return;
+        int i = IndexFromPoint(e.Location);
+        if (i >= 0 && Items[i] is StepType type) ItemActivated?.Invoke(type);
     }
 
     private int S(int v) => LogicalToDeviceUnits(v);
@@ -149,7 +197,7 @@ internal sealed class StepToolbox : ListBox
     {
         base.OnMouseDoubleClick(e);
         int i = IndexFromPoint(e.Location);
-        if (i >= 0 && Items[i] is StepType type) ItemActivated?.Invoke(type);
+        if (!SingleClickActivates && i >= 0 && Items[i] is StepType type) ItemActivated?.Invoke(type);
     }
 
     private void InvalidateItem(int index)

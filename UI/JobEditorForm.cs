@@ -90,6 +90,8 @@ internal sealed class JobEditorForm : BaseForm
     private readonly Button _btnTest = new() { Text = "▶ Chạy thử flow", AutoSize = true };
     private readonly Button _btnRunFrom = new() { Text = "⤵ Chạy từ bước chọn", AutoSize = true };
     private readonly Button _btnStepMode = new() { Text = "⏭ Chạy từng bước", AutoSize = true };
+    private readonly Button _btnExpand = new() { Text = "⤢ Mở rộng sơ đồ (F11)", AutoSize = true, MinimumSize = new Size(190, 0), Margin = new Padding(3, 12, 3, 2) };
+    private Action _toggleCanvas = () => { };
     private readonly CheckBox _chkBreakpoints = new() { Text = "Dừng ở điểm dừng (F9)", AutoSize = true, Checked = true, Margin = new Padding(6, 2, 3, 2) };
     private bool _testing;
 
@@ -147,7 +149,7 @@ internal sealed class JobEditorForm : BaseForm
         var general = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false, Margin = new Padding(0, 0, 0, 6) };
         _cboGroup.Items.AddRange([.. _allJobs.Select(j => j.Group).Where(g => !string.IsNullOrWhiteSpace(g)).Distinct(StringComparer.CurrentCultureIgnoreCase).Order()]);
         general.Controls.AddRange([Caption("Tên công việc:"), _txtName, Caption("Nhóm:"), _cboGroup, _chkEnabled]);
-        root.Controls.Add(general);
+        root.Controls.Add(general, 0, 0);
 
         var tabs = new TabControl { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 6) };
         tabs.TabPages.Add(BuildScheduleTab());
@@ -155,12 +157,20 @@ internal sealed class JobEditorForm : BaseForm
         tabs.TabPages.Add(BuildVariablesTab());
         tabs.TabPages.Add(BuildErrorTab());
         tabs.TabPages.Add(BuildTestTab());
-        root.Controls.Add(tabs);
+        root.Controls.Add(tabs, 0, 1);
+        int tabsHeight = LogicalToDeviceUnits(205);
+        _toggleCanvas = () =>
+        {
+            // Ẩn / hiện phần cài đặt phía trên để sơ đồ chiếm gần hết cửa sổ.
+            tabs.Visible = !tabs.Visible;
+            root.RowStyles[1].Height = tabs.Visible ? tabsHeight : 0;
+            _btnExpand.Text = tabs.Visible ? "⤢ Mở rộng sơ đồ (F11)" : "⤡ Thu nhỏ sơ đồ (F11)";
+        };
 
         // Bước: hộp công cụ | khung thiết kế flow | nút lệnh
         var toolboxHeader = new Label
         {
-            Text = "Hộp công cụ\nKéo thả vào luồng ➜",
+            Text = "Hộp công cụ\nKéo thả lên dây nối trên sơ đồ ➜",
             Dock = DockStyle.Top,
             AutoSize = true,
             Padding = new Padding(8, 8, 4, 6),
@@ -168,7 +178,13 @@ internal sealed class JobEditorForm : BaseForm
             ForeColor = UiText.Muted
         };
         var toolboxPanel = new Panel { Dock = DockStyle.Fill, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.White, Margin = new Padding(0, 3, 6, 3) };
+        var toolboxSearch = new TextBox { Dock = DockStyle.Top, PlaceholderText = "Tìm thao tác…" };
+        toolboxSearch.TextChanged += (_, _) => _toolbox.SetFilter(toolboxSearch.Text);
+        _tips.SetToolTip(toolboxSearch, "Gõ không dấu cũng được: click, excel, d365, nếu, lặp…");
+        var searchHost = new Panel { Dock = DockStyle.Top, Height = toolboxSearch.PreferredHeight + 8, Padding = new Padding(8, 0, 8, 8), BackColor = Color.White };
+        searchHost.Controls.Add(toolboxSearch);
         toolboxPanel.Controls.Add(_toolbox);
+        toolboxPanel.Controls.Add(searchHost);
         toolboxPanel.Controls.Add(toolboxHeader);
 
         var designerPanel = new Panel { Dock = DockStyle.Fill, BorderStyle = BorderStyle.FixedSingle, Margin = new Padding(0, 3, 0, 3) };
@@ -195,8 +211,11 @@ internal sealed class JobEditorForm : BaseForm
         buttons.Controls.Add(SideButton("Nhân bản", (_, _) => _designer.DuplicateSelected()));
         buttons.Controls.Add(SideButton("Bật / Tắt", (_, _) => _designer.ToggleSelected()));
         buttons.Controls.Add(SideButton("Xóa bước", (_, _) => _designer.DeleteSelected()));
-        buttons.Controls.Add(SideButton("▲ Lên", (_, _) => _designer.MoveSelected(-1)));
-        buttons.Controls.Add(SideButton("▼ Xuống", (_, _) => _designer.MoveSelected(1)));
+        buttons.Controls.Add(SideButton("◀ Lên trước", (_, _) => _designer.MoveSelected(-1)));
+        buttons.Controls.Add(SideButton("▶ Xuống sau", (_, _) => _designer.MoveSelected(1)));
+        _btnExpand.Click += (_, _) => _toggleCanvas();
+        _tips.SetToolTip(_btnExpand, "Ẩn / hiện phần lịch chạy, kích hoạt, biến… để có chỗ rộng cho sơ đồ");
+        buttons.Controls.Add(_btnExpand);
         _btnUndo.Click += (_, _) => Undo();
         _btnRedo.Click += (_, _) => Redo();
         _btnTest.Margin = new Padding(3, 18, 3, 3);
@@ -219,8 +238,9 @@ internal sealed class JobEditorForm : BaseForm
         var hints = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, Margin = new Padding(0) };
         hints.Controls.Add(new Label
         {
-            Text = "Kéo thẻ để sắp xếp  ·  Nhấp đúp để sửa  ·  Chuột phải để xem thêm  ·  " +
-                   "↑↓ chọn, Ctrl+↑↓ di chuyển, Space bật/tắt, F9 điểm dừng, Ctrl+C/V sao chép, Delete xóa, Ctrl+Z/Y hoàn tác/làm lại",
+            Text = "Bấm + trên dây (hoặc Tab) để thêm bước  ·  Kéo nút thả lên dây khác để di chuyển  ·  Nhấp đúp để sửa  ·  " +
+                   "Kéo nền để cuộn, Ctrl+lăn chuột thu phóng, phím 1 vừa khung\n" +
+                   "←→ chọn, Ctrl+←→ di chuyển, Space bật/tắt, F9 điểm dừng, Ctrl+C/V sao chép, Ctrl+D nhân bản, Delete xóa, Ctrl+Z/Y hoàn tác/làm lại",
             AutoSize = true,
             ForeColor = UiText.Muted,
             Margin = new Padding(0, 2, 0, 0)
@@ -231,7 +251,7 @@ internal sealed class JobEditorForm : BaseForm
 
         var grpSteps = new GroupBox { Text = "Luồng thao tác", Dock = DockStyle.Fill, Padding = new Padding(8, 4, 8, 8) };
         grpSteps.Controls.Add(stepsLayout);
-        root.Controls.Add(grpSteps);
+        root.Controls.Add(grpSteps, 0, 2);
 
         // Hoàn tác / phiên bản (trái) · Lưu / Hủy (phải)
         var bottom = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 2, Margin = new Padding(0, 8, 0, 0) };
@@ -249,7 +269,7 @@ internal sealed class JobEditorForm : BaseForm
         actions.Controls.Add(btnOk);
         bottom.Controls.Add(history, 0, 0);
         bottom.Controls.Add(actions, 1, 0);
-        root.Controls.Add(bottom);
+        root.Controls.Add(bottom, 0, 3);
         var tips = new ToolTip();
         tips.SetToolTip(_btnUndo, "Hoàn tác thay đổi trên danh sách bước (Ctrl+Z)");
         tips.SetToolTip(_btnRedo, "Làm lại (Ctrl+Y)");
@@ -1123,7 +1143,7 @@ internal sealed class JobEditorForm : BaseForm
         _testing = true;
         foreach (var b in new[] { _btnTest, _btnRunFrom, _btnStepMode }) b.Enabled = false;
         _btnTest.Text = "Đang chạy… (Ctrl+Shift+Q dừng)";
-        _designer.SetFailed(-1);
+        _designer.ResetRunState();
         try
         {
             var result = await _runner.EnqueueAsync(test, "chạy thử", run);
@@ -1145,6 +1165,12 @@ internal sealed class JobEditorForm : BaseForm
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
+        if (e.KeyCode == Keys.F11)
+        {
+            e.Handled = true;
+            _toggleCanvas();
+            return;
+        }
         if (e.KeyCode == Keys.F5 && !_testing)
         {
             e.Handled = true;

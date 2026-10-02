@@ -138,23 +138,33 @@ Cần khóa API Claude (**⚙ Cài đặt → Tích hợp**). Mô tả, các bư
 
 ## Thiết kế flow bằng kéo thả
 
-Trình soạn công việc có 3 vùng: **Hộp công cụ** (trái) · **Khung luồng** Bắt đầu → các bước → Kết thúc (giữa) · nút lệnh (phải). Phía trên là các tab **Lịch chạy · Kích hoạt khác · Biến · Lỗi · thông báo · kiểm thử**. Trong form soạn bước, các tùy chọn ít dùng (thử lại khi lỗi, xử lý lỗi, nghỉ sau bước, bật/tắt, điểm dừng) nằm trong mục **▸ Nâng cao** — tự mở khi bước đã có giá trị khác mặc định.
+Trình soạn công việc có 3 vùng: **Hộp công cụ** có ô tìm kiếm (trái) · **sơ đồ flow** kiểu n8n (giữa) · nút lệnh (phải). Phía trên là các tab **Lịch chạy · Kích hoạt khác · Biến · Lỗi · thông báo · Kiểm thử**; bấm **⤢ Mở rộng sơ đồ** (`F11`) để ẩn chúng, sơ đồ chiếm gần hết cửa sổ. Trong form soạn bước, các tùy chọn ít dùng (thử lại khi lỗi, xử lý lỗi, nghỉ sau bước, bật/tắt, điểm dừng) nằm trong mục **▸ Nâng cao**. Mục này tự mở khi bước đã có giá trị khác mặc định.
+
+Sơ đồ đi từ trái sang phải: nút **Bắt đầu** → các bước (nút vuông, tên và mô tả bên dưới) → nút **+** cuối flow.
+- Khối **Nếu** tách hai dây: nhánh **đúng** đi lên, nhánh **sai** đi xuống. Hai nhánh gộp lại ở nút tròn *Hết Nếu*. Bước *Không thì* không vẽ thành nút riêng mà chính là dây "sai".
+- Khối **Lặp** có hai dây: **lặp** dẫn xuống thân vòng lặp ở hàng dưới, rồi một dây vòng quay về nút Lặp; **xong** đi tiếp sang bước sau vòng lặp.
+- *Nhảy tới nhãn* và *khi lỗi nhảy tới nhãn* vẽ thành dây nét đứt cong phía trên, màu tím cho nhảy thường và đỏ cho nhảy khi lỗi.
+
+Vị trí các nút được tính tự động từ thứ tự bước. Thứ tự chạy vẫn là danh sách bước như trước, nên các công việc cũ mở ra dùng ngay, không cần chuyển đổi.
 
 | Thao tác | Cách làm |
 |---|---|
-| Thêm bước | Kéo một thao tác từ hộp công cụ, thả vào vị trí mong muốn (đường kẻ xanh báo chỗ chèn), điền thông tin → OK. Hoặc nhấp đúp thao tác để chèn sau bước đang chọn. Thêm *Nếu* / *Lặp* tự chèn luôn *Hết Nếu* / *Hết lặp* |
-| Mở ứng dụng nhanh | Kéo file `.exe` / shortcut / tài liệu từ Explorer thả vào luồng |
-| Sắp xếp | Kéo thẻ lên/xuống (hoặc `Ctrl+↑/↓`) — kéo thẻ *Nếu*/*Lặp* là di chuyển cả khối |
-| Sửa | Nhấp đúp thẻ hoặc `Enter` |
-| Bật/tắt, nhân bản, xóa | Chuột phải thẻ, hoặc `Space` / `Ctrl+D` / `Delete` (tắt *Nếu*/*Lặp* = bỏ qua cả khối) |
+| Thêm bước | Di chuột lên một dây → bấm **+** → chọn thao tác trong hộp tìm kiếm (gõ không dấu được: `click`, `excel`, `nhap chu`). Hoặc kéo thao tác từ hộp công cụ thả lên dây (dây gần nhất tô xanh), hoặc chọn một bước rồi nhấn `Tab` để chèn ngay sau bước đó. Thêm *Nếu* / *Lặp* tự chèn luôn *Hết Nếu* / *Hết lặp*. Thêm vào dây "sai" của *Nếu* chưa có nhánh sai sẽ tự tạo *Không thì* |
+| Mở ứng dụng nhanh | Kéo file `.exe` / shortcut / tài liệu từ Explorer thả lên dây |
+| Di chuyển bước | Kéo nút thả lên dây khác, kể cả sang nhánh khác hoặc vào thân vòng lặp. Kéo nút *Nếu* / *Lặp* là di chuyển cả khối. Bàn phím: `Ctrl+←/→` |
+| Sửa | Nhấp đúp nút hoặc `Enter` |
+| Thanh công cụ trên nút | Di chuột lên nút: ▶ chạy thử từ bước này · ⏻ bật/tắt · 🗑 xóa · ⋯ menu |
+| Bật/tắt, nhân bản, xóa | Chuột phải nút, hoặc `Space` / `Ctrl+D` / `Delete`. Tắt *Nếu* / *Lặp* là bỏ qua cả khối. Nút đã tắt có nền xám, gạch chéo |
+| Di chuyển khung nhìn | Kéo nền (hoặc giữ chuột giữa), lăn chuột cuộn dọc, `Shift` + lăn chuột cuộn ngang. **Bản đồ thu nhỏ** ở góc phải dưới: bấm hoặc kéo để tới chỗ cần xem |
+| Thu phóng | `Ctrl` + lăn chuột (giữ nguyên điểm dưới chuột), nút ⊕ ⊖ ở góc trái dưới. Phím `1` hoặc nút ⤢ để vừa khung, phím `0` hoặc bấm ô % để về 100% |
 | Sao chép giữa các công việc | `Ctrl+C` / `Ctrl+V` |
-| Điểm dừng | `F9` hoặc bấm vào lề trái thẻ (chấm đỏ) |
+| Điểm dừng | `F9` hoặc chuột phải → *Điểm dừng*. Nút có điểm dừng hiện chấm đỏ ở góc |
 | Hoàn tác / làm lại | `Ctrl+Z` / `Ctrl+Y` hoặc nút **↶ Hoàn tác** / **↷ Làm lại** (tối đa 100 thay đổi) |
-| Khôi phục bản cũ | **Phiên bản cũ…**: mỗi lần lưu thay đổi, bản trước được giữ lại (30 bản gần nhất / công việc); xem các bước của từng bản rồi khôi phục |
+| Khôi phục bản cũ | **Phiên bản cũ…**: mỗi lần lưu thay đổi, bản trước được giữ lại (30 bản gần nhất mỗi công việc). Xem các bước của từng bản rồi khôi phục |
 
-Các bước trong khối *Nếu* / *Lặp* được thụt lề, có thanh màu bên trái. Thẻ viền đỏ = lỗi cấu trúc (thiếu *Hết Nếu*, nhãn không tồn tại…), di chuột lên thẻ để xem chi tiết.
+Khi chạy thử, nút đang chạy có viền xanh dương và vòng quay; nút đã chạy xong có viền xanh lá và dấu ✓; nút lỗi có viền đỏ và dấu ⚠. Nút viền đỏ khi chưa chạy là lỗi cấu trúc (thiếu *Hết Nếu*, nhãn không tồn tại…); di chuột lên nút để xem chi tiết.
 
-Màu thẻ theo nhóm: xanh dương = ứng dụng, tím = cửa sổ, cam = chuột & bàn phím, hồng = phần tử UI, xanh đậm = trình duyệt, xanh ngọc = nhận dạng màn hình, chàm = biến & ghi dữ liệu, xanh lục = tích hợp (API, AI, thông báo), xanh lá = điều kiện / lặp / điều khiển luồng, vàng = nhắc nhở.
+Màu biểu tượng và dải màu bên trái nút theo nhóm: xanh dương = ứng dụng, tím = cửa sổ, cam = chuột & bàn phím, hồng = phần tử UI, xanh đậm = trình duyệt, xanh ngọc = nhận dạng màn hình, chàm = biến & ghi dữ liệu, xanh lục = tích hợp (API, AI, thông báo), xanh lá = điều kiện / lặp / điều khiển luồng, vàng = nhắc nhở.
 
 ## Biến
 
@@ -273,8 +283,8 @@ Nội dung yêu cầu (và ảnh nếu bật) được gửi tới Anthropic đ�
 
 ## Gỡ lỗi flow
 
-- **▶ Chạy thử flow** (`F5`): thẻ đang chạy được tô xanh, bước lỗi tô đỏ sau khi chạy.
-- **⤵ Chạy từ bước chọn** (hoặc chuột phải thẻ): bỏ qua các bước phía trên.
+- **▶ Chạy thử flow** (`F5`): nút đang chạy có viền xanh dương, nút đã chạy xong có dấu ✓ xanh lá, bước lỗi có viền đỏ.
+- **⤵ Chạy từ bước chọn** (hoặc nút ▶ trên thanh công cụ của nút): bỏ qua các bước phía trước.
 - **⏭ Chạy từng bước** / **điểm dừng** (`F9`): flow dừng trước bước, thanh gỡ lỗi hiện bước sắp chạy + giá trị mọi biến; `F10` bước tiếp, `F5` chạy tiếp, `Shift+F5` dừng.
 - **▶ Thử bước này** trong trình soạn bước: chạy riêng bước đang soạn (gán biến, điều kiện, vòng lặp, phần tử UI, trình duyệt, lệnh) và hiện kết quả/giá trị biến.
 - Bước **Ghi nhật ký** in giá trị biến ra nhật ký.
@@ -536,7 +546,7 @@ Vision/      ScreenCapture, ImageMatcher (NCC + màu), ScreenOcr (Windows OCR), 
 Recording/   MacroRecorder (hook chuột/bàn phím toàn hệ thống)
 UI/          MainForm (thanh điều hướng + trang Công việc), TestDashboard (trang Kiểm thử), Theme (màu, nút phẳng, renderer, NavButton, StatCard),
              D365Forms (chọn field / subgrid từ form D365, cửa sổ ghi thao tác D365), EnvironmentsForm (môi trường kiểm thử),
-             HelpView + HelpContent (trang Hướng dẫn, F1), JobEditorForm, StepEditorForm, FlowDesigner, StepToolbox, StepVisuals, TriggerEditorForm,
+             HelpView + HelpContent (trang Hướng dẫn, F1), JobEditorForm, StepEditorForm, FlowDesigner (sơ đồ kiểu n8n) + FlowGraphLayout + NodePicker, StepToolbox, StepVisuals, TriggerEditorForm,
              HistoryForm (+ thống kê), SettingsForm, ApiConnectionForm, SecretsForm, TemplatePickerForm, VersionPickerForm,
              UpdateForm, PromptForms (nhập liệu, xác nhận, thanh gỡ lỗi), ReminderForm, VisionForms, UiCommon
 Samples/     Mẫu công việc (nhúng vào ứng dụng cho mục "Mẫu có sẵn…")
