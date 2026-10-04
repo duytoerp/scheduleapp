@@ -300,6 +300,12 @@ public sealed class ActionStep
     /// <summary>Phát video: màn hình phát khi máy có nhiều màn hình — 0 = màn hình chính, -1 = màn hình đang có chuột, N = màn hình số N.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public int Monitor { get; set; }
 
+    /// <summary>
+    /// Phát video: mã màn hình thật đã chọn (<see cref="Native.Display.Id"/>) — số màn hình có thể đổi khi cắm lại / đổi dock, mã thì không.
+    /// Khi chạy ưu tiên màn hình có mã này, không thấy thì theo số <see cref="Monitor"/>. null = không có (bước cũ, màn hình chính…).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? MonitorId { get; set; }
+
     /// <summary>Độ khớp tối thiểu của hình mẫu, tính theo %.</summary>
     public int Confidence { get; set; } = 85;
 

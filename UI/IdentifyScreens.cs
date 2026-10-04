@@ -3,8 +3,8 @@ using ScheduleApp.Native;
 namespace ScheduleApp.UI;
 
 /// <summary>
-/// "Hiện số màn hình" như trong Cài đặt Windows: mỗi màn hình hiện số lớn của nó ở góc trái dưới trong vài giây,
-/// để biết chọn "Màn hình 2" là màn hình nào. Không lấy focus.
+/// "Hiện số màn hình": mỗi màn hình hiện số ScheduleApp dùng cho nó (số của Windows — có thể khác số trong Cài đặt Windows → Màn hình)
+/// ở góc trái dưới trong vài giây, để biết chọn "Màn hình 2" là màn hình nào. Không lấy focus.
 /// </summary>
 internal static class IdentifyScreens
 {

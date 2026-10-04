@@ -128,8 +128,8 @@ internal sealed class StepEditorForm : BaseForm
     private readonly FlowLayoutPanel _pnlMonitor = Row();
     private readonly ComboBox _cboMonitor = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 360, AccessibleName = "Màn hình phát" };
     private readonly Button _btnIdentify = new() { Text = "Hiện số màn hình", AutoSize = true, Margin = new Padding(8, 2, 3, 2) };
-    /// <summary>Giá trị (<see cref="Native.Displays"/>) ứng với từng dòng của <see cref="_cboMonitor"/>.</summary>
-    private readonly List<int> _monitorChoices = [];
+    /// <summary>Lựa chọn (số theo <see cref="Native.Displays"/>, mã màn hình thật) ứng với từng dòng của <see cref="_cboMonitor"/>.</summary>
+    private readonly List<(int Number, string? Id)> _monitorChoices = [];
 
     private readonly Label _lblError = Caption("Khi bước lỗi:");
     private readonly FlowLayoutPanel _pnlError = Row();
@@ -490,7 +490,7 @@ internal sealed class StepEditorForm : BaseForm
         _numDelay.Value = Math.Clamp(_step.DelayMs, 0, 86_400_000);
         _chkWaitUser.Checked = _step.WaitForUser;
         _chkForce.Checked = _step.Force;
-        FillMonitors(_step.Monitor);
+        FillMonitors(_step.Monitor, _step.MonitorId);
         _numAfter.Value = Math.Clamp(_step.DelayAfterMs, 0, 600_000);
         _chkEnabled.Checked = _step.Enabled;
         _chkBreakpoint.Checked = _step.Breakpoint;
@@ -570,7 +570,7 @@ internal sealed class StepEditorForm : BaseForm
         s.DelayMs = (int)_numDelay.Value;
         s.WaitForUser = _chkWaitUser.Checked;
         s.Force = _chkForce.Visible && _chkForce.Checked;
-        s.Monitor = type == StepType.PlayMedia && _cboMonitor.SelectedIndex >= 0 ? _monitorChoices[_cboMonitor.SelectedIndex] : 0;
+        (s.Monitor, s.MonitorId) = type == StepType.PlayMedia && _cboMonitor.SelectedIndex >= 0 ? _monitorChoices[_cboMonitor.SelectedIndex] : (0, null);
         s.DelayAfterMs = (int)_numAfter.Value;
         s.Enabled = _chkEnabled.Checked;
         s.Breakpoint = !_markerType && _chkBreakpoint.Checked;
@@ -628,24 +628,39 @@ internal sealed class StepEditorForm : BaseForm
     }
 
     /// <summary>
-    /// Danh sách màn hình: chính, đang có chuột, rồi từng màn hình đang cắm. Màn hình đã chọn mà giờ không cắm (vd máy chiếu)
-    /// vẫn giữ lựa chọn và ghi rõ "chưa cắm" — khi chạy sẽ phát ở màn hình chính.
+    /// Danh sách màn hình: chính, đang có chuột, rồi từng màn hình đang cắm. Màn hình đã chọn được nhận lại theo mã (số có thể đã đổi
+    /// sau khi cắm lại / đổi dock); bước cũ chưa có mã thì theo số. Màn hình đã chọn mà giờ không cắm (vd máy chiếu) vẫn giữ lựa chọn
+    /// (cả mã) và ghi rõ khi chạy sẽ phát ở đâu.
     /// </summary>
-    private void FillMonitors(int selected)
+    private void FillMonitors(int selected, string? selectedId)
     {
         var displays = Native.Displays.All();
         _cboMonitor.Items.Clear();
         _monitorChoices.Clear();
-        void Add(int value, string text)
+        void Add(int number, string? id, string text)
         {
-            _monitorChoices.Add(value);
+            _monitorChoices.Add((number, id));
             _cboMonitor.Items.Add(text);
         }
-        Add(Native.Displays.Primary, "Màn hình chính");
-        Add(Native.Displays.UnderMouse, "Màn hình đang có chuột (lúc phát)");
-        foreach (var d in displays) Add(d.Number, Native.Displays.Label(d, displays));
-        if (selected > 0 && displays.All(d => d.Number != selected)) Add(selected, $"Màn hình {selected} (chưa cắm — sẽ phát ở màn hình chính)");
-        _cboMonitor.SelectedIndex = Math.Max(0, _monitorChoices.IndexOf(selected));
+        Add(Native.Displays.Primary, null, "Màn hình chính");
+        Add(Native.Displays.UnderMouse, null, "Màn hình đang có chuột (lúc phát)");
+        foreach (var d in displays) Add(d.Number, d.Id, Native.Displays.Label(d, displays));
+        int index = selected == Native.Displays.UnderMouse ? 1 : 0;
+        if (selected > 0)
+        {
+            var match = Native.Displays.FindById(selectedId, displays)
+                        ?? (string.IsNullOrEmpty(selectedId) ? displays.FirstOrDefault(d => d.Number == selected) : null);
+            if (match != null) index = 2 + displays.IndexOf(match);
+            else
+            {
+                // Khi chạy: theo số màn hình nếu có (xem Displays.Pick), không thì màn hình chính.
+                Add(selected, selectedId, displays.Any(d => d.Number == selected)
+                    ? $"Màn hình đã chọn trước đây (chưa cắm — tạm phát ở màn hình {selected})"
+                    : $"Màn hình {selected} (chưa cắm — sẽ phát ở màn hình chính)");
+                index = _monitorChoices.Count - 1;
+            }
+        }
+        _cboMonitor.SelectedIndex = index;
         _btnIdentify.Enabled = displays.Count > 1;
         _btnIdentify.Text = displays.Count > 1 ? "Hiện số màn hình" : "Máy có 1 màn hình";
     }
@@ -1509,7 +1524,9 @@ internal sealed class StepEditorForm : BaseForm
             "Phát lần lượt bằng trình phát có sẵn trong ScheduleApp: hết file này tự sang file kế, phát xong cả danh sách mới chạy bước sau. " +
             "Mỗi dòng một file (dán đường dẫn \"Copy as path\" của Explorer được, dòng # là ghi chú); dòng là thư mục thì phát mọi video trong đó theo tên. " +
             "Ảnh thu nhỏ (như Explorer), thứ tự phát và thời lượng từng file hiện ngay dưới danh sách: kéo ảnh để đổi thứ tự, nhấp đúp để phát thử, " +
-            "chuột phải để bỏ; kéo thả video từ Explorer vào để thêm. Máy nhiều màn hình: chọn \"Màn hình phát\" (vd máy chiếu). " +
+            "chuột phải để bỏ; kéo thả video từ Explorer vào để thêm. Máy nhiều màn hình: chọn \"Màn hình phát\" (vd máy chiếu) — " +
+            "số màn hình có thể khác số trong Cài đặt Windows, bấm \"Hiện số màn hình\" để xem; ScheduleApp nhớ đúng màn hình đã chọn " +
+            "kể cả khi số đổi. Phát ở màn hình khác thì bấm vào video để dùng Esc / Space / →. " +
             "File thiếu / lỗi được bỏ qua và ghi vào nhật ký. " +
             "Sau bước: {{media.played}} (số file đã phát), {{media.duration}} (tổng thời lượng, vd 0:26).",
         StepType.HttpRequest =>

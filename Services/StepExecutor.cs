@@ -288,11 +288,10 @@ public static class StepExecutor
                  $", dự kiến xong khoảng {DateTime.Now + plan.Total:HH:mm:ss}{(s.Force ? " · toàn màn hình" : "")}. Esc: dừng · →: sang file kế · Space: tạm dừng.");
         Log.Info("      " + Truncate(string.Join(" → ", playable.Select(e =>
             Path.GetFileName(e.Path) + (e.Duration is { } d ? $" ({ActionStep.FormatDuration(d)})" : "")))));
-        var (display, warning) = Displays.Pick(s.Monitor);
+        var (display, warning, note) = Displays.Pick(s.Monitor, s.MonitorId);
         if (warning != null) Log.Warn("      " + warning);
-        else if (Displays.All().Count > 1) Log.Info($"      Phát ở {Displays.Label(display, Displays.All())}.");
-        var r = await MediaPlayback.PlayAsync(files, s.Force, volume, ctx.Ct, durations: playable.Select(e => e.Duration).ToList(),
-            screen: Displays.PlayerRect(display, s.Force));
+        else if (note != null || Displays.All().Count > 1) Log.Info($"      Phát ở {Displays.Label(display, Displays.All())}{(note == null ? "" : " — " + note)}.");
+        var r = await MediaPlayback.PlayAsync(files, s.Force, volume, ctx.Ct, durations: playable.Select(e => e.Duration).ToList(), display: display);
         foreach (var p in r.Problems) Log.Warn("      Bỏ qua — " + p);
         // Thời lượng thực đã phát: chỉ các file phát hết (không tính file bỏ qua / lỗi).
         var played = TimeSpan.FromTicks((r.PlayedIndexes ?? []).Sum(i => playable[i].Duration?.Ticks ?? 0));

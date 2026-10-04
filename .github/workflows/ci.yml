@@ -23,3 +23,36 @@ jobs:
         with:
           name: test-results
           path: tests/**/TestResults/*.trx
+
+  installer:
+    # Publish ScheduleApp.exe đúng như release.yml (phụ thuộc framework, một file) rồi biên dịch bộ cài bằng ISCC:
+    # lỗi trong installer/ScheduleApp.iss (cả phần [Code] kiểm tra / tải .NET 10) lộ ra ở mỗi lần đẩy code, không đợi tới lúc phát hành.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Publish
+        shell: pwsh
+        run: |
+          dotnet publish ScheduleApp.csproj -c Release -r win-x64 --self-contained false `
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -o publish --nologo
+          if ($LASTEXITCODE -ne 0) { throw 'Publish thất bại.' }
+      - name: Installer
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          # Cùng đường dẫn ISCC với release.yml — đổi ở đây thì đổi cả ở đó.
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Không thấy $iscc (release.yml cũng dùng đường dẫn này)." }
+          $version = (Get-Item publish/ScheduleApp.exe).VersionInfo.ProductVersion -replace '\+.*$', ''
+          & $iscc "/DAppVersion=$version" installer/ScheduleApp.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC báo lỗi (mã $LASTEXITCODE)." }
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: publish/ScheduleApp-Setup-*.exe
+          if-no-files-found: error
+          retention-days: 7

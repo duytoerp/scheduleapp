@@ -127,4 +127,67 @@ internal static class Win32
         public uint uMsg;
         public ushort wParamL, wParamH;
     }
+
+    // Cấu hình hiển thị (CCD): màn hình thật nào đang nối với \\.\DISPLAYn (mã EDID, cổng trên card đồ họa)
+    public const uint QDC_ONLY_ACTIVE_PATHS = 0x2;
+    public const int DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME = 1, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME = 2;
+    public const uint DISPLAYCONFIG_TARGET_EDID_IDS_VALID = 0x4;
+    public const int ERROR_INSUFFICIENT_BUFFER = 122;
+
+    [DllImport("user32.dll")] public static extern int GetDisplayConfigBufferSizes(uint flags, out uint pathCount, out uint modeCount);
+    [DllImport("user32.dll")]
+    public static extern int QueryDisplayConfig(uint flags, ref uint pathCount, [Out] DISPLAYCONFIG_PATH_INFO[] paths, ref uint modeCount,
+        [Out] DISPLAYCONFIG_MODE_INFO[] modes, IntPtr topologyId);
+    [DllImport("user32.dll")] public static extern int DisplayConfigGetDeviceInfo(ref DISPLAYCONFIG_SOURCE_DEVICE_NAME request);
+    [DllImport("user32.dll")] public static extern int DisplayConfigGetDeviceInfo(ref DISPLAYCONFIG_TARGET_DEVICE_NAME request);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct LUID { public uint LowPart; public int HighPart; }
+
+    /// <summary>DISPLAYCONFIG_PATH_INFO (72 byte) — sourceInfo và targetInfo viết phẳng.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct DISPLAYCONFIG_PATH_INFO
+    {
+        public LUID sourceAdapterId;
+        public uint sourceId, sourceModeInfoIdx, sourceStatusFlags;
+        public LUID targetAdapterId;
+        public uint targetId, targetModeInfoIdx, outputTechnology, rotation, scaling, refreshNumerator, refreshDenominator, scanLineOrdering;
+        public int targetAvailable;
+        public uint targetStatusFlags, flags;
+    }
+
+    /// <summary>DISPLAYCONFIG_MODE_INFO (64 byte) — không đọc nội dung, chỉ cần đủ chỗ.</summary>
+    [StructLayout(LayoutKind.Sequential, Size = 64)]
+    public struct DISPLAYCONFIG_MODE_INFO
+    {
+        public uint infoType, id;
+        public LUID adapterId;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct DISPLAYCONFIG_DEVICE_INFO_HEADER
+    {
+        public int type;
+        public int size;
+        public LUID adapterId;
+        public uint id;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct DISPLAYCONFIG_SOURCE_DEVICE_NAME
+    {
+        public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string viewGdiDeviceName;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct DISPLAYCONFIG_TARGET_DEVICE_NAME
+    {
+        public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+        public uint flags, outputTechnology;
+        public ushort edidManufactureId, edidProductCodeId;
+        public uint connectorInstance;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string monitorFriendlyDeviceName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string monitorDevicePath;
+    }
 }

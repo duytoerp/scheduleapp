@@ -62,21 +62,26 @@ internal static class MediaPlayback
     /// <summary>Kiểm thử: phát trong cửa sổ đặt ở vị trí này (ngoài màn hình), tắt tiếng, thay cho cài đặt của bước.</summary>
     internal static W.Rect? TestBounds { get; set; }
 
+    /// <summary>Kiểm thử: màn hình được yêu cầu ở lần phát gần nhất (ghi lại trước khi <see cref="TestBounds"/> thay chỗ phát).</summary>
+    internal static Native.Display? LastDisplay { get; set; }
+
     /// <summary>Phát lần lượt <paramref name="files"/> trong cửa sổ riêng (luồng riêng), trả về khi phát hết / bị dừng.</summary>
     /// <param name="volume">Âm lượng 0–100.</param>
     /// <param name="bounds">Vị trí cửa sổ (đơn vị WPF) khi không toàn màn hình; null = giữa màn hình chính.</param>
     /// <param name="durations">Thời lượng đã biết của từng file (hiện trên màn hình; phòng hờ khi file không báo đã phát hết).</param>
-    /// <param name="screen">Khung trên màn hình cần phát (pixel thật, xem <see cref="Native.Displays.PlayerRect"/>); null = màn hình chính.</param>
+    /// <param name="display">Màn hình phát (xem <see cref="Native.Displays.Pick(int, string?)"/>): toàn màn hình thì phủ đúng màn hình đó,
+    /// cửa sổ thường thì ở giữa màn hình đó (<see cref="Native.Displays.PlayerRect"/>); null = màn hình chính.</param>
     public static Task<PlaybackResult> PlayAsync(IReadOnlyList<string> files, bool fullscreen, int volume, CancellationToken ct, W.Rect? bounds = null,
-        IReadOnlyList<TimeSpan?>? durations = null, System.Drawing.Rectangle? screen = null)
+        IReadOnlyList<TimeSpan?>? durations = null, Native.Display? display = null)
     {
-        if (TestBounds is { } test) (fullscreen, volume, bounds, screen) = (false, 0, test, null);
+        LastDisplay = display;
+        if (TestBounds is { } test) (fullscreen, volume, bounds, display) = (false, 0, test, null);
         var done = new TaskCompletionSource<PlaybackResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
         {
             try
             {
-                var window = new PlayerWindow(files, durations, fullscreen, volume, bounds, screen);
+                var window = new PlayerWindow(files, durations, fullscreen, volume, bounds, display);
                 window.Closed += (_, _) => window.Dispatcher.BeginInvokeShutdown(DispatcherPriority.Background);
                 using (ct.Register(() => window.Dispatcher.BeginInvoke(window.Cancel)))
                 {
@@ -126,7 +131,7 @@ internal static class MediaPlayback
         public PlaybackResult Result => new(_played, _problems, _stopped, _skipped, _playedIndexes);
 
         public PlayerWindow(IReadOnlyList<string> files, IReadOnlyList<TimeSpan?>? durations, bool fullscreen, int volume, W.Rect? bounds,
-            System.Drawing.Rectangle? screen = null)
+            Native.Display? display = null)
         {
             _files = files;
             _durations = durations is { } d && d.Count == files.Count ? d : files.Select(_ => (TimeSpan?)null).ToList();
@@ -138,37 +143,39 @@ internal static class MediaPlayback
             Content = grid;
             _media.Volume = Math.Clamp(volume, 0, 100) / 100.0;
 
+            // Phát ở màn hình khác màn hình người dùng đang làm việc (vd máy chiếu) → không giành bàn phím
+            // (xem Displays.TakesFocus). Cửa sổ đặt sẵn vị trí (kiểm thử) cũng không lấy focus.
+            bool activate = bounds == null && (display == null || Native.Displays.TakesFocus(display));
             if (fullscreen)
             {
                 WindowStyle = W.WindowStyle.None;
                 ResizeMode = W.ResizeMode.NoResize;
                 Topmost = true;
-                // Màn hình khác: đặt vào màn hình đó trước rồi mới phóng to (phóng to luôn theo màn hình đang chứa cửa sổ).
-                if (screen == null) WindowState = W.WindowState.Maximized;
+                // Màn hình đã chọn: phủ đúng khung màn hình đó (đặt ở SourceInitialized); không chọn → phóng to ở màn hình chính.
+                if (display == null) WindowState = W.WindowState.Maximized;
                 Cursor = WI.Cursors.None;
             }
             else if (bounds is { } b)
             {
                 WindowStartupLocation = W.WindowStartupLocation.Manual;
                 (Left, Top, Width, Height) = (b.X, b.Y, b.Width, b.Height);
-                ShowActivated = false;
             }
-            else if (screen == null)
+            else if (display == null)
             {
                 (Width, Height) = (1280, 760);
                 WindowStartupLocation = W.WindowStartupLocation.CenterScreen;
             }
-            if (screen is { } target && bounds == null)
+            if (!activate) ShowActivated = false;
+            if (display != null && bounds == null)
             {
+                var target = Native.Displays.PlayerRect(display, fullscreen);
                 WindowStartupLocation = W.WindowStartupLocation.Manual;
-                // Đặt theo pixel thật bằng Win32 (đơn vị WPF đổi theo DPI từng màn hình nên không dùng Left/Top được).
-                SourceInitialized += (_, _) =>
-                {
-                    var hwnd = new W.Interop.WindowInteropHelper(this).Handle;
-                    Native.Win32.SetWindowPos(hwnd, IntPtr.Zero, target.X, target.Y, target.Width, target.Height,
-                        Native.Win32.SWP_NOZORDER | Native.Win32.SWP_NOACTIVATE);
-                    if (fullscreen) WindowState = W.WindowState.Maximized;
-                };
+                SourceInitialized += (_, _) => Place(target);
+                // Đặt lại khi đã hiện: phòng khi WPF co giãn cửa sổ theo DPI của màn hình mới sau lần đặt đầu.
+                Loaded += (_, _) => Place(target);
+                if (!activate)
+                    Log.Info("      Phát ở màn hình khác — trình phát không lấy bàn phím của màn hình bạn đang làm việc: " +
+                             "bấm vào video để dùng Esc / Space / →; Ctrl+Shift+Q vẫn dừng mọi flow.");
             }
 
             _media.MediaOpened += (_, _) =>
@@ -190,7 +197,7 @@ internal static class MediaPlayback
             KeyDown += OnKey;
             Loaded += (_, _) =>
             {
-                if (fullscreen)
+                if (fullscreen && activate)
                 {
                     // Chạy theo lịch / từ xa: cửa sổ khác đang được chọn → giành quyền nhận phím (Esc, →, Space).
                     Native.WindowHelper.Focus(new W.Interop.WindowInteropHelper(this).Handle);
@@ -206,6 +213,22 @@ internal static class MediaPlayback
                 _media.Close();
                 if (!_finished && !_cancelled) _stopped = true;
             };
+        }
+
+        /// <summary>
+        /// Đặt cửa sổ đúng khung <paramref name="target"/> bằng Win32 (pixel thật — đơn vị WPF đổi theo DPI từng màn hình nên không dùng
+        /// Left/Top được). Sang màn hình khác DPI, Windows báo WM_DPICHANGED và WPF co giãn cửa sổ theo tỉ lệ DPI → đặt lại lần nữa
+        /// (lúc này đã ở đúng màn hình, DPI không đổi nữa).
+        /// </summary>
+        private void Place(System.Drawing.Rectangle target)
+        {
+            var hwnd = new W.Interop.WindowInteropHelper(this).Handle;
+            for (int i = 0; i < 3 && hwnd != IntPtr.Zero; i++)
+            {
+                if (Native.Win32.GetWindowRect(hwnd, out var r) && System.Drawing.Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom) == target) return;
+                Native.Win32.SetWindowPos(hwnd, IntPtr.Zero, target.X, target.Y, target.Width, target.Height,
+                    Native.Win32.SWP_NOZORDER | Native.Win32.SWP_NOACTIVATE);
+            }
         }
 
         private string Current => _index >= 0 && _index < _files.Count ? Path.GetFileName(_files[_index]) : "";
