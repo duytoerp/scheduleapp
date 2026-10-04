@@ -15,10 +15,17 @@ internal static class Program
 {
     private const string MutexName = "ScheduleApp_SingleInstance_7F3A1C";
 
+    /// <summary>Hộp thoại báo lỗi ngoài dự kiến: không chồng nhau, lỗi lặp lại ngay sau đó chỉ ghi nhật ký.</summary>
+    private static readonly ErrorDialogGate ErrorDialogs = new();
+
     [STAThread]
     private static void Main(string[] args)
     {
-        if (HasArg(args, "--test"))
+        // Bắt lỗi chưa xử lý trước khi tạo bất kỳ cửa sổ nào; chế độ dòng lệnh (--test) không hiện hộp thoại.
+        bool cli = HasArg(args, "--test");
+        InstallErrorHandlers(interactive: !cli);
+
+        if (cli)
         {
             // Chạy độc lập với phiên bản đang mở (không cần giao diện) — dùng cho CI / lịch chạy đêm.
             Environment.ExitCode = Services.Testing.TestCli.Run(args);
@@ -55,6 +62,49 @@ internal static class Program
 
         Application.Run(form);
         cts.Cancel();
+    }
+
+    /// <summary>
+    /// Lỗi chưa xử lý ở đâu cũng được ghi nhật ký + file crash-….txt trong thư mục logs (không chứa giá trị bí mật).
+    /// Lỗi trên luồng giao diện không làm tắt ứng dụng — lịch vẫn chạy — chỉ báo bằng hộp thoại (không chồng hộp thoại).
+    /// </summary>
+    private static void InstallErrorHandlers(bool interactive)
+    {
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, e) => OnUiThreadError(e.Exception, interactive);
+        // Lỗi ở luồng nền: tiến trình đóng ngay sau sự kiện này → ghi file crash xong mới trả về.
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            CrashLog.Write(e.ExceptionObject as Exception ?? new InvalidOperationException(Convert.ToString(e.ExceptionObject)),
+                e.IsTerminating ? "luồng nền, ScheduleApp phải đóng — AppDomain.UnhandledException" : "luồng nền — AppDomain.UnhandledException");
+        // Task chạy nền không ai chờ kết quả ("_ = …Async()"): ghi lại rồi bỏ qua, không ảnh hưởng ứng dụng.
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            CrashLog.Write(e.Exception, "tác vụ nền — TaskScheduler.UnobservedTaskException");
+            e.SetObserved();
+        };
+    }
+
+    private static void OnUiThreadError(Exception ex, bool interactive)
+    {
+        var file = CrashLog.Write(ex, "luồng giao diện — Application.ThreadException");
+        if (!interactive || !ErrorDialogs.TryOpen(DateTime.Now)) return;
+        try
+        {
+            MessageBox.Show(
+                "ScheduleApp vừa gặp một lỗi ngoài dự kiến nhưng vẫn tiếp tục chạy — lịch và các công việc vẫn hoạt động.\n\n" +
+                $"Lỗi: {CrashLog.Summary(ex)}\n\n" +
+                (file != null ? $"Chi tiết đã lưu ở:\n{file}" : $"Chi tiết đã ghi vào nhật ký trong:\n{Log.LogDir}") +
+                "\n\nNếu lỗi lặp lại, hãy gửi file này cho người hỗ trợ.",
+                "ScheduleApp — lỗi ngoài dự kiến", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // Không hiện được hộp thoại (phiên không tương tác…) — đã có nhật ký và file crash.
+        }
+        finally
+        {
+            ErrorDialogs.Close(DateTime.Now);
+        }
     }
 
     private static bool HasArg(string[] args, string name) =>

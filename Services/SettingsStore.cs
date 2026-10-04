@@ -20,19 +20,14 @@ public static class SettingsStore
         }
     }
 
-    private static AppSettings Load()
-    {
-        try
-        {
-            if (File.Exists(FilePath))
-                return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath), JsonDefaults.Options) ?? new AppSettings();
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"Không đọc được settings.json ({ex.Message}) — dùng cài đặt mặc định.");
-        }
-        return new AppSettings();
-    }
+    private static AppSettings Load() => Load(FilePath);
+
+    /// <summary>
+    /// Đọc cài đặt; file hỏng → giữ bản .broken-…, dùng bản .bak của lần lưu trước (không lặng lẽ thay bằng mặc định rồi ghi đè sau 1 phút).
+    /// </summary>
+    internal static AppSettings Load(string path) =>
+        SafeFile.Load(path, "cài đặt", "đang dùng cài đặt mặc định, hãy kiểm tra lại ⚙ Cài đặt",
+            json => JsonSerializer.Deserialize<AppSettings>(json, JsonDefaults.Options)).Value ?? new AppSettings();
 
     public static void Save()
     {
@@ -40,10 +35,7 @@ public static class SettingsStore
         {
             try
             {
-                Directory.CreateDirectory(JobStore.DataDir);
-                var tmp = FilePath + ".tmp";
-                File.WriteAllText(tmp, JsonSerializer.Serialize(Current, JsonDefaults.Options));
-                File.Move(tmp, FilePath, true);
+                SafeFile.WriteAllText(FilePath, JsonSerializer.Serialize(Current, JsonDefaults.Options));
             }
             catch (Exception ex)
             {
@@ -56,6 +48,12 @@ public static class SettingsStore
     {
         lock (Sync) _current = settings;
         Save();
+    }
+
+    /// <summary>Bỏ bản đã đọc trong bộ nhớ để lần sau đọc lại từ file (chỉ dùng cho kiểm thử).</summary>
+    internal static void ResetForTests()
+    {
+        lock (Sync) _current = null;
     }
 
     /// <summary>Ngày <paramref name="date"/> có nằm trong danh sách ngày nghỉ không.</summary>

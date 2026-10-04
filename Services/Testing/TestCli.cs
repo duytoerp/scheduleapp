@@ -131,6 +131,8 @@ internal static class TestCli
             print(TestCliOptions.Usage);
             return 2;
         }
+        // File dữ liệu hỏng (đã khôi phục từ .bak, bỏ qua công việc lỗi…): in ra để thấy ngay trong log CI — không hiện hộp thoại.
+        foreach (var issue in DataIssues.Take()) print("⚠ " + issue);
 
         TestEnvironment? environment;
         try { environment = TestEnvironments.Find(environments, o.Environment); }

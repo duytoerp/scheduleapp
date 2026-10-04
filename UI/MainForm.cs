@@ -82,6 +82,8 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
     private bool _exiting;
     private bool _suppressCheck;
     private bool _trayTipShown;
+    private bool _dataNoticeOpen;
+    private bool _dataTipShown;
 
     public MainForm(bool startHidden, string? startupCommand = null)
     {
@@ -131,6 +133,15 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         };
         startup.Start();
         if (_startupCommand != null) BeginInvoke(new MethodInvoker(() => HandleCommand(_startupCommand)));
+
+        // File dữ liệu hỏng lúc mở (đã giữ bản sao, khôi phục từ .bak…): báo một lần, không chặn / không giành phím của lịch chạy.
+        SecretStore.EnsureLoaded();
+        DataIssues.Reported += OnDataIssue;
+        Activated += (_, _) =>
+        {
+            if (DataIssues.HasPending) BeginInvoke(new MethodInvoker(ShowDataNotice));
+        };
+        BeginInvoke(new MethodInvoker(ShowDataNotice));
     }
 
     private Job? FindJob(Guid id)
@@ -383,6 +394,11 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         _tray.DoubleClick += (_, _) => ShowMain();
         _tray.BalloonTipClicked += async (_, _) =>
         {
+            if (DataIssues.HasPending)
+            {
+                ShowMain(); // mở cửa sổ → hiện chi tiết file dữ liệu hỏng
+                return;
+            }
             if (_pendingUpdate == null) return;
             ShowMain();
             await CheckUpdateAsync();
@@ -535,7 +551,11 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
                 else _guard.Stop();
                 // "— Ẩn" trên khung trạng thái có hiệu lực tới khi hết flow đang chạy / đang chờ: bộ kiểm thử, kiểm thử theo dữ liệu
                 // và lần chạy lại xếp hàng từng kịch bản ngay sau kịch bản trước (lúc callback này chạy, hàng đợi vẫn còn kịch bản kế).
-                if (!running && !_runner.IsBusy) _overlay.EndDismissal();
+                if (!running && !_runner.IsBusy)
+                {
+                    _overlay.EndDismissal();
+                    ShowDataNotice(); // thông báo file dữ liệu hỏng đợi tới khi hết flow chạy
+                }
             }));
         };
         _runner.BeforeStep = async ctx =>
@@ -1155,6 +1175,45 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         BringToFront();
     }
 
+    /// <summary>Có sự cố file dữ liệu mới (vd secrets.json đọc lần đầu lúc flow chạy) — gọi từ luồng bất kỳ.</summary>
+    private void OnDataIssue()
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        try { BeginInvoke(new MethodInvoker(ShowDataNotice)); }
+        catch (InvalidOperationException) { }
+    }
+
+    /// <summary>
+    /// Báo file dữ liệu bị hỏng (đã giữ bản sao .broken-…, khôi phục từ .bak…) đúng một lần. Hộp thoại chỉ hiện khi người dùng đang ở
+    /// cửa sổ chính và không có flow chạy (không giành bàn phím / màn hình của flow); còn lại nhắc ở khay rồi đợi lúc đó.
+    /// </summary>
+    private void ShowDataNotice()
+    {
+        if (_dataNoticeOpen || IsDisposed || !DataIssues.HasPending) return;
+        if (ActiveForm != this || WindowState == FormWindowState.Minimized || _runner.IsBusy)
+        {
+            if (_dataTipShown) return;
+            _dataTipShown = true;
+            _tray.ShowBalloonTip(15000, "ScheduleApp: file dữ liệu bị hỏng",
+                "Đã giữ bản sao file hỏng và khôi phục những gì còn dùng được. Nhấp vào đây để xem chi tiết.", ToolTipIcon.Warning);
+            return;
+        }
+        _dataNoticeOpen = true;
+        try
+        {
+            MessageBox.Show(this,
+                "ScheduleApp phát hiện file dữ liệu bị hỏng hoặc không đọc được khi mở (thường do tắt máy đột ngột, mất điện hay ổ đĩa lỗi):\n\n" +
+                string.Join("\n\n", DataIssues.Take().Select(i => "• " + i)) +
+                $"\n\nThư mục dữ liệu: {JobStore.DataDir}\nChi tiết cũng có trong nhật ký (Thêm → Mở thư mục log).",
+                "ScheduleApp — file dữ liệu bị hỏng", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            _dataNoticeOpen = false;
+            _dataTipShown = false;
+        }
+    }
+
     private void ExitApp()
     {
         if (_runner.IsBusy &&
@@ -1206,6 +1265,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        DataIssues.Reported -= OnDataIssue;
         InputSimulator.BeforePointer = null;
         _overlay.Dispose();
         _uiTimer.Stop();

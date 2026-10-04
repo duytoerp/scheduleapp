@@ -12,18 +12,44 @@ public static class Protector
     private const string Prefix = "dpapi:";
     private static readonly byte[] Entropy = "ScheduleApp.Secrets.v1"u8.ToArray();
 
+    /// <summary>Chuỗi đã mã hóa từng không giải mã được — mỗi chuỗi chỉ cảnh báo một lần (giao diện gọi Unprotect liên tục).</summary>
+    private static readonly HashSet<string> Warned = new(StringComparer.Ordinal);
+
     public static string Protect(string plain)
     {
         if (string.IsNullOrEmpty(plain)) return "";
         return Prefix + Convert.ToBase64String(Crypt(Encoding.UTF8.GetBytes(plain), protect: true));
     }
 
-    /// <summary>Giải mã; chuỗi không có tiền tố "dpapi:" được coi là chưa mã hóa và trả về nguyên văn.</summary>
-    public static string Unprotect(string stored)
+    /// <summary>
+    /// Giải mã; chuỗi không có tiền tố "dpapi:" được coi là chưa mã hóa và trả về nguyên văn. Không giải mã được (dữ liệu chép từ
+    /// máy / tài khoản Windows khác, chuỗi hỏng) → trả về "" và ghi một cảnh báo vào nhật ký, không báo lỗi.
+    /// </summary>
+    public static string Unprotect(string stored) => TryUnprotect(stored, out var plain) ? plain : "";
+
+    /// <summary>Như <see cref="Unprotect"/> nhưng cho biết có giải mã được không (false → <paramref name="plain"/> = "").</summary>
+    public static bool TryUnprotect(string stored, out string plain)
     {
-        if (string.IsNullOrEmpty(stored)) return "";
-        if (!stored.StartsWith(Prefix, StringComparison.Ordinal)) return stored;
-        return Encoding.UTF8.GetString(Crypt(Convert.FromBase64String(stored[Prefix.Length..]), protect: false));
+        plain = "";
+        if (string.IsNullOrEmpty(stored)) return true;
+        if (!stored.StartsWith(Prefix, StringComparison.Ordinal))
+        {
+            plain = stored;
+            return true;
+        }
+        try
+        {
+            plain = Encoding.UTF8.GetString(Crypt(Convert.FromBase64String(stored[Prefix.Length..]), protect: false));
+            return true;
+        }
+        catch (Exception ex) when (ex is FormatException or Win32Exception)
+        {
+            bool first;
+            lock (Warned) first = Warned.Add(stored);
+            if (first)
+                Log.Warn("Không giải mã được dữ liệu đã lưu (có thể chép từ máy / tài khoản Windows khác) — hãy nhập lại mật khẩu / token đó trong ⚙ Cài đặt hoặc 🔑 Bí mật.");
+            return false;
+        }
     }
 
     private static byte[] Crypt(byte[] data, bool protect)

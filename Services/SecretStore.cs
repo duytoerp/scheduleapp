@@ -14,27 +14,34 @@ public static class SecretStore
 
     private static string FilePath => Path.Combine(JobStore.DataDir, "secrets.json");
 
+    /// <summary>
+    /// Giá trị đã mã hóa theo tên. Đọc lần đầu: file hỏng → giữ bản .broken-…, dùng bản .bak (không để lần lưu sau xóa sạch bí mật cũ).
+    /// Giá trị không giải mã được (chép từ máy khác) vẫn được giữ nguyên khi lưu.
+    /// </summary>
     private static Dictionary<string, string> Items
     {
         get
         {
             if (_items != null) return _items;
-            _items = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            try
-            {
-                if (File.Exists(FilePath))
-                {
-                    var loaded = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(FilePath), JsonDefaults.Options);
-                    if (loaded != null)
-                        foreach (var (k, v) in loaded) _items[k] = v;
-                }
-            }
-            catch (Exception ex)
-            {
-                Log.Error("Không đọc được secrets.json: " + ex.Message);
-            }
-            return _items;
+            var items = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var loaded = SafeFile.Load(FilePath, "bí mật", "danh sách bí mật đang trống, hãy nhập lại trong mục 🔑 Bí mật",
+                json => JsonSerializer.Deserialize<Dictionary<string, string>>(json, JsonDefaults.Options));
+            if (loaded.Value != null)
+                foreach (var (k, v) in loaded.Value) items[k] = v;
+            return _items = items;
         }
+    }
+
+    /// <summary>Đọc secrets.json ngay lúc mở ứng dụng để file hỏng (nếu có) được báo cùng các file dữ liệu khác.</summary>
+    public static void EnsureLoaded()
+    {
+        lock (Sync) _ = Items;
+    }
+
+    /// <summary>Bỏ bản đã đọc trong bộ nhớ để lần sau đọc lại từ file (chỉ dùng cho kiểm thử).</summary>
+    internal static void ResetForTests()
+    {
+        lock (Sync) _items = null;
     }
 
     public static IReadOnlyList<string> Names
@@ -50,12 +57,17 @@ public static class SecretStore
         lock (Sync) return Items.ContainsKey(name.Trim());
     }
 
-    /// <summary>Giá trị đã giải mã, hoặc null nếu chưa có.</summary>
+    /// <summary>
+    /// Giá trị đã giải mã, hoặc null nếu chưa có. Không giải mã được (chép từ máy / tài khoản Windows khác) → báo lỗi rõ ràng
+    /// để bước dùng {{secret:…}} dừng lại, không âm thầm gõ / gửi chuỗi rỗng.
+    /// </summary>
     public static string? Get(string name)
     {
         lock (Sync)
         {
-            return Items.TryGetValue(name.Trim(), out var stored) ? Protector.Unprotect(stored) : null;
+            if (!Items.TryGetValue(name.Trim(), out var stored)) return null;
+            return Protector.TryUnprotect(stored, out var plain) ? plain
+                : throw new InvalidOperationException($"Không giải mã được bí mật \"{name.Trim()}\" (có thể chép từ máy / tài khoản Windows khác) — hãy nhập lại trong mục 🔑 Bí mật.");
         }
     }
 
@@ -76,11 +88,7 @@ public static class SecretStore
         }
     }
 
-    private static void Save()
-    {
-        Directory.CreateDirectory(JobStore.DataDir);
-        var tmp = FilePath + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(Items, JsonDefaults.Options));
-        File.Move(tmp, FilePath, true);
-    }
+    /// <summary>Lưu nguyên các giá trị đã mã hóa (kể cả giá trị không giải mã được trên máy này).</summary>
+    private static void Save() =>
+        SafeFile.WriteAllText(FilePath, JsonSerializer.Serialize(Items, JsonDefaults.Options));
 }

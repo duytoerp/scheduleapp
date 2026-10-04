@@ -100,17 +100,26 @@ public static class RunHistory
         lock (Sync)
         {
             Records.Clear();
-            try { File.Delete(FilePath); } catch (IOException) { }
+            try
+            {
+                File.Delete(FilePath);
+                File.Delete(SafeFile.BackupPath(FilePath)); // bản trước của lần rút gọn — xóa lịch sử là xóa hết
+            }
+            catch (IOException) { }
         }
     }
 
+    /// <summary>Ghi lại file sau khi bỏ bớt lần chạy cũ (file tạm + giữ bản trước thành .bak — mất điện giữa chừng không mất lịch sử).</summary>
     private static void Rewrite()
     {
         try
         {
-            File.WriteAllLines(FilePath, _records!.Select(r => JsonSerializer.Serialize(r, Compact)));
+            SafeFile.WriteAllText(FilePath, string.Concat(_records!.Select(r => JsonSerializer.Serialize(r, Compact) + Environment.NewLine)));
         }
-        catch (IOException) { }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Log.Warn("Không rút gọn được lịch sử chạy: " + ex.Message);
+        }
     }
 
     private static readonly JsonSerializerOptions Compact = new(JsonDefaults.Options) { WriteIndented = false };

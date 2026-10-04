@@ -14,36 +14,38 @@ public static class JobStore
 
     private static string FilePath => Path.Combine(DataDir, "jobs.json");
 
-    public static List<Job> Load()
+    public static List<Job> Load() => Load(FilePath);
+
+    /// <summary>
+    /// Đọc danh sách công việc, từng công việc một: công việc hỏng (vd loại bước của phiên bản mới hơn) chỉ bị bỏ qua và báo lại,
+    /// các công việc khác vẫn dùng được, file gốc đủ mọi công việc được giữ ở bản sao .broken-…. Cả file hỏng / mất → dùng bản .bak.
+    /// </summary>
+    internal static List<Job> Load(string path)
     {
-        if (!File.Exists(FilePath)) return SampleJobs();
-        try
+        if (!File.Exists(path) && !File.Exists(SafeFile.BackupPath(path))) return SampleJobs(); // lần đầu dùng
+        var loaded = SafeFile.Load(path, "danh sách công việc", "đang mở với danh sách công việc trống", ParseEach);
+        if (loaded.Value is not { } parsed) return [];
+        if (parsed.Skipped.Count > 0)
         {
-            var jobs = ReadFile(FilePath);
-            JobVersions.Remember(jobs);
-            return jobs;
+            var copy = SafeFile.PreserveBroken(loaded.Source!);
+            DataIssues.Report($"{Path.GetFileName(path)}: {parsed.Skipped.Count} công việc không đọc được nên không có trong danh sách — {string.Join("; ", parsed.Skipped)}. " +
+                "Thường do công việc được tạo bằng phiên bản ScheduleApp mới hơn. Các công việc khác vẫn dùng bình thường. " +
+                (copy != null ? $"Công việc lỗi vẫn còn nguyên trong bản sao file gốc: {copy}"
+                              : "Chưa chép được file gốc (file đang bị chương trình khác giữ?) — ScheduleApp sẽ không ghi đè lên nó."));
         }
-        catch (Exception ex)
-        {
-            var backup = FilePath + $".broken-{DateTime.Now:yyyyMMddHHmmss}";
-            try { File.Copy(FilePath, backup, true); } catch { }
-            Log.Error($"Không đọc được jobs.json ({ex.Message}). Đã sao lưu file lỗi sang {backup}.");
-            return [];
-        }
+        JobVersions.Remember(parsed.Jobs);
+        return parsed.Jobs;
     }
 
     public static void Save(IEnumerable<Job> jobs)
     {
         var list = jobs.ToList();
-        Directory.CreateDirectory(DataDir);
-        var tmp = FilePath + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(list, JsonDefaults.Options));
-        File.Move(tmp, FilePath, true);
+        SafeFile.WriteAllText(FilePath, JsonSerializer.Serialize(list, JsonDefaults.Options));
         JobVersions.Track(list);
     }
 
     public static void Export(string path, IEnumerable<Job> jobs) =>
-        File.WriteAllText(path, JsonSerializer.Serialize(jobs.ToList(), JsonDefaults.Options));
+        SafeFile.WriteAllText(path, JsonSerializer.Serialize(jobs.ToList(), JsonDefaults.Options));
 
     /// <summary>Đọc công việc từ file; gán Id mới để không trùng với công việc đang có.</summary>
     public static List<Job> Import(string path) => Renew(ReadFile(path));
@@ -78,6 +80,31 @@ public static class JobStore
 
     private static List<Job> ReadFile(string path) =>
         JsonSerializer.Deserialize<List<Job>>(File.ReadAllText(path), JsonDefaults.Options) ?? [];
+
+    /// <summary>Công việc đọc được + mô tả các công việc hỏng đã bỏ qua.</summary>
+    private sealed record Parsed(List<Job> Jobs, List<string> Skipped);
+
+    private static Parsed ParseEach(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        if (doc.RootElement.ValueKind != JsonValueKind.Array) throw new JsonException("Nội dung không phải danh sách công việc.");
+        var jobs = new List<Job>();
+        var skipped = new List<string>();
+        foreach (var item in doc.RootElement.EnumerateArray())
+        {
+            try
+            {
+                jobs.Add(item.Deserialize<Job>(JsonDefaults.Options) ?? throw new JsonException("Công việc trống (null)."));
+            }
+            catch (Exception ex) when (ex is JsonException or NotSupportedException or InvalidOperationException or FormatException or ArgumentException)
+            {
+                var name = item.ValueKind == JsonValueKind.Object && item.TryGetProperty(nameof(Job.Name), out var n) && n.ValueKind == JsonValueKind.String
+                    ? $"\"{n.GetString()}\"" : $"công việc thứ {jobs.Count + skipped.Count + 1}";
+                skipped.Add($"{name} ({ex.Message.TrimEnd('.')})");
+            }
+        }
+        return new(jobs, skipped);
+    }
 
     private static List<Job> SampleJobs() =>
     [
