@@ -57,6 +57,17 @@ public sealed class Job
     public int RemindBeforeMinutes { get; set; }
 
     public bool StopOnError { get; set; } = true;
+
+    /// <summary>
+    /// Thời gian chạy tối đa (phút, 0 = không giới hạn): quá thời gian thì dừng lần chạy và ghi là lỗi — một công việc bị treo
+    /// không chặn mãi các công việc khác. Không ghi vào JSON khi bằng 0 (file cũ giữ nguyên).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int MaxRunMinutes { get; set; }
+
+    /// <summary>Giá trị lớn nhất của <see cref="MaxRunMinutes"/>: 7 ngày.</summary>
+    public const int MaxRunMinutesLimit = 7 * 24 * 60;
+
     public List<ActionStep> Steps { get; set; } = [];
 
     /// <summary>Kích hoạt theo sự kiện (phím tắt, file mới, ứng dụng mở…), ngoài lịch chạy.</summary>

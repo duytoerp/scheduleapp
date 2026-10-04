@@ -29,8 +29,13 @@ public static class StepExecutor
                 break;
 
             case StepType.Reminder:
-                await ctx.Ui.ShowReminderAsync(string.IsNullOrWhiteSpace(s.Target) ? job.Name : s.Target, s.Text, s.WaitForUser, ct);
+            {
+                var title = string.IsNullOrWhiteSpace(s.Target) ? job.Name : s.Target;
+                // Chờ bấm OK có thể rất lâu (vắng máy cả cuối tuần): trong lúc chờ nhường lượt chạy cho công việc khác.
+                if (s.WaitForUser) await ctx.RunWithoutInputGateAsync(() => ctx.Ui.ShowReminderAsync(title, s.Text, true, ct));
+                else await ctx.Ui.ShowReminderAsync(title, s.Text, false, ct);
                 break;
+            }
 
             case StepType.Wait:
                 await Task.Delay(Math.Max(0, s.DelayMs), ct);

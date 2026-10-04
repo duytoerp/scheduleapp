@@ -63,6 +63,10 @@ internal sealed class JobEditorForm : BaseForm
         BorderStyle = BorderStyle.None
     };
     private readonly CheckBox _chkStopOnError = new() { Text = "Dừng flow khi một bước bị lỗi (mặc định cho các bước \"Theo cài đặt của công việc\")", AutoSize = true };
+    private readonly NumericUpDown _numMaxRun = new()
+    {
+        Minimum = 0, Maximum = Job.MaxRunMinutesLimit, Width = 70, AccessibleName = "Dừng nếu chạy quá (phút, 0 = không giới hạn)"
+    };
     private readonly ComboBox _cboFailureJob = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 320 };
     private readonly ComboBox _cboNotify = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
     private static readonly RunOverlayMode[] OverlayModes = Enum.GetValues<RunOverlayMode>();
@@ -449,8 +453,19 @@ internal sealed class JobEditorForm : BaseForm
     {
         var page = new TabPage("Lỗi · thông báo") { Padding = new Padding(6), UseVisualStyleBackColor = true };
         var grid = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 2 };
-        grid.Controls.Add(_chkStopOnError, 0, 0);
-        grid.SetColumnSpan(_chkStopOnError, 2);
+        // Hai điều kiện dừng flow chung một dòng, không cao hơn dòng cũ (vùng tab phía trên có chiều cao cố định).
+        // Thời gian chạy tối đa: công việc bị treo (cửa sổ không hiện, lệnh không chạy xong…) không chặn mãi các công việc khác.
+        var stopRow = Row();
+        _chkStopOnError.Margin = new Padding(3, 4, 3, 2);
+        _numMaxRun.Margin = new Padding(3, 2, 3, 3);
+        stopRow.Controls.AddRange([_chkStopOnError, new Label { Text = "Dừng nếu chạy quá", AutoSize = true, Margin = new Padding(24, 5, 3, 2) },
+            _numMaxRun, new Label { Text = "phút (0 = không giới hạn)", AutoSize = true, Margin = new Padding(3, 5, 3, 2) }]);
+        grid.Controls.Add(stopRow, 0, 0);
+        grid.SetColumnSpan(stopRow, 2);
+        _tips.SetToolTip(_numMaxRun,
+            "Lần chạy nào quá số phút này thì bị dừng và ghi là lỗi: chạy công việc xử lý lỗi, gửi thông báo như khi lỗi.\n" +
+            "Tính cả lúc chờ bạn bấm OK ở bước Nhắc nhở; không tính lúc chờ trong hàng đợi. Tránh một công việc bị treo " +
+            "(cửa sổ không hiện, lệnh không chạy xong…) chặn mọi công việc khác.");
 
         _cboFailureJob.Items.Add("(không)");
         foreach (var j in _otherJobs) _cboFailureJob.Items.Add(j.Name);
@@ -483,9 +498,10 @@ internal sealed class JobEditorForm : BaseForm
                    "Ảnh chụp màn hình lúc lỗi được lưu trong thư mục log và gửi kèm thông báo. Kênh thông báo cấu hình trong ⚙ Cài đặt." +
                    (NotificationService.AnyChannelEnabled ? "" : "  (Chưa bật kênh thông báo nào.)"),
             AutoSize = true,
-            MaximumSize = new Size(1000, 0),
+            // Vừa bề rộng tab cả khi cửa sổ thu nhỏ hết cỡ; vẫn hai dòng như trước.
+            MaximumSize = new Size(900, 0),
             ForeColor = UiText.Muted,
-            Margin = new Padding(3, 10, 3, 3)
+            Margin = new Padding(3, 6, 3, 3)
         };
         grid.Controls.Add(hint, 0, 4);
         grid.SetColumnSpan(hint, 2);
@@ -566,6 +582,7 @@ internal sealed class JobEditorForm : BaseForm
         _chkWake.Checked = _job.WakeComputer;
         _cboMissed.SelectedIndex = Array.IndexOf(MissedPolicies, _job.MissedRunPolicy);
         _chkStopOnError.Checked = _job.StopOnError;
+        _numMaxRun.Value = Math.Clamp(_job.MaxRunMinutes, 0, Job.MaxRunMinutesLimit);
         _cboFailureJob.SelectedIndex = _job.OnFailureJobId is Guid fid ? _otherJobs.FindIndex(j => j.Id == fid) + 1 : 0;
         _cboNotify.SelectedIndex = Array.IndexOf(NotifyModes, _job.NotifyMode);
         _cboOverlay.SelectedIndex = Math.Max(0, Array.IndexOf(OverlayModes, _job.RunOverlay));
@@ -785,6 +802,7 @@ internal sealed class JobEditorForm : BaseForm
         job.WakeComputer = _chkWake.Checked;
         job.MissedRunPolicy = MissedPolicies[Math.Max(0, _cboMissed.SelectedIndex)];
         job.StopOnError = _chkStopOnError.Checked;
+        job.MaxRunMinutes = (int)_numMaxRun.Value;
         job.OnFailureJobId = _cboFailureJob.SelectedIndex > 0 ? _otherJobs[_cboFailureJob.SelectedIndex - 1].Id : null;
         job.NotifyMode = NotifyModes[Math.Max(0, _cboNotify.SelectedIndex)];
         job.RunOverlay = OverlayModes[Math.Max(0, _cboOverlay.SelectedIndex)];
@@ -867,10 +885,61 @@ internal sealed class JobEditorForm : BaseForm
             MessageBox.Show(this, "Flow có lỗi cấu trúc nên sẽ không chạy được:\n\n" + string.Join("\n", structure.Errors.Take(8)) + "\n\nVẫn lưu?",
                 Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
             return;
+        int maxRun = (int)_numMaxRun.Value;
+        if (StepLongerThan(_job.Steps, maxRun) is int slow &&
+            MessageBox.Show(this, $"Riêng bước {slow + 1} ({_job.Steps[slow].Describe()}) đã lâu hơn thời gian chạy tối đa {maxRun} phút — " +
+                                  "chạy tới bước này công việc sẽ bị dừng và ghi là lỗi.\n\nVẫn lưu?",
+                Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+        {
+            FocusOnTab(_numMaxRun);
+            return;
+        }
 
         ApplyTo(_job);
         DialogResult = DialogResult.OK;
         Close();
+    }
+
+    /// <summary>Mở tab chứa ô (hiện lại phần tab nếu đang mở rộng sơ đồ) rồi đặt con trỏ vào ô.</summary>
+    private void FocusOnTab(Control c)
+    {
+        for (var p = c.Parent; p != null; p = p.Parent)
+        {
+            if (p is not TabPage page || page.Parent is not TabControl tabs) continue;
+            if (!tabs.Visible) _toggleCanvas();
+            tabs.SelectedTab = page;
+            break;
+        }
+        c.Focus();
+    }
+
+    /// <summary>
+    /// Vị trí bước (đang bật, không nằm trong khối Nếu/Lặp đã tắt) mà riêng nó đã lâu hơn <paramref name="maxMinutes"/> phút:
+    /// bước Chờ, bước Phát video đã biết tổng thời lượng. Null nếu không có (hoặc không giới hạn thời gian).
+    /// </summary>
+    internal static int? StepLongerThan(IReadOnlyList<ActionStep> steps, int maxMinutes)
+    {
+        if (maxMinutes <= 0) return null;
+        long limitMs = maxMinutes * 60_000L;
+        var fs = FlowStructure.Build(steps);
+        for (int i = 0; i < steps.Count; i++)
+        {
+            var s = steps[i];
+            if (!s.Enabled)
+            {
+                // Tắt một khối Nếu/Lặp = bỏ qua cả khối.
+                if (s.Type is StepType.If or StepType.Loop && fs.IsValid && fs.Match[i] > i) i = fs.Match[i];
+                continue;
+            }
+            long ms = s.Type switch
+            {
+                StepType.Wait => s.DelayMs,
+                StepType.PlayMedia => s.MediaDurationMs,
+                _ => 0
+            };
+            if (ms > limitMs) return i;
+        }
+        return null;
     }
 
     // ───────────────────────────── Danh sách bước ─────────────────────────────

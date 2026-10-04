@@ -83,7 +83,9 @@ public sealed class FlowContext
     public IUserNotifier Ui { get; }
     public RunOptions Options { get; }
     public Func<Guid, Job?> FindJob { get; }
-    public CancellationToken Ct { get; }
+
+    /// <summary>Dừng / quá thời gian chạy tối đa. Sau khi quá giờ, FlowRunner thay token mới để chạy công việc xử lý lỗi.</summary>
+    public CancellationToken Ct { get; internal set; }
 
     public Dictionary<string, string> Vars { get; } = new(StringComparer.OrdinalIgnoreCase);
     public VariableExpander Expander { get; }
@@ -118,6 +120,20 @@ public sealed class FlowContext
 
     /// <summary>Kiểm tra trước mỗi bước (chế độ an toàn: tạm dừng khi người dùng đụng chuột/phím).</summary>
     public Func<FlowContext, Task>? BeforeStep { get; init; }
+
+    /// <summary>
+    /// Do <see cref="FlowRunner"/> gắn: chạy việc chờ mà tạm nhả lượt chạy. Null khi flow chạy ngoài hàng đợi
+    /// (vd kiểm thử gọi thẳng <see cref="FlowEngine"/>) — khi đó chỉ chờ như thường.
+    /// </summary>
+    internal Func<FlowContext, Func<Task>, Task>? GateRelease { get; init; }
+
+    /// <summary>
+    /// Chờ một việc không cần chuột/bàn phím — vd người dùng bấm OK trên cửa sổ nhắc nhở — mà không giữ lượt chạy:
+    /// trong lúc chờ, công việc khác trong hàng đợi được chạy; chờ xong thì lấy lại lượt rồi mới chạy tiếp flow.
+    /// <paramref name="wait"/> được gọi khi còn giữ lượt (cửa sổ hiện ra trước khi công việc khác bắt đầu thao tác).
+    /// Dừng và thời gian chạy tối đa vẫn có hiệu lực trong lúc chờ.
+    /// </summary>
+    public Task RunWithoutInputGateAsync(Func<Task> wait) => GateRelease is { } release ? release(this, wait) : wait();
 
     public string Expand(string? template) => Expander.Expand(template ?? "");
 
