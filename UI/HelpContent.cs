@@ -92,7 +92,8 @@ internal static class HelpContent
             - **▶ Chạy thử flow** (`F5`): nút đang chạy viền xanh dương có vòng quay, nút chạy xong có dấu ✓ xanh lá, bước lỗi viền đỏ.
             - **⤵ Chạy từ bước chọn**: bỏ qua các bước phía trên.
             - **Điểm dừng** (`F9`) và **⏭ Chạy từng bước**: flow dừng trước bước, hiện giá trị mọi biến. `F10` bước tiếp, `F5` chạy tiếp, `Shift+F5` dừng.
-            - **Khung trạng thái** ở góc phải dưới màn hình (khi flow chạy, kể cả theo lịch): đang ở bước mấy / tổng số bước, chạy được bao lâu, dòng nhật ký mới nhất. **⏸ Tạm dừng** dừng trước bước kế tiếp rồi **⏭ Bước tiếp** từng bước một hoặc **▶ Chạy tiếp**; **■ Dừng** dừng ngay. Khung tự dời sang góc khác khi flow cần click vào chỗ nó che; tắt ở *Cài đặt → Chung*.
+            - **Khung trạng thái** ở góc phải dưới màn hình (khi flow chạy, kể cả theo lịch): đang ở bước mấy / tổng số bước, chạy được bao lâu, dòng nhật ký mới nhất. **⏸ Tạm dừng** dừng trước bước kế tiếp rồi **⏭ Bước tiếp** từng bước một hoặc **▶ Chạy tiếp**; **■ Dừng** dừng ngay. Khung tự dời sang góc khác khi flow cần click vào chỗ nó che.
+            - **Bật / tắt khung trạng thái:** nút **— Ẩn** trên khung ẩn cho lần chạy này (flow vẫn chạy tiếp; cả các kịch bản / dòng dữ liệu / lần chạy lại của bộ kiểm thử và flow đang chờ); chuột phải biểu tượng ScheduleApp ở khay → **Hiện khung trạng thái khi flow chạy** (hoặc *Cài đặt → Chung*) cho mọi công việc; riêng từng công việc ở tab *Lỗi · thông báo* → **Khung trạng thái góc phải khi chạy**: Theo cài đặt chung / Luôn hiện / Không hiện (vd flow trình chiếu, phát video — cũng áp dụng khi công việc này được gọi bằng *Chạy công việc*).
             - **Phiên bản cũ…**: mỗi lần lưu, bản trước được giữ lại (30 bản) để khôi phục.
             ## Ghi thao tác (macro)
             Bấm **● Ghi thao tác…**, thao tác bình thường trên ứng dụng khác rồi **Dừng & lưu** (`Ctrl+Shift+Q`). Các bước được chèn sau bước đang chọn.
@@ -143,7 +144,7 @@ internal static class HelpContent
             ## Biến có sẵn
             - Ngày giờ: `{{today}}`, `{{now}}`, `{{today-1}}`, `{{now+30m}}`, định dạng `{{today:dd/MM/yyyy}}`.
             - `{{clipboard}}`, `{{env:USERNAME}}`, `{{random:1-100}}`, `{{guid}}`.
-            - Kết quả gần nhất: `{{lastOutput}}` (lệnh cmd), `{{lastError}}` (bước lỗi), `{{http.status}}`, `{{http.body}}` (gọi API).
+            - Kết quả gần nhất: `{{lastOutput}}` (lệnh cmd), `{{lastError}}` (bước lỗi), `{{lastWindow}}` (cửa sổ vừa thu nhỏ; rỗng nếu lúc đó không có cửa sổ ứng dụng nào), `{{http.status}}`, `{{http.body}}` (gọi API).
             - Trong vòng lặp: `{{loop.index}}`, `{{row.TênCột}}` (mỗi dòng Excel/CSV), `{{item}}`.
             - Dynamics 365: `{{d365.lastId}}` (Id bản ghi vừa lưu/mở), `{{d365.created}}` (các bản ghi do flow tạo).
             ## Tự tạo biến

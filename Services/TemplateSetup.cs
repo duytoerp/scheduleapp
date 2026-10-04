@@ -29,6 +29,11 @@ public static partial class TemplateSetup
         public bool Exists { get; init; }
         /// <summary>Đường dẫn là thư mục (chọn bằng hộp chọn thư mục).</summary>
         public bool IsFolder { get; init; }
+        /// <summary>
+    /// Biến là nguyên một dòng của danh sách phát video / nhạc (vd {{video1}}) — chọn file video hoặc cả thư mục (dòng là thư mục
+    /// thì phát mọi video trong đó), xem ảnh thu nhỏ.
+    /// </summary>
+        public bool IsMediaFile { get; set; }
 
         /// <summary>Giá trị còn là chữ mẫu (ten-cong-ty, tenorg, Id toàn số 0…) — cần sửa trước khi chạy.</summary>
         public bool NeedsInput => Kind switch
@@ -75,6 +80,9 @@ public static partial class TemplateSetup
                 if (!item.Jobs.Contains(job)) item.Jobs.Add(job);
             }
         }
+
+        foreach (var item in items.Where(i => i.Kind == ItemKind.Variable))
+            item.IsMediaFile = item.Jobs.Any(j => j.Steps.Any(s => s.Type == StepType.PlayMedia && s.MediaLines.Any(l => IsWholeVariable(l, item.Key))));
 
         // ── Bí mật ({{secret:Tên}} ở bất kỳ ô nào) ──
         foreach (var job in jobs)
@@ -124,6 +132,10 @@ public static partial class TemplateSetup
 
         return [.. items.OrderBy(i => i.Kind)];
     }
+
+    /// <summary>Dòng chỉ gồm đúng biến <paramref name="name"/> (có thể nằm trong dấu nháy), vd "{{video1}}".</summary>
+    private static bool IsWholeVariable(string line, string name) =>
+        Regex.IsMatch(line.Trim(), @"^[""']?\{\{\s*" + Regex.Escape(name) + @"\s*\}\}[""']?$", RegexOptions.IgnoreCase);
 
     /// <summary>Đường dẫn trong các ô chứa file / thư mục (không gồm ô chỉ là một {{biến}}).</summary>
     private static IEnumerable<(string Path, bool Folder)> PathsOf(Job job)

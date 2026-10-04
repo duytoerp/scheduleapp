@@ -2207,5 +2207,30 @@
     "OnFailureJobId": null,
     "LastRun": null,
     "LastResult": null
+  },
+  {
+    "Id": "89abcf7d-7b8c-4748-ba4d-7eb00710cf26",
+    "Name": "15 · 15:30: ẩn ứng dụng đang dùng, phát 2 video rồi mở lại",
+    "Group": "Ví dụ cơ bản",
+    "Description": "Ẩn cửa sổ đang dùng → phát video 1 (toàn màn hình, hết tự tắt) → chờ 10 giây → phát video 2 → mở lại đúng cửa sổ lúc đầu (lúc 15:30 không có cửa sổ nào đang mở thì chỉ phát video). Bấm Esc khi đang phát: bỏ phần còn lại và mở lại ứng dụng ngay — lần chạy đó được ghi là có bước lỗi (Esc dừng phát giữa chừng).",
+    "Enabled": false,
+    "Schedule": { "Type": "Daily", "StartAt": "2026-10-04T15:30:00+07:00", "Days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] },
+    "StopOnError": true,
+    "RunOverlay": "Hide",
+    "Variables": [
+      { "Name": "video1", "Value": "<chọn file video 1>", "Description": "File video phát trước — bấm \"Chọn video…\" để chọn, ảnh thu nhỏ và thời lượng hiện ngay bên cạnh." },
+      { "Name": "video2", "Value": "<chọn file video 2>", "Description": "File video phát sau, cách video 1 mười giây — bấm \"Chọn video…\" để chọn." }
+    ],
+    "Steps": [
+      { "Type": "MinimizeWindow", "Target": "", "Variable": "ungDungTruoc", "DelayMs": 5000, "DelayAfterMs": 500 },
+      { "Type": "PlayMedia", "Text": "{{video1}}", "Force": true, "DelayAfterMs": 0, "OnError": "GotoLabel", "ErrorLabel": "moLai" },
+      { "Type": "Wait", "DelayMs": 10000, "DelayAfterMs": 0 },
+      { "Type": "PlayMedia", "Text": "{{video2}}", "Force": true, "DelayAfterMs": 0, "OnError": "GotoLabel", "ErrorLabel": "moLai" },
+      { "Type": "Label", "Target": "moLai", "DelayAfterMs": 0 },
+      { "Type": "If", "Condition": "WindowExists", "Target": "{{ungDungTruoc}}", "DelayMs": 0, "DelayAfterMs": 0 },
+      { "Type": "FocusWindow", "Target": "{{ungDungTruoc}}", "DelayMs": 5000, "DelayAfterMs": 0 },
+      { "Type": "EndIf", "DelayAfterMs": 0 }
+    ],
+    "Triggers": []
   }
 ]

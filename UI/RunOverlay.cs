@@ -40,8 +40,10 @@ internal sealed partial class RunOverlay : Form
     private readonly Button _btnContinue = HudButton("▶ Chạy tiếp");
     private readonly Button _btnStop = HudButton("■ Dừng", Color.FromArgb(196, 43, 28));
     private readonly Button _btnClose = HudButton("✕ Đóng");
+    private readonly Button _btnHide = HudButton("— Ẩn");
     private readonly Label _hint = new() { Text = "Ctrl+Shift+Q = dừng", AutoSize = true, ForeColor = Dim, BackColor = Back };
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 250 };
+    private readonly ToolTip _tips = new() { ShowAlways = true };
 
     private readonly object _boundsLock = new();
     private Rectangle _avoidBounds;     // vùng đang che (rỗng khi ẩn) — đọc từ luồng của flow
@@ -53,6 +55,11 @@ internal sealed partial class RunOverlay : Form
     private string _detail = "";
     private bool _detailWarn;
     private DateTime _finishedAt;
+    /// <summary>
+    /// Người dùng đã bấm "Ẩn" — không hiện lại tới khi hết flow đang chạy / đang chờ (<see cref="EndDismissal"/>):
+    /// một bộ kiểm thử, kiểm thử theo dữ liệu hay lần chạy lại xếp hàng từng kịch bản / dòng, mỗi cái là một lần chạy riêng.
+    /// </summary>
+    private bool _dismissed;
 
     public event Action? PauseClicked, StepClicked, ContinueClicked, StopClicked;
 
@@ -74,9 +81,12 @@ internal sealed partial class RunOverlay : Form
         _btnContinue.Click += (_, _) => ContinueClicked?.Invoke();
         _btnStop.Click += (_, _) => StopClicked?.Invoke();
         _btnClose.Click += (_, _) => Hide();
+        _btnHide.Click += (_, _) => DismissRun();
+        _tips.SetToolTip(_btnStop, "Dừng flow ngay (Ctrl+Shift+Q)");
+        _tips.SetToolTip(_btnHide, "Ẩn khung cho lần chạy này (cả bộ kiểm thử / các flow đang chờ) — flow vẫn chạy tiếp. Tắt hẳn: chuột phải biểu tượng ScheduleApp ở khay.");
         _buttons.Padding = new Padding(S(EdgeMargin) - 3, 0, S(8), S(8));
         _hint.Margin = new Padding(S(6), S(8), 0, 0);
-        _buttons.Controls.AddRange([_btnPause, _btnStep, _btnContinue, _btnStop, _btnClose, _hint]);
+        _buttons.Controls.AddRange([_btnPause, _btnStep, _btnContinue, _btnStop, _btnHide, _btnClose, _hint]);
         _buttons.MouseDown += (_, e) => DragStart(e);
         Controls.Add(_buttons);
         ResumeLayout(false);
@@ -114,6 +124,7 @@ internal sealed partial class RunOverlay : Form
     public void ShowProgress(RunProgress p)
     {
         bool newRun = Apply(p);
+        if (IsDismissed) return;
         if (newRun && p.Ok == null) MoveTo(Home());
         if (!Visible) Show();
         _timer.Start();
@@ -140,6 +151,18 @@ internal sealed partial class RunOverlay : Form
         ApplyState();
         return newRun;
     }
+
+    /// <summary>Người dùng đã bấm "Ẩn" — flow vẫn chạy tiếp; khung hiện lại ở lần chạy sau khi đã hết flow đang chạy / đang chờ.</summary>
+    internal bool IsDismissed => _dismissed;
+
+    internal void DismissRun()
+    {
+        if (_run != null) _dismissed = true;
+        Hide();
+    }
+
+    /// <summary>Không còn flow nào đang chạy / đang chờ — lần chạy sau lại hiện khung (bỏ "Ẩn").</summary>
+    internal void EndDismissal() => _dismissed = false;
 
     /// <summary>Flow đang chờ người dùng ở bước <paramref name="stepText"/> (null = đã chạy tiếp).</summary>
     public void SetPaused(string? reason, string? stepText)
@@ -195,12 +218,22 @@ internal sealed partial class RunOverlay : Form
         _btnPause.Text = _state == State.PauseRequested ? "⏸ Chờ bước đang chạy…" : "⏸ Tạm dừng";
         _btnStep.Visible = _btnContinue.Visible = _state == State.Paused;
         _btnStop.Visible = _state != State.Finished;
-        _hint.Visible = _state is State.Running or State.PauseRequested;
         _btnClose.Visible = _state == State.Finished;
+        _btnHide.Visible = _state is State.Running or State.PauseRequested;
+        // Gợi ý hiện cùng các nút lúc đang chạy: Tạm dừng, Dừng, Ẩn.
+        _hint.Visible = _state is State.Running or State.PauseRequested && HintFits(_btnPause, _btnStop, _btnHide);
         _buttons.ResumeLayout(true);
         ResumeLayout(true);
         Size = new Size(S(LogicalWidth), ContentHeight() + _buttons.PreferredSize.Height);
         Invalidate();
+    }
+
+    /// <summary>Dòng gợi ý phím tắt vừa chỗ còn lại bên phải các nút (không thì chỉ còn trong tooltip của nút Dừng).</summary>
+    private bool HintFits(params Button[] shown)
+    {
+        int used = _buttons.Padding.Horizontal + _hint.Margin.Horizontal + _hint.PreferredWidth
+                   + shown.Sum(b => b.GetPreferredSize(Size.Empty).Width + b.Margin.Horizontal);
+        return used <= S(LogicalWidth);
     }
 
     private void Tick()

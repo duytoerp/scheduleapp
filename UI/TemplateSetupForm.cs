@@ -1,3 +1,4 @@
+using ScheduleApp.Models;
 using ScheduleApp.Services;
 using ScheduleApp.Services.Engine;
 using Item = ScheduleApp.Services.TemplateSetup.Item;
@@ -15,6 +16,11 @@ internal sealed class TemplateSetupForm : BaseForm
     private readonly Action? _openSettings;
     private readonly Dictionary<Item, TextBox> _inputs = [];
     private readonly Dictionary<Item, Label> _status = [];
+    /// <summary>Ảnh thu nhỏ của biến là file video (vd {{video1}} trong bước "Phát video / nhạc").</summary>
+    private readonly Dictionary<Item, PictureBox> _previews = [];
+    private readonly Dictionary<Item, int> _previewVersions = [];
+    /// <summary>Lần đọc ảnh / thời lượng đang chạy của từng ô — gõ tiếp hoặc đóng cửa sổ thì hủy, không giữ chỗ đọc ảnh thu nhỏ.</summary>
+    private readonly Dictionary<Item, CancellationTokenSource> _previewLoads = [];
     private readonly ToolTip _tips = new();
 
     /// <summary>Số chỗ đã thay đổi sau khi bấm Áp dụng.</summary>
@@ -115,6 +121,32 @@ internal sealed class TemplateSetupForm : BaseForm
 
         switch (item.Kind)
         {
+            case ItemKind.Variable when item.IsMediaFile:
+            {
+                var box = Input(item.Suggested ?? item.Value);
+                grid.Controls.Add(box);
+                var extra = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+                var choose = new Button { Text = "Chọn video…", AutoSize = true, Margin = new Padding(6, 4, 0, 0) };
+                _tips.SetToolTip(choose, "Chọn file video / nhạc — hiện ảnh thu nhỏ và thời lượng để kiểm tra đúng file.");
+                choose.Click += (_, _) => ChooseMedia(box);
+                // Dòng danh sách phát là thư mục thì phát mọi video trong đó — biến cũng có thể là một thư mục.
+                var chooseFolder = new Button { Text = "Thư mục…", AutoSize = true, Margin = new Padding(4, 4, 0, 0) };
+                _tips.SetToolTip(chooseFolder, "Chọn cả thư mục — phát mọi video / nhạc trong đó theo thứ tự tên.");
+                chooseFolder.Click += (_, _) => ChooseMediaFolder(box);
+                var preview = new PictureBox
+                {
+                    Size = LogicalToDeviceUnits(new Size(72, 54)), SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.FromArgb(236, 236, 238),
+                    Margin = new Padding(8, 2, 0, 2), AccessibleName = "Ảnh thu nhỏ của " + item.Key
+                };
+                status.MaximumSize = new Size(LogicalToDeviceUnits(150), 0);
+                extra.Controls.AddRange([choose, chooseFolder, preview, status]);
+                grid.Controls.Add(extra);
+                _previews[item] = preview;
+                _inputs[item] = box;
+                box.TextChanged += async (_, _) => await UpdateMediaPreviewAsync(item, box);
+                _ = UpdateMediaPreviewAsync(item, box);
+                break;
+            }
             case ItemKind.Variable:
             {
                 var box = Input(item.Suggested ?? item.Value);
@@ -185,6 +217,99 @@ internal sealed class TemplateSetupForm : BaseForm
 
     private TextBox Input(string text) => new() { Text = text, Dock = DockStyle.Fill, Margin = new Padding(0, 6, 0, 4) };
 
+    /// <summary>Chọn file video / nhạc cho biến dùng trong danh sách phát.</summary>
+    private void ChooseMedia(TextBox box)
+    {
+        var exts = string.Join(";", MediaPlayback.Extensions.Select(e => "*" + e));
+        using var dlg = new OpenFileDialog { Title = "Chọn video / nhạc", Filter = $"Video / nhạc ({exts})|{exts}|Tất cả file (*.*)|*.*" };
+        var current = Environment.ExpandEnvironmentVariables(box.Text.Trim().Trim('"'));
+        try
+        {
+            var dir = Directory.Exists(current) ? current : Path.GetDirectoryName(current);
+            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir)) dlg.InitialDirectory = dir;
+            if (File.Exists(current)) dlg.FileName = Path.GetFileName(current);
+        }
+        catch (ArgumentException) { }
+        if (dlg.ShowDialog(this) == DialogResult.OK) box.Text = ProfileRelative(dlg.FileName);
+    }
+
+    /// <summary>Chọn thư mục video / nhạc cho biến dùng trong danh sách phát (phát mọi file trong đó theo tên).</summary>
+    private void ChooseMediaFolder(TextBox box)
+    {
+        using var dlg = new FolderBrowserDialog { UseDescriptionForTitle = true, Description = "Chọn thư mục video / nhạc" };
+        var current = Environment.ExpandEnvironmentVariables(box.Text.Trim().Trim('"'));
+        try
+        {
+            var dir = Directory.Exists(current) ? current : Path.GetDirectoryName(current);
+            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir)) dlg.SelectedPath = dir;
+        }
+        catch (ArgumentException) { }
+        if (dlg.ShowDialog(this) == DialogResult.OK) box.Text = ProfileRelative(dlg.SelectedPath);
+    }
+
+    /// <summary>
+    /// Ảnh thu nhỏ + thời lượng của file video trong ô — để biết chọn đúng file chưa.
+    /// Giá trị là thư mục: số video trong đó và ảnh của video phát đầu tiên.
+    /// </summary>
+    private async Task UpdateMediaPreviewAsync(Item item, TextBox box)
+    {
+        int version = _previewVersions[item] = _previewVersions.GetValueOrDefault(item) + 1;
+        if (_previewLoads.Remove(item, out var previous)) previous.Cancel();
+        var status = _status[item];
+        var text = box.Text.Trim();
+        var path = Environment.ExpandEnvironmentVariables(text.Trim('"'));
+        bool usable = !TemplateSetup.IsPlaceholder(text) && !text.Contains("{{");
+        bool exists = usable && File.Exists(path);
+        bool folder = usable && !exists && Directory.Exists(path);
+        MediaThumbnails.Thumbnail? thumb = null;
+        TimeSpan? duration = null;
+        List<string>? folderFiles = null;
+        string? shown = exists ? path : null;
+        if (exists || folder)
+        {
+            using var cts = new CancellationTokenSource();
+            _previewLoads[item] = cts;
+            try
+            {
+                if (folder)
+                {
+                    // Thư mục trên ổ mạng có thể chậm / không mở được → đọc ở nền; không đọc được = null.
+                    folderFiles = await Task.Run<List<string>?>(() =>
+                    {
+                        try { return MediaPlayback.Resolve([path]).Files; }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
+                    }, cts.Token);
+                    shown = folderFiles?.FirstOrDefault();
+                }
+                if (shown != null)
+                {
+                    thumb = await MediaThumbnails.GetAsync(shown, 160, cts.Token);
+                    if (exists) duration = await MediaInfo.GetDurationAsync(shown, cts.Token);
+                }
+            }
+            catch (OperationCanceledException) { }
+            finally
+            {
+                if (_previewLoads.TryGetValue(item, out var mine) && mine == cts) _previewLoads.Remove(item);
+            }
+        }
+        if (IsDisposed || version != _previewVersions[item])
+        {
+            thumb?.Dispose();
+            return;
+        }
+        var picture = _previews[item];
+        var old = picture.Image;
+        picture.Image = thumb?.Image;
+        old?.Dispose();
+        if (exists) SetStatus(status, true, "✔ " + (duration is { } d ? ActionStep.FormatDuration(d) : Path.GetFileName(path)), "");
+        else if (folder)
+            SetStatus(status, folderFiles is { Count: > 0 }, $"📁 thư mục: {folderFiles?.Count} video",
+                folderFiles == null ? "⚠ không mở được thư mục" : "⚠ thư mục không có video");
+        else SetStatus(status, false, "", TemplateSetup.IsPlaceholder(text) ? "⚠ chưa chọn video" : text.Contains("{{") ? "tính khi chạy" : "⚠ không thấy file");
+        _tips.SetToolTip(picture, shown);
+    }
+
     private static void SetStatus(Label label, bool ok, string okText, string badText)
     {
         label.Text = ok ? okText : badText;
@@ -239,9 +364,15 @@ internal sealed class TemplateSetupForm : BaseForm
             if (dlg.ShowDialog(this) == DialogResult.OK) chosen = dlg.FileName;
         }
         if (chosen == null) return;
-        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (chosen.StartsWith(profile + "\\", StringComparison.OrdinalIgnoreCase)) chosen = "%USERPROFILE%" + chosen[profile.Length..];
+        chosen = ProfileRelative(chosen);
         box.Text = suffix.Length > 0 ? chosen.TrimEnd('\\') + "\\" + suffix : chosen;
+    }
+
+    /// <summary>Đường dẫn trong hồ sơ người dùng ghi dạng %USERPROFILE%\… — mẫu dùng được trên máy khác.</summary>
+    private static string ProfileRelative(string path)
+    {
+        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return path.StartsWith(profile + "\\", StringComparison.OrdinalIgnoreCase) ? "%USERPROFILE%" + path[profile.Length..] : path;
     }
 
     private void Apply()
@@ -256,9 +387,20 @@ internal sealed class TemplateSetupForm : BaseForm
         Close();
     }
 
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        foreach (var load in _previewLoads.Values) load.Cancel();
+        _previewLoads.Clear();
+        base.OnFormClosed(e);
+    }
+
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _tips.Dispose();
+        if (disposing)
+        {
+            _tips.Dispose();
+            foreach (var picture in _previews.Values) picture.Image?.Dispose();
+        }
         base.Dispose(disposing);
     }
 }

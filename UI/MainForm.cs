@@ -363,6 +363,17 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         trayRun.DropDownItems.Add("(trống)");
         trayMenu.Items.Add(trayRun);
         trayMenu.Items.Add("Dừng flow đang chạy", null, (_, _) => _runner.StopAll());
+        var trayOverlay = new ToolStripMenuItem("Hiện khung trạng thái khi flow chạy") { CheckOnClick = true };
+        trayMenu.Opening += (_, _) => trayOverlay.Checked = SettingsStore.Current.ShowRunOverlay;
+        trayOverlay.CheckedChanged += (_, _) =>
+        {
+            if (SettingsStore.Current.ShowRunOverlay == trayOverlay.Checked) return;
+            SettingsStore.Current.ShowRunOverlay = trayOverlay.Checked;
+            SettingsStore.Save();
+            if (!trayOverlay.Checked) _overlay.Hide();
+            Log.Info(trayOverlay.Checked ? "Đã bật khung trạng thái ở góc phải màn hình." : "Đã tắt khung trạng thái ở góc phải màn hình (bật lại: chuột phải biểu tượng ở khay).");
+        };
+        trayMenu.Items.Add(trayOverlay);
         trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add("Thoát", null, (_, _) => ExitApp());
         _tray.Icon = AppIcon.Get();
@@ -474,7 +485,8 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
             BeginInvoke(new MethodInvoker(() =>
             {
                 if (_overlay.IsDisposed) return;
-                if (SettingsStore.Current.ShowRunOverlay) _overlay.ShowProgress(p);
+                // Công việc có thể có cài đặt riêng (vd flow trình chiếu / phát video: không hiện khung).
+                if (p.ShowOverlay(SettingsStore.Current.ShowRunOverlay)) _overlay.ShowProgress(p);
                 else _overlay.Hide();
             }));
         };
@@ -521,6 +533,9 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
             {
                 if (running && SettingsStore.Current.SafeMode) _guard.Start();
                 else _guard.Stop();
+                // "— Ẩn" trên khung trạng thái có hiệu lực tới khi hết flow đang chạy / đang chờ: bộ kiểm thử, kiểm thử theo dữ liệu
+                // và lần chạy lại xếp hàng từng kịch bản ngay sau kịch bản trước (lúc callback này chạy, hàng đợi vẫn còn kịch bản kế).
+                if (!running && !_runner.IsBusy) _overlay.EndDismissal();
             }));
         };
         _runner.BeforeStep = async ctx =>

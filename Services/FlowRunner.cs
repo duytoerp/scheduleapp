@@ -104,7 +104,7 @@ public sealed class FlowRunner
 
             // Kịch bản kiểm thử chạy riêng lẻ (theo lịch, thủ công…) cũng có báo cáo của nó; chạy theo bộ thì bộ tự ghi báo cáo chung.
             options ??= RunOptions.Default;
-            progress = new RunProgress(job.Id, job.Name, trigger, started, -1, job.Steps.Count, "", options.IsTest);
+            progress = new RunProgress(job.Id, job.Name, trigger, started, -1, job.Steps.Count, "", options.IsTest) { Overlay = EffectiveOverlay(job) };
             Progress?.Invoke(progress);
             string? reportFolder = null;
             if (job.IsTestCase && options.Recorder == null)
@@ -203,7 +203,7 @@ public sealed class FlowRunner
         lock (_sync) _active = ctx;
         try
         {
-            return await RunFlowCoreAsync(job, trigger, options, ctx, total);
+            return await RunFlowCoreAsync(job, trigger, options, ctx, total, progress);
         }
         finally
         {
@@ -212,7 +212,7 @@ public sealed class FlowRunner
         }
     }
 
-    private async Task<FlowResult> RunFlowCoreAsync(Job job, string trigger, RunOptions options, FlowContext ctx, int total)
+    private async Task<FlowResult> RunFlowCoreAsync(Job job, string trigger, RunOptions options, FlowContext ctx, int total, RunProgress progress)
     {
         ctx.Vars["job.name"] = job.Name;
         ctx.Vars["run.trigger"] = trigger;
@@ -238,6 +238,10 @@ public sealed class FlowRunner
             if (!result.Ok && job.OnFailureJobId is Guid cleanupId && _findJob(cleanupId) is { } cleanup && cleanup.Id != job.Id)
             {
                 Log.Warn($"   ↪ Chạy công việc xử lý lỗi \"{cleanup.Name}\"…");
+                // Công việc xử lý lỗi đặt "Không hiện" khung trạng thái (vd phát video / trình chiếu) → ẩn khung trong lúc nó chạy;
+                // kết quả cuối của lần chạy vẫn hiện theo cài đặt của công việc chính.
+                if (progress.Overlay == RunOverlayMode.Default && EffectiveOverlay(cleanup) == RunOverlayMode.Hide)
+                    Progress?.Invoke(progress with { Overlay = RunOverlayMode.Hide, StepText = Log.Redact("Xử lý lỗi: " + cleanup.Name) });
                 ctx.Vars["failed.message"] = result.Message;
                 ctx.Vars["failed.step"] = result.FailedStep.ToString();
                 ctx.Depth = 1;
@@ -283,6 +287,27 @@ public sealed class FlowRunner
         }
     }
 
+    /// <summary>
+    /// Cài đặt khung trạng thái cho cả lần chạy: theo công việc; công việc "Theo cài đặt chung" mà gọi (kể cả gọi lồng) một công việc
+    /// "Không hiện" — vd công việc phát video / trình chiếu — thì cả lần chạy cũng không hiện: khung luôn nằm trên cùng sẽ che video,
+    /// và công việc con không báo tiến độ riêng nên không thể chỉ ẩn trong lúc nó chạy.
+    /// </summary>
+    internal RunOverlayMode EffectiveOverlay(Job job) =>
+        job.RunOverlay != RunOverlayMode.Default ? job.RunOverlay
+        : CallsHiddenOverlayJob(job, 0) ? RunOverlayMode.Hide
+        : RunOverlayMode.Default;
+
+    private bool CallsHiddenOverlayJob(Job job, int depth)
+    {
+        if (depth > 8) return false;
+        foreach (var s in job.Steps)
+        {
+            if (!s.Enabled || s.Type != StepType.CallJob || s.JobRef is not Guid id || _findJob(id) is not { } sub) continue;
+            if (sub.RunOverlay == RunOverlayMode.Hide || CallsHiddenOverlayJob(sub, depth + 1)) return true;
+        }
+        return false;
+    }
+
     /// <summary>Flow (kể cả các công việc con được gọi) có giả lập chuột/phím hoặc đọc màn hình không.</summary>
     private bool NeedsScreen(Job job, int depth)
     {
@@ -311,4 +336,14 @@ public sealed record RunProgress(Guid JobId, string JobName, string Trigger, Dat
     public bool? Ok { get; init; }
     public string Message { get; init; } = "";
     public int FailedStep { get; init; } = -1;
+    /// <summary>Cài đặt khung trạng thái riêng của công việc.</summary>
+    public RunOverlayMode Overlay { get; init; }
+
+    /// <summary>Có hiện khung trạng thái cho lần chạy này không (<paramref name="setting"/> = cài đặt chung).</summary>
+    public bool ShowOverlay(bool setting) => Overlay switch
+    {
+        RunOverlayMode.Show => true,
+        RunOverlayMode.Hide => false,
+        _ => setting
+    };
 }

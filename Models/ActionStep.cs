@@ -60,7 +60,10 @@ public enum StepType
     Assert,
 
     /// <summary>Phát lần lượt danh sách video / nhạc bằng trình phát của ScheduleApp, chờ phát hết mới sang bước sau.</summary>
-    PlayMedia
+    PlayMedia,
+
+    /// <summary>Thu nhỏ (ẩn xuống thanh tác vụ) cửa sổ đang dùng hoặc cửa sổ chỉ định, nhớ lại để "Kích hoạt cửa sổ" mở lại sau.</summary>
+    MinimizeWindow
 }
 
 public enum MouseButtonKind
@@ -294,6 +297,9 @@ public sealed class ActionStep
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public int MediaDurationMs { get; set; }
 
+    /// <summary>Phát video: màn hình phát khi máy có nhiều màn hình — 0 = màn hình chính, -1 = màn hình đang có chuột, N = màn hình số N.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public int Monitor { get; set; }
+
     /// <summary>Độ khớp tối thiểu của hình mẫu, tính theo %.</summary>
     public int Confidence { get; set; } = 85;
 
@@ -403,7 +409,8 @@ public sealed class ActionStep
         [StepType.Notify] = "Gửi thông báo",
         [StepType.Dynamics] = "Dynamics 365 (model-driven)",
         [StepType.Assert] = "Kiểm tra (Assert)",
-        [StepType.PlayMedia] = "Phát video / nhạc"
+        [StepType.PlayMedia] = "Phát video / nhạc",
+        [StepType.MinimizeWindow] = "Thu nhỏ cửa sổ"
     };
 
     public static readonly Dictionary<ConditionKind, string> ConditionNames = new()
@@ -560,7 +567,7 @@ public sealed class ActionStep
         DelayMs = type switch
         {
             StepType.WaitForWindow => 15_000,
-            StepType.FocusWindow => 5_000,
+            StepType.FocusWindow or StepType.MinimizeWindow => 5_000,
             StepType.RunCommand => 60_000,
             StepType.ClickImage or StepType.ClickText => 10_000,
             StepType.WaitForImage or StepType.WaitForText => 30_000,
@@ -632,6 +639,7 @@ public sealed class ActionStep
         StepType.Wait => $"Chờ {FormatMs(DelayMs)}",
         StepType.WaitForWindow => $"Chờ cửa sổ \"{Target}\" (tối đa {FormatMs(DelayMs)})",
         StepType.FocusWindow => $"Kích hoạt cửa sổ \"{Target}\"",
+        StepType.MinimizeWindow => (string.IsNullOrWhiteSpace(Target) ? "Thu nhỏ cửa sổ đang dùng" : $"Thu nhỏ cửa sổ \"{Target}\"") + IntoVar(),
         StepType.MouseClick =>
             (HasImageAnchor ? $"{ClickName()} chuột {ButtonName(Button)} theo hình mẫu {ImageWidth}×{ImageHeight}" : $"{ClickName()} chuột {ButtonName(Button)} tại ({X}, {Y})") +
             (string.IsNullOrWhiteSpace(Target) ? " trên màn hình" : $" trong cửa sổ \"{Target}\"") +
@@ -708,7 +716,7 @@ public sealed class ActionStep
             1 => $"Phát \"{Short(MediaName(MediaLines[0]))}\"" + (MediaDurationMs > 0 ? $" ({FormatDuration(MediaDurationMs)})" : ""),
             int n => $"Phát lần lượt {n} mục" + (MediaDurationMs > 0 ? $" (tổng {FormatDuration(MediaDurationMs)})" : "") + ": " +
                      Short(string.Join(" → ", MediaLines.Select(MediaName)))
-        } + (Force ? " · toàn màn hình" : ""),
+        } + (Force ? " · toàn màn hình" : "") + (Monitor != 0 ? " · " + Native.Displays.ChoiceName(Monitor) : ""),
         StepType.WriteData => (DataAction == DataAction.AppendRow ? "Thêm dòng vào" : $"Sửa dòng [{Short(RowRef)}] của") +
                               $" \"{Short(Target)}\"" + (string.IsNullOrWhiteSpace(Arguments) ? "" : $" [sheet {Arguments}]") +
                               $": {Short(string.Join(", ", Text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)))}",

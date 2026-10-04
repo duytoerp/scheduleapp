@@ -44,6 +44,29 @@ public static class StepExecutor
                 WindowHelper.Focus(await WindowHelper.WaitForAsync(s.Target, s.DelayMs, ct));
                 break;
 
+            case StepType.MinimizeWindow:
+            {
+                var h = string.IsNullOrWhiteSpace(s.Target) ? WindowHelper.ActiveUserWindow() : await WindowHelper.WaitForAsync(s.Target, s.DelayMs, ct);
+                if (h == IntPtr.Zero)
+                {
+                    // Màn hình nền / mọi cửa sổ đã thu nhỏ / chỉ có ScheduleApp: không có gì để ẩn — không phải lỗi, flow chạy tiếp.
+                    // Biến = "" → bước mở lại sau đó (trong "Nếu cửa sổ {{biến}} đang mở") được bỏ qua.
+                    Log.Info("      Không có cửa sổ ứng dụng nào đang mở — không cần thu nhỏ.");
+                    ctx.Vars["lastWindow"] = "";
+                    if (!string.IsNullOrWhiteSpace(s.Variable)) ctx.SetVar(s.Variable, "");
+                    break;
+                }
+                var title = WindowHelper.GetTitle(h);
+                Log.Info($"      Thu nhỏ \"{title}\".");
+                if (!await WindowHelper.MinimizeAsync(h, ct))
+                    Log.Warn($"      \"{title}\" không phản hồi — có thể chưa thu nhỏ được (vẫn nhớ cửa sổ để mở lại).");
+                // Nhớ đúng cửa sổ này (handle) — bước "Kích hoạt cửa sổ" với {{lastWindow}} / biến đã chọn sẽ mở lại nó.
+                var handle = WindowHelper.HandleRef(h);
+                ctx.Vars["lastWindow"] = handle;
+                if (!string.IsNullOrWhiteSpace(s.Variable)) ctx.SetVar(s.Variable, handle);
+                break;
+            }
+
             case StepType.MouseClick:
             {
                 var (x, y) = await ToScreenAsync(s, s.X, s.Y, ct);
@@ -265,7 +288,11 @@ public static class StepExecutor
                  $", dự kiến xong khoảng {DateTime.Now + plan.Total:HH:mm:ss}{(s.Force ? " · toàn màn hình" : "")}. Esc: dừng · →: sang file kế · Space: tạm dừng.");
         Log.Info("      " + Truncate(string.Join(" → ", playable.Select(e =>
             Path.GetFileName(e.Path) + (e.Duration is { } d ? $" ({ActionStep.FormatDuration(d)})" : "")))));
-        var r = await MediaPlayback.PlayAsync(files, s.Force, volume, ctx.Ct, durations: playable.Select(e => e.Duration).ToList());
+        var (display, warning) = Displays.Pick(s.Monitor);
+        if (warning != null) Log.Warn("      " + warning);
+        else if (Displays.All().Count > 1) Log.Info($"      Phát ở {Displays.Label(display, Displays.All())}.");
+        var r = await MediaPlayback.PlayAsync(files, s.Force, volume, ctx.Ct, durations: playable.Select(e => e.Duration).ToList(),
+            screen: Displays.PlayerRect(display, s.Force));
         foreach (var p in r.Problems) Log.Warn("      Bỏ qua — " + p);
         // Thời lượng thực đã phát: chỉ các file phát hết (không tính file bỏ qua / lỗi).
         var played = TimeSpan.FromTicks((r.PlayedIndexes ?? []).Sum(i => playable[i].Duration?.Ticks ?? 0));

@@ -65,6 +65,8 @@ internal sealed class JobEditorForm : BaseForm
     private readonly CheckBox _chkStopOnError = new() { Text = "Dừng flow khi một bước bị lỗi (mặc định cho các bước \"Theo cài đặt của công việc\")", AutoSize = true };
     private readonly ComboBox _cboFailureJob = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 320 };
     private readonly ComboBox _cboNotify = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
+    private static readonly RunOverlayMode[] OverlayModes = Enum.GetValues<RunOverlayMode>();
+    private readonly ComboBox _cboOverlay = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260, AccessibleName = "Khung trạng thái khi chạy" };
     private readonly CheckBox _chkTestCase = new()
     {
         Text = "Đây là kịch bản kiểm thử — mỗi lần chạy ghi kết quả từng bước / từng Kiểm tra và xuất báo cáo (HTML + JUnit XML)",
@@ -465,6 +467,16 @@ internal sealed class JobEditorForm : BaseForm
         grid.Controls.Add(Caption("Gửi thông báo (Telegram/email/webhook):"), 0, 2);
         grid.Controls.Add(_cboNotify, 1, 2);
 
+        foreach (var m in OverlayModes)
+            _cboOverlay.Items.Add(m switch
+            {
+                RunOverlayMode.Show => "Luôn hiện",
+                RunOverlayMode.Hide => "Không hiện (vd khi trình chiếu, phát video)",
+                _ => $"Theo cài đặt chung (đang {(SettingsStore.Current.ShowRunOverlay ? "bật" : "tắt")})"
+            });
+        grid.Controls.Add(Caption("Khung trạng thái góc phải khi chạy:"), 0, 3);
+        grid.Controls.Add(_cboOverlay, 1, 3);
+
         var hint = new Label
         {
             Text = "Mỗi bước còn có cài đặt riêng \"Khi bước lỗi\": thử lại N lần, bỏ qua, hoặc nhảy tới một nhãn. " +
@@ -475,7 +487,7 @@ internal sealed class JobEditorForm : BaseForm
             ForeColor = UiText.Muted,
             Margin = new Padding(3, 10, 3, 3)
         };
-        grid.Controls.Add(hint, 0, 3);
+        grid.Controls.Add(hint, 0, 4);
         grid.SetColumnSpan(hint, 2);
         page.Controls.Add(grid);
         return page;
@@ -556,6 +568,7 @@ internal sealed class JobEditorForm : BaseForm
         _chkStopOnError.Checked = _job.StopOnError;
         _cboFailureJob.SelectedIndex = _job.OnFailureJobId is Guid fid ? _otherJobs.FindIndex(j => j.Id == fid) + 1 : 0;
         _cboNotify.SelectedIndex = Array.IndexOf(NotifyModes, _job.NotifyMode);
+        _cboOverlay.SelectedIndex = Math.Max(0, Array.IndexOf(OverlayModes, _job.RunOverlay));
         _chkTestCase.Checked = _job.IsTestCase;
         _chkCleanup.Checked = _job.CleanupTestData;
         _txtTags.Text = _job.Tags;
@@ -565,6 +578,7 @@ internal sealed class JobEditorForm : BaseForm
         _cboDataSheet.Text = _job.DataSheet;
         UpdateTestFields();
         foreach (var v in _job.Variables) _gridVars.Rows.Add(v.Name, v.Value);
+        RebuildMediaExpander();
         RefreshTriggers();
         _designer.SetSteps(_job.Steps);
         UpdateStepCount();
@@ -773,6 +787,7 @@ internal sealed class JobEditorForm : BaseForm
         job.StopOnError = _chkStopOnError.Checked;
         job.OnFailureJobId = _cboFailureJob.SelectedIndex > 0 ? _otherJobs[_cboFailureJob.SelectedIndex - 1].Id : null;
         job.NotifyMode = NotifyModes[Math.Max(0, _cboNotify.SelectedIndex)];
+        job.RunOverlay = OverlayModes[Math.Max(0, _cboOverlay.SelectedIndex)];
         job.IsTestCase = _chkTestCase.Checked;
         job.CleanupTestData = _chkCleanup.Checked;
         job.Tags = string.Join(", ", _txtTags.Text.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
@@ -889,7 +904,7 @@ internal sealed class JobEditorForm : BaseForm
         }
         if (_job.Triggers.Any(t => t.Type == TriggerType.EmailReceived))
             names.AddRange(["email.subject", "email.from", "email.body", "email.attachments", "email.attachmentDir"]);
-        names.AddRange(["loop.index", "lastOutput", "lastError", "job.name", "today", "now", "clipboard"]);
+        names.AddRange(["loop.index", "lastOutput", "lastWindow", "lastError", "job.name", "today", "now", "clipboard"]);
         return names.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
 
@@ -964,6 +979,12 @@ internal sealed class JobEditorForm : BaseForm
     private int _mediaRefreshVersion;
     private readonly System.Windows.Forms.Timer _varsTimer = new() { Interval = 600 };
 
+    /// <summary>
+    /// Ảnh video trên nút "Phát video / nhạc": danh sách phát dùng {{biến}} thì lấy giá trị đang khai báo ở tab Biến.
+    /// Tạo hàm thay một lần theo bảng Biến hiện tại (không đọc lại bảng mỗi lần vẽ sơ đồ).
+    /// </summary>
+    private void RebuildMediaExpander() => _designer.ExpandMediaLine = MediaInfo.ExpanderFor(ReadVariables());
+
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
@@ -973,16 +994,18 @@ internal sealed class JobEditorForm : BaseForm
         _varsTimer.Tick += (_, _) =>
         {
             _varsTimer.Stop();
-            _ = RefreshMediaDurationsAsync();
+            // Hàm thay biến mới → sơ đồ bỏ các dòng đã thay và vẽ lại ảnh video (cả khi bước dùng biến được thêm sau).
+            RebuildMediaExpander();
+            if (_job.Steps.Any(s => s.Type == StepType.PlayMedia && s.Text.Contains("{{"))) _ = RefreshMediaDurationsAsync();
         };
         void VariablesChanged()
         {
-            if (!_job.Steps.Any(s => s.Type == StepType.PlayMedia && s.Text.Contains("{{"))) return;
             _varsTimer.Stop();
             _varsTimer.Start();
         }
         _gridVars.CellValueChanged += (_, _) => VariablesChanged();
         _gridVars.RowsRemoved += (_, _) => VariablesChanged();
+        _gridVars.RowsAdded += (_, _) => VariablesChanged();
         FormClosed += (_, _) => _varsTimer.Dispose();
         _ = RefreshMediaDurationsAsync();
         if (StartD365RecordingOnShow) BeginInvoke(new MethodInvoker(async () => await RecordD365Async()));

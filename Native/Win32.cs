@@ -7,7 +7,8 @@ internal static class Win32
 {
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
-    public const int SW_RESTORE = 9;
+    public const int SW_RESTORE = 9, SW_MINIMIZE = 6;
+    public const uint SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010;
     public const uint GA_ROOT = 2, GA_ROOTOWNER = 3;
     public const uint GW_OWNER = 4;
     public const int GWL_STYLE = -16;
@@ -21,7 +22,13 @@ internal static class Win32
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowTextLength(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int cmdShow);
+    /// <summary>Như ShowWindow nhưng không chờ luồng của cửa sổ xử lý — dùng cho cửa sổ của ứng dụng khác (ứng dụng treo không làm kẹt).</summary>
+    [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int cmdShow);
+    [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern IntPtr GetLastActivePopup(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);

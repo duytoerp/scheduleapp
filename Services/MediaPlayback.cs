@@ -66,16 +66,17 @@ internal static class MediaPlayback
     /// <param name="volume">Âm lượng 0–100.</param>
     /// <param name="bounds">Vị trí cửa sổ (đơn vị WPF) khi không toàn màn hình; null = giữa màn hình chính.</param>
     /// <param name="durations">Thời lượng đã biết của từng file (hiện trên màn hình; phòng hờ khi file không báo đã phát hết).</param>
+    /// <param name="screen">Khung trên màn hình cần phát (pixel thật, xem <see cref="Native.Displays.PlayerRect"/>); null = màn hình chính.</param>
     public static Task<PlaybackResult> PlayAsync(IReadOnlyList<string> files, bool fullscreen, int volume, CancellationToken ct, W.Rect? bounds = null,
-        IReadOnlyList<TimeSpan?>? durations = null)
+        IReadOnlyList<TimeSpan?>? durations = null, System.Drawing.Rectangle? screen = null)
     {
-        if (TestBounds is { } test) (fullscreen, volume, bounds) = (false, 0, test);
+        if (TestBounds is { } test) (fullscreen, volume, bounds, screen) = (false, 0, test, null);
         var done = new TaskCompletionSource<PlaybackResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
         {
             try
             {
-                var window = new PlayerWindow(files, durations, fullscreen, volume, bounds);
+                var window = new PlayerWindow(files, durations, fullscreen, volume, bounds, screen);
                 window.Closed += (_, _) => window.Dispatcher.BeginInvokeShutdown(DispatcherPriority.Background);
                 using (ct.Register(() => window.Dispatcher.BeginInvoke(window.Cancel)))
                 {
@@ -124,7 +125,8 @@ internal static class MediaPlayback
 
         public PlaybackResult Result => new(_played, _problems, _stopped, _skipped, _playedIndexes);
 
-        public PlayerWindow(IReadOnlyList<string> files, IReadOnlyList<TimeSpan?>? durations, bool fullscreen, int volume, W.Rect? bounds)
+        public PlayerWindow(IReadOnlyList<string> files, IReadOnlyList<TimeSpan?>? durations, bool fullscreen, int volume, W.Rect? bounds,
+            System.Drawing.Rectangle? screen = null)
         {
             _files = files;
             _durations = durations is { } d && d.Count == files.Count ? d : files.Select(_ => (TimeSpan?)null).ToList();
@@ -141,7 +143,8 @@ internal static class MediaPlayback
                 WindowStyle = W.WindowStyle.None;
                 ResizeMode = W.ResizeMode.NoResize;
                 Topmost = true;
-                WindowState = W.WindowState.Maximized;
+                // Màn hình khác: đặt vào màn hình đó trước rồi mới phóng to (phóng to luôn theo màn hình đang chứa cửa sổ).
+                if (screen == null) WindowState = W.WindowState.Maximized;
                 Cursor = WI.Cursors.None;
             }
             else if (bounds is { } b)
@@ -150,10 +153,22 @@ internal static class MediaPlayback
                 (Left, Top, Width, Height) = (b.X, b.Y, b.Width, b.Height);
                 ShowActivated = false;
             }
-            else
+            else if (screen == null)
             {
                 (Width, Height) = (1280, 760);
                 WindowStartupLocation = W.WindowStartupLocation.CenterScreen;
+            }
+            if (screen is { } target && bounds == null)
+            {
+                WindowStartupLocation = W.WindowStartupLocation.Manual;
+                // Đặt theo pixel thật bằng Win32 (đơn vị WPF đổi theo DPI từng màn hình nên không dùng Left/Top được).
+                SourceInitialized += (_, _) =>
+                {
+                    var hwnd = new W.Interop.WindowInteropHelper(this).Handle;
+                    Native.Win32.SetWindowPos(hwnd, IntPtr.Zero, target.X, target.Y, target.Width, target.Height,
+                        Native.Win32.SWP_NOZORDER | Native.Win32.SWP_NOACTIVATE);
+                    if (fullscreen) WindowState = W.WindowState.Maximized;
+                };
             }
 
             _media.MediaOpened += (_, _) =>

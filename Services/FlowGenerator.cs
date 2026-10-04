@@ -712,7 +712,8 @@ public sealed class FlowGenerator
         ## Ứng dụng & cửa sổ
         - LaunchApp: Target = exe / đường dẫn / file / URL (vd "notepad.exe", "excel.exe", "%USERPROFILE%\\Documents\\a.xlsx", "https://…"); Arguments = tham số dòng lệnh.
         - WaitForWindow: Target = cửa sổ; DelayMs = chờ tối đa (mặc định 15000).
-        - FocusWindow: Target = cửa sổ.
+        - FocusWindow: Target = cửa sổ (hoặc {{biến}} đã nhớ bởi MinimizeWindow để mở lại đúng cửa sổ đó).
+        - MinimizeWindow: Target = cửa sổ (trống = cửa sổ người dùng đang dùng); Variable = biến nhớ cửa sổ (vd "ungDungTruoc") để FocusWindow mở lại.
         - CloseApp: Target = tên tiến trình ("notepad"); Force=true để buộc đóng.
         - RunCommand: Target = lệnh cmd; Variable = biến nhận output (tùy chọn); DelayMs = timeout (0 = không chờ).
         Cách ghi Target cửa sổ: một phần tiêu đề (không phân biệt hoa thường) hoặc "exe:tên_tiến_trình" ("exe:EXCEL", "exe:notepad", "exe:msedge") — dùng "exe:" khi tiêu đề thay đổi theo tài liệu đang mở.
@@ -809,7 +810,7 @@ public sealed class FlowGenerator
           Target = file .txt (tự tạo cả thư mục); Text = nội dung nhiều dòng, có {{biến}}. Mở để xem: LaunchApp "notepad.exe" Arguments = "\"<đường dẫn>\"".
         - PlayMedia: phát lần lượt video / nhạc bằng trình phát có sẵn của ScheduleApp, hết file này tự sang file kế, phát xong cả danh sách mới sang bước sau
           (không cần LaunchApp / chờ / đóng trình phát). Text = mỗi dòng một file (dòng là thư mục → mọi video trong đó theo tên; dòng "#" là ghi chú);
-          Force = toàn màn hình (mặc định true); Arguments = âm lượng 0–100. Sau bước có {{media.played}} (số file đã phát), {{media.duration}} (tổng thời lượng, vd 0:26), {{media.seconds}}. Dùng cho "mở video 1 rồi video 2…".
+          Force = toàn màn hình (mặc định true); Arguments = âm lượng 0–100; Monitor = màn hình phát khi có nhiều màn hình (0 = chính, -1 = màn hình đang có chuột, 2 = màn hình số 2…). Sau bước có {{media.played}} (số file đã phát), {{media.duration}} (tổng thời lượng, vd 0:26), {{media.seconds}}. Dùng cho "mở video 1 rồi video 2…".
         - HttpRequest: Method GET|POST|PATCH|PUT|DELETE; Connection = tên kết nối đã khai báo (khi đó Target là phần sau URL gốc, vd "accounts?$top=5&$select=name"), không có kết nối thì Target = URL đầy đủ;
           Headers = mỗi dòng "Tên: giá trị"; Text = body JSON (đặt chuỗi vào JSON bằng "{{biến:json}}"); Arguments = đường dẫn JSON trích kết quả; Variable = biến nhận.
           Luôn có {{http.status}}, {{http.body}}. Force=true để không báo lỗi khi mã ≥ 400.

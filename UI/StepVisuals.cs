@@ -16,7 +16,7 @@ internal static class StepVisuals
     public static readonly (string Name, StepType[] Types)[] Categories =
     [
         ("Ứng dụng", [StepType.LaunchApp, StepType.CloseApp, StepType.RunCommand, StepType.PlayMedia]),
-        ("Cửa sổ", [StepType.WaitForWindow, StepType.FocusWindow]),
+        ("Cửa sổ", [StepType.WaitForWindow, StepType.FocusWindow, StepType.MinimizeWindow]),
         ("Chuột & bàn phím", [StepType.MouseClick, StepType.TypeText, StepType.KeyPress, StepType.MouseScroll, StepType.MouseDrag]),
         ("Phần tử UI (ổn định nhất)", [StepType.ClickElement, StepType.SetElementText, StepType.WaitForElement]),
         ("Trình duyệt web", [StepType.Browser]),
@@ -31,7 +31,7 @@ internal static class StepVisuals
     public static Color Accent(StepType t) => t switch
     {
         StepType.LaunchApp or StepType.CloseApp or StepType.RunCommand => Color.FromArgb(0, 120, 212),
-        StepType.WaitForWindow or StepType.FocusWindow => Color.FromArgb(136, 84, 208),
+        StepType.WaitForWindow or StepType.FocusWindow or StepType.MinimizeWindow => Color.FromArgb(136, 84, 208),
         StepType.MouseClick or StepType.TypeText or StepType.KeyPress or StepType.MouseScroll or StepType.MouseDrag => Color.FromArgb(202, 80, 16),
         StepType.Reminder => Color.FromArgb(186, 132, 0),
         StepType.ClickImage or StepType.WaitForImage or StepType.ClickText or StepType.WaitForText => Color.FromArgb(0, 137, 123),
@@ -90,6 +90,7 @@ internal static class StepVisuals
         StepType.Dynamics => "\uE8A5",
         StepType.Assert => "\uE9D5",
         StepType.PlayMedia => "\uE714",
+        StepType.MinimizeWindow => "\uE921",
         _ => ""
     };
 
@@ -161,6 +162,8 @@ internal static class StepVisuals
         [StepType.Browser] = "web chrome edge trình duyệt trang",
         [StepType.Dynamics] = "d365 crm dynamics power apps",
         [StepType.PlayMedia] = "video nhạc mp4 phát",
+        [StepType.MinimizeWindow] = "ẩn thu nhỏ minimize giấu cửa sổ",
+        [StepType.FocusWindow] = "hiện mở lại khôi phục restore cửa sổ",
         [StepType.LaunchApp] = "mở chạy ứng dụng exe file url",
         [StepType.WriteData] = "excel csv ghi file",
         [StepType.Assert] = "kiểm tra assert test"

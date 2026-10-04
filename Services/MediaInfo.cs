@@ -110,7 +110,11 @@ internal static partial class MediaInfo
     /// <param name="Line">Dòng trong danh sách phát (đã thay biến nếu có).</param>
     /// <param name="Path">File sẽ phát; null = dòng không dùng được (xem <paramref name="Problem"/>).</param>
     /// <param name="Duration">Thời lượng; null = không rõ.</param>
-    public sealed record Entry(string Line, string? Path, TimeSpan? Duration, string? Problem);
+    public sealed record Entry(string Line, string? Path, TimeSpan? Duration, string? Problem)
+    {
+        /// <summary>Thứ tự của dòng tạo ra mục này trong danh sách phát (0 = dòng đầu; một thư mục tạo nhiều mục cùng thứ tự).</summary>
+        public int Item { get; init; }
+    }
 
     /// <param name="Total">Tổng thời lượng các file đọc được.</param>
     /// <param name="Complete">Biết chắc tổng: mọi file sẽ phát đều đọc được thời lượng, không còn dòng dùng biến chưa biết giá trị.</param>
@@ -128,42 +132,56 @@ internal static partial class MediaInfo
     {
         var entries = new List<Entry>();
         bool complete = true;
+        int item = -1;
         foreach (var raw in lines)
         {
+            item++;
             var line = raw;
-            if (line.Contains("{{"))
+            List<string> files, missing;
+            try
             {
-                // Biến chỉ biết khi chạy (clipboard, bí mật, dữ liệu ngẫu nhiên…) — không đọc ở đây.
-                if (expand == null || line.Contains("{{clipboard", StringComparison.OrdinalIgnoreCase) ||
-                    line.Contains("{{secret:", StringComparison.OrdinalIgnoreCase) || line.Contains("{{=", StringComparison.Ordinal))
+                if (line.Contains("{{"))
                 {
-                    entries.Add(new Entry(raw, null, null, VariableProblem));
-                    complete = false;
-                    continue;
+                    // Biến chỉ biết khi chạy (clipboard, bí mật, dữ liệu ngẫu nhiên…) — không đọc ở đây.
+                    if (expand == null || line.Contains("{{clipboard", StringComparison.OrdinalIgnoreCase) ||
+                        line.Contains("{{secret:", StringComparison.OrdinalIgnoreCase) || line.Contains("{{=", StringComparison.Ordinal))
+                    {
+                        entries.Add(new Entry(raw, null, null, VariableProblem) { Item = item });
+                        complete = false;
+                        continue;
+                    }
+                    try { line = expand(line); }
+                    catch (InvalidOperationException)
+                    {
+                        entries.Add(new Entry(raw, null, null, VariableProblem) { Item = item });
+                        complete = false;
+                        continue;
+                    }
+                    // Biến đổi theo từng lần chạy ({{today}}, {{now:…}}, {{random}}…): file lúc chạy có thể khác → tổng chưa chắc.
+                    if (VariableExpander.Names(raw).Any(n => PerRunVariable().IsMatch(n))) complete = false;
                 }
-                try { line = expand(line); }
-                catch (InvalidOperationException)
-                {
-                    entries.Add(new Entry(raw, null, null, VariableProblem));
-                    complete = false;
-                    continue;
-                }
-                // Biến đổi theo từng lần chạy ({{today}}, {{now:…}}, {{random}}…): file lúc chạy có thể khác → tổng chưa chắc.
-                if (VariableExpander.Names(raw).Any(n => PerRunVariable().IsMatch(n))) complete = false;
+                (files, missing) = MediaPlayback.Resolve([line]);
             }
-            var (files, missing) = MediaPlayback.Resolve([line]);
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException
+                                           or FormatException or OverflowException or System.Security.SecurityException)
+            {
+                // Định dạng biến sai ({{now:%}}), thư mục có mà không mở được (không có quyền, ổ mạng rớt)… → chỉ dòng này lỗi (ô đỏ).
+                entries.Add(new Entry(raw, null, null, "không đọc được: " + ex.Message) { Item = item });
+                complete = false;
+                continue;
+            }
             // File / thư mục chưa có (vd ổ mạng chưa kết nối, file tải về sau) → tổng chưa chắc.
             if (missing.Count > 0)
             {
-                entries.Add(new Entry(raw, null, null, "không thấy file / thư mục"));
+                entries.Add(new Entry(raw, null, null, "không thấy file / thư mục") { Item = item });
                 complete = false;
             }
             else if (files.Count == 0)
             {
-                entries.Add(new Entry(raw, null, null, "thư mục không có video / nhạc"));
+                entries.Add(new Entry(raw, null, null, "thư mục không có video / nhạc") { Item = item });
                 complete = false;
             }
-            foreach (var f in files) entries.Add(new Entry(raw, f, null, null));
+            foreach (var f in files) entries.Add(new Entry(raw, f, null, null) { Item = item });
         }
 
         // Đọc song song (giới hạn) — thư mục nhiều file vẫn nhanh.

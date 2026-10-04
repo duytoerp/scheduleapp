@@ -120,11 +120,14 @@ internal static class WindowHelper
     /// <summary>
     /// Tìm cửa sổ theo một phần tiêu đề (không phân biệt hoa thường), nếu không có thì theo tên tiến trình.
     /// Tiền tố "exe:" (vd "exe:chrome") chỉ so theo tên tiến trình — ổn định khi tiêu đề thay đổi liên tục.
+    /// "hwnd:số" là đúng cửa sổ đã nhớ (bước "Thu nhỏ cửa sổ" lưu vào biến) — kể cả khi đang thu nhỏ hay đổi tiêu đề.
     /// </summary>
     public static IntPtr Find(string query)
     {
         if (string.IsNullOrWhiteSpace(query)) return IntPtr.Zero;
         var q = query.Trim();
+        if (q.StartsWith(HandlePrefix, StringComparison.OrdinalIgnoreCase))
+            return long.TryParse(q[HandlePrefix.Length..].Trim(), out long n) && Win32.IsWindow((IntPtr)n) ? (IntPtr)n : IntPtr.Zero;
         // Cửa sổ chính trước, popup sau (vẫn giữ thứ tự trên → dưới trong mỗi nhóm).
         var windows = GetOpenWindows().OrderBy(w => w.Popup).ToList();
 
@@ -157,7 +160,22 @@ internal static class WindowHelper
 
     public static void Focus(IntPtr h)
     {
-        if (Win32.IsIconic(h)) Win32.ShowWindow(h, Win32.SW_RESTORE);
+        if (Win32.IsIconic(h))
+        {
+            // Cửa sổ của luồng khác: không chờ ứng dụng xử lý (ứng dụng đang treo / bận không làm flow kẹt) — chỉ đợi ngắn cho cửa sổ hiện lại.
+            if (Win32.GetWindowThreadProcessId(h, out _) == Win32.GetCurrentThreadId()) Win32.ShowWindow(h, Win32.SW_RESTORE);
+            else
+            {
+                Win32.ShowWindowAsync(h, Win32.SW_RESTORE);
+                for (int i = 0; i < 40 && Win32.IsIconic(h) && Win32.IsWindow(h); i++) Thread.Sleep(25);
+            }
+        }
+        // Ứng dụng đang bị hộp thoại khóa (modal) → đưa hộp thoại lên, như khi bấm vào ứng dụng trên thanh tác vụ.
+        if (!Win32.IsWindowEnabled(h))
+        {
+            var popup = Win32.GetLastActivePopup(h);
+            if (popup != IntPtr.Zero && popup != h && Win32.IsWindowVisible(popup) && Win32.IsWindowEnabled(popup)) h = popup;
+        }
         if (Win32.GetForegroundWindow() == h) return;
 
         Win32.SetForegroundWindow(h);
@@ -225,6 +243,69 @@ internal static class WindowHelper
         var sb = new StringBuilder(len + 1);
         Win32.GetWindowText(h, sb, sb.Capacity);
         return sb.ToString();
+    }
+
+    /// <summary>Tiền tố của cửa sổ đã nhớ theo handle (vd "hwnd:132456").</summary>
+    public const string HandlePrefix = "hwnd:";
+
+    public static string HandleRef(IntPtr h) => HandlePrefix + h.ToInt64();
+
+    /// <summary>
+    /// Cửa sổ người dùng đang làm việc: cửa sổ đang được chọn — kể cả cửa sổ không có thanh tiêu đề như trình chiếu PowerPoint,
+    /// video toàn màn hình — hoặc (khi đó là ScheduleApp / màn hình nền / menu) cửa sổ ứng dụng trên cùng chưa thu nhỏ.
+    /// Không có thì trả về <see cref="IntPtr.Zero"/>.
+    /// </summary>
+    public static IntPtr ActiveUserWindow() =>
+        ActiveUserWindowOverride.Value is { } fake ? fake() : ChooseUserWindow(GetOpenWindows(), Win32.GetForegroundWindow());
+
+    /// <summary>Chỉ dùng cho kiểm thử: thay kết quả của <see cref="ActiveUserWindow"/> trong luồng async hiện tại (vd máy không có cửa sổ nào).</summary>
+    internal static readonly AsyncLocal<Func<IntPtr>?> ActiveUserWindowOverride = new();
+
+    /// <summary>
+    /// Chọn cửa sổ người dùng đang làm việc trong <paramref name="open"/> (thứ tự trên → dưới, như <see cref="GetOpenWindows"/>):
+    /// cửa sổ <paramref name="foreground"/> nếu có trong danh sách, không thì cửa sổ chính trên cùng — bỏ cửa sổ đã thu nhỏ và màn hình nền.
+    /// Hộp thoại có thanh tiêu đề → cửa sổ ứng dụng chủ của nó (<see cref="AppWindowOf"/>).
+    /// </summary>
+    internal static IntPtr ChooseUserWindow(IReadOnlyList<WindowInfo> open, IntPtr foreground)
+    {
+        var windows = open.Where(w => !Win32.IsIconic(w.Handle) && !IsShell(w)).ToList();
+        var h = windows.FirstOrDefault(w => w.Handle == foreground && GetClassName(w.Handle) != "#32768")?.Handle
+                ?? windows.FirstOrDefault(w => !w.Popup)?.Handle ?? IntPtr.Zero;
+        return h == IntPtr.Zero ? h : AppWindowOf(h);
+    }
+
+    /// <summary>
+    /// Hộp thoại có thanh tiêu đề thuộc cửa sổ khác (vd "Format Cells" của Excel, "Save As" của Word) → cửa sổ ứng dụng chủ:
+    /// thu nhỏ cửa sổ chủ thì hộp thoại ẩn / hiện theo, còn chỉ thu nhỏ hộp thoại sẽ để lại ứng dụng bị khóa trên màn hình.
+    /// Cửa sổ không có thanh tiêu đề (trình chiếu PowerPoint, video toàn màn hình) và cửa sổ không có chủ giữ nguyên.
+    /// </summary>
+    internal static IntPtr AppWindowOf(IntPtr h)
+    {
+        if (IsPopup(h) || Win32.GetWindow(h, Win32.GW_OWNER) == IntPtr.Zero) return h;
+        var owner = OwnerWindow(h);
+        return owner != IntPtr.Zero && !Win32.IsIconic(owner) && !BelongsToThisApp(owner) ? owner : h;
+    }
+
+    /// <summary>Màn hình nền / thanh tác vụ — không phải cửa sổ ứng dụng.</summary>
+    private static bool IsShell(WindowInfo w) =>
+        GetClassName(w.Handle) is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd";
+
+    /// <summary>
+    /// Thu nhỏ cửa sổ bằng ShowWindowAsync — không chờ ứng dụng đó xử lý, nên ứng dụng đang treo / bận không làm flow kẹt —
+    /// rồi đợi tối đa <paramref name="timeoutMs"/> cho cửa sổ thu nhỏ xong (dừng flow được trong lúc đợi).
+    /// Trả về false nếu hết giờ mà cửa sổ chưa thu nhỏ (ứng dụng không phản hồi) hoặc cửa sổ đã đóng.
+    /// </summary>
+    public static async Task<bool> MinimizeAsync(IntPtr h, CancellationToken ct, int timeoutMs = 2000)
+    {
+        if (Win32.IsIconic(h)) return true;
+        Win32.ShowWindowAsync(h, Win32.SW_MINIMIZE);
+        var sw = Stopwatch.StartNew();
+        while (!Win32.IsIconic(h))
+        {
+            if (!Win32.IsWindow(h) || sw.ElapsedMilliseconds >= timeoutMs) return false;
+            await Task.Delay(50, ct);
+        }
+        return true;
     }
 
     public static bool BelongsToThisApp(IntPtr h)

@@ -1,6 +1,7 @@
 using System.Drawing.Drawing2D;
 using System.Text.Json;
 using ScheduleApp.Models;
+using ScheduleApp.Services;
 
 namespace ScheduleApp.UI;
 
@@ -77,6 +78,9 @@ internal sealed class FlowDesigner : Control
     private readonly ToolTip _tip = new() { InitialDelay = 400 };
     private string _tipText = "";
     private readonly Dictionary<ActionStep, (string Data, Bitmap Image)> _thumbs = [];
+    /// <summary>Ảnh thu nhỏ video của bước "Phát video / nhạc" theo dòng đầu danh sách phát (đã thay biến); Thumb null = đang tải / không có.</summary>
+    private readonly Dictionary<ActionStep, (string Line, MediaThumbnails.Thumbnail? Thumb)> _mediaThumbs = [];
+    private readonly CancellationTokenSource _mediaCts = new();
 
     // Font theo mức thu phóng (tạo lại khi đổi) và font cố định cho nút điều khiển.
     private float _fontZoom = -1;
@@ -94,6 +98,48 @@ internal sealed class FlowDesigner : Control
 
     /// <summary>Yêu cầu chạy thử từ bước này.</summary>
     public event Action<int>? RunFromRequested;
+
+    /// <summary>
+    /// Thay {{biến}} của công việc trong danh sách phát (để hiện ảnh video trên nút "Phát video / nhạc");
+    /// ném <see cref="InvalidOperationException"/> khi biến chưa có giá trị. Null = bỏ qua dòng dùng biến.
+    /// </summary>
+    /// <remarks>
+    /// Dòng đã thay được nhớ theo (dòng gốc, hàm thay) — không gọi lại khi vẽ. Biến của công việc đổi thì gán hàm mới
+    /// (canvas bỏ các dòng đã nhớ và vẽ lại).
+    /// </remarks>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal Func<string, string>? ExpandMediaLine
+    {
+        get => _expandMediaLine;
+        set
+        {
+            if (ReferenceEquals(_expandMediaLine, value)) return;
+            _expandMediaLine = value;
+            _expandedLines.Clear();
+            Invalidate();
+        }
+    }
+    private Func<string, string>? _expandMediaLine;
+
+    /// <summary>Dòng đầu danh sách phát đã thay biến, theo dòng gốc (null = không thay được / chỉ biết khi chạy).</summary>
+    private readonly Dictionary<ActionStep, (string Raw, string? Expanded)> _expandedLines = [];
+
+    /// <summary>Biến có sẵn đổi giá trị theo từng lần chạy: ngày giờ, số ngẫu nhiên, guid (cùng quy tắc với MediaInfo).</summary>
+    private static readonly System.Text.RegularExpressions.Regex PerRunVariable = new(
+        @"^(random(\s*:.*)?|guid|(today|now|time|yesterday|tomorrow)(\s*[-+:].*)?)$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Dòng chỉ biết giá trị khi chạy, hoặc thay biến tốn kém / mỗi lần một khác: clipboard, bí mật, công thức {{=…}},
+    /// ngày giờ, số ngẫu nhiên, guid. Canvas không thay các dòng này (hiện biểu tượng thường).
+    /// </summary>
+    internal static bool IsRuntimeOnlyMediaLine(string line) =>
+        line.Contains("{{clipboard", StringComparison.OrdinalIgnoreCase) ||
+        line.Contains("{{secret:", StringComparison.OrdinalIgnoreCase) ||
+        line.Contains("{{=", StringComparison.Ordinal) ||
+        ScheduleApp.Services.Engine.VariableExpander.Names(line).Any(n => PerRunVariable.IsMatch(n) ||
+            n.StartsWith("clipboard", StringComparison.OrdinalIgnoreCase) || n.StartsWith("secret:", StringComparison.OrdinalIgnoreCase) ||
+            n.StartsWith('='));
 
     public FlowDesigner()
     {
@@ -1002,6 +1048,7 @@ internal sealed class FlowDesigner : Control
             g.InterpolationMode = mode;
             using var pen = new Pen(Color.FromArgb(200, 204, 210));
             g.DrawRectangle(pen, box.X - 1, box.Y - 1, box.Width + 1, box.Height + 1);
+            if (step.Type == StepType.PlayMedia) DrawPlayBadge(g, box, accent, z);
         }
         else
         {
@@ -1620,9 +1667,102 @@ internal sealed class FlowDesigner : Control
         if (_selected < 0 && _steps.Count > 0) SelectStep(0);
     }
 
+    /// <summary>Nút ▶ nhỏ ở góc ảnh video — vẫn nhận ra đây là bước phát video.</summary>
+    private static void DrawPlayBadge(Graphics g, Rectangle box, Color accent, float z)
+    {
+        int d = Math.Max(10, (int)(18 * z));
+        var c = new Rectangle(box.Right - d + (int)(4 * z), box.Bottom - d + (int)(4 * z), d, d);
+        var smoothing = g.SmoothingMode;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var fill = new SolidBrush(accent)) g.FillEllipse(fill, c);
+        using (var ring = new Pen(Color.White, Math.Max(1, 1.5f * z))) g.DrawEllipse(ring, c);
+        using (var white = new SolidBrush(Color.White))
+            g.FillPolygon(white, [
+                new PointF(c.X + c.Width * 0.40f, c.Y + c.Height * 0.28f),
+                new PointF(c.X + c.Width * 0.40f, c.Y + c.Height * 0.72f),
+                new PointF(c.X + c.Width * 0.74f, c.Y + c.Height * 0.50f)
+            ]);
+        g.SmoothingMode = smoothing;
+    }
+
+    /// <summary>Ảnh thu nhỏ của file video đầu tiên trong danh sách phát (tải ở nền, vẽ lại khi có); null = chưa có / không có.</summary>
+    internal Bitmap? MediaThumbnail(ActionStep step)
+    {
+        var line = FirstMediaLine(step);
+        if (_mediaThumbs.TryGetValue(step, out var cached))
+        {
+            if (cached.Line == line) return cached.Thumb is { IsIcon: false } t ? t.Image : null;
+            cached.Thumb?.Dispose();
+            _mediaThumbs.Remove(step);
+        }
+        if (line == null) return null;
+        _mediaThumbs[step] = (line, null);
+        _ = LoadMediaThumbnailAsync(step, line);
+        return null;
+    }
+
+    /// <summary>
+    /// Dòng đầu của danh sách phát đã thay biến; null = danh sách trống / biến chưa có giá trị / chỉ biết khi chạy.
+    /// Gọi khi vẽ nên chỉ thay biến khi dòng gốc hoặc hàm thay đổi (nhớ kết quả theo bước).
+    /// </summary>
+    internal string? FirstMediaLine(ActionStep step)
+    {
+        var first = step.MediaLines.FirstOrDefault();
+        if (first == null || !first.Contains("{{")) return first;
+        if (_expandedLines.TryGetValue(step, out var cached) && cached.Raw == first) return cached.Expanded;
+        string? expanded = null;
+        if (_expandMediaLine != null && !IsRuntimeOnlyMediaLine(first))
+        {
+            try
+            {
+                var value = _expandMediaLine(first);
+                expanded = value.Contains("{{") ? null : value;
+            }
+            catch (Exception ex)
+            {
+                // Biến chưa có giá trị, định dạng ngày sai, số quá lớn… → hiện biểu tượng thường, không làm hỏng việc vẽ.
+                System.Diagnostics.Debug.WriteLine($"FlowDesigner media line \"{first}\": {ex.Message}");
+            }
+        }
+        _expandedLines[step] = (first, expanded);
+        return expanded;
+    }
+
+    private async Task LoadMediaThumbnailAsync(ActionStep step, string line)
+    {
+        var ct = _mediaCts.Token;
+        MediaThumbnails.Thumbnail? thumb = null;
+        try
+        {
+            thumb = await Task.Run(async () =>
+            {
+                try
+                {
+                    // Dòng là thư mục → file đầu tiên theo tên (đúng thứ tự phát).
+                    var (files, _) = MediaPlayback.Resolve([line]);
+                    return files.Count > 0 ? await MediaThumbnails.GetAsync(files[0], 256, ct) : null;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+                {
+                    return null;
+                }
+            }, ct);
+        }
+        catch (OperationCanceledException) { }
+        // Trong lúc tải: nút đã bị xóa / đổi danh sách phát / canvas đã đóng → bỏ ảnh.
+        if (IsDisposed || !_mediaThumbs.TryGetValue(step, out var current) || current.Line != line || current.Thumb != null)
+        {
+            thumb?.Dispose();
+            return;
+        }
+        _mediaThumbs[step] = (line, thumb);
+        if (thumb is { IsIcon: false }) Invalidate();
+    }
+
     /// <summary>Hình mẫu của bước đã giải mã (giữ lại theo chuỗi ImageData để không giải mã PNG mỗi lần vẽ).</summary>
     private Bitmap? Thumbnail(ActionStep step)
     {
+        if (step.Type == StepType.PlayMedia) return MediaThumbnail(step);
         if (string.IsNullOrEmpty(step.ImageData) || StepVisuals.IsMarker(step.Type)) return null;
         if (_thumbs.TryGetValue(step, out var cached) && ReferenceEquals(cached.Data, step.ImageData)) return cached.Image;
         cached.Image?.Dispose();
@@ -1646,6 +1786,12 @@ internal sealed class FlowDesigner : Control
             _thumbs[step].Image.Dispose();
             _thumbs.Remove(step);
         }
+        foreach (var step in _mediaThumbs.Keys.Where(s => !_steps.Contains(s)).ToList())
+        {
+            _mediaThumbs[step].Thumb?.Dispose();
+            _mediaThumbs.Remove(step);
+        }
+        foreach (var step in _expandedLines.Keys.Where(s => !_steps.Contains(s)).ToList()) _expandedLines.Remove(step);
     }
 
     protected override void Dispose(bool disposing)
@@ -1654,6 +1800,10 @@ internal sealed class FlowDesigner : Control
         {
             foreach (var (_, image) in _thumbs.Values) image.Dispose();
             _thumbs.Clear();
+            _mediaCts.Cancel();
+            _mediaCts.Dispose();
+            foreach (var (_, thumb) in _mediaThumbs.Values) thumb?.Dispose();
+            _mediaThumbs.Clear();
             _spinTimer.Dispose();
             _menu.Dispose();
             _canvasMenu.Dispose();

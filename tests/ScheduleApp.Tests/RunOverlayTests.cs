@@ -136,7 +136,7 @@ public class RunOverlayTests
                 Assert.Equal(StripeOf(f), Color.FromArgb(255, 185, 0));
                 Assert.Equal(["⏭ Bước tiếp", "▶ Chạy tiếp", "■ Dừng"], VisibleButtons(f));
                 f.SetPaused(null, null);
-                Assert.Equal(["⏸ Tạm dừng", "■ Dừng"], VisibleButtons(f));
+                Assert.Equal(["⏸ Tạm dừng", "■ Dừng", "— Ẩn"], VisibleButtons(f));
                 f.Apply(p with { Step = 2, StepText = "Mở notepad", StepStarted = DateTime.Now });
                 Assert.Equal(("Bước 3/5 · 0:00", ""), (f.BodyText.StepLine, f.Detail));   // sang bước mới → bỏ dòng chi tiết của bước trước
                 Assert.Equal("● ĐANG CHẠY", f.HeaderText);

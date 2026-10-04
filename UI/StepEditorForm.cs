@@ -58,11 +58,16 @@ internal sealed class StepEditorForm : BaseForm
 
     // Phát video / nhạc: thời lượng từng file và tổng, tính lại mỗi khi danh sách thay đổi.
     private readonly Label _lblMediaInfo = new() { AutoSize = true, MaximumSize = new Size(640, 0), ForeColor = Color.FromArgb(30, 70, 120), Margin = new Padding(3, 2, 3, 6) };
+    private readonly MediaStrip _mediaStrip = new() { Dock = DockStyle.Fill, Margin = new Padding(3, 0, 3, 6) };
     private readonly System.Windows.Forms.Timer _mediaTimer = new() { Interval = 400 };
+    /// <summary>Phát thử một file từ dải ảnh thu nhỏ (dừng khi đóng hộp thoại).</summary>
+    private CancellationTokenSource? _previewCts;
     private int _mediaVersion;
     private Services.MediaInfo.Plan? _mediaPlan;
     /// <summary>Nội dung ô danh sách phát ứng với <see cref="_mediaPlan"/>.</summary>
     private string? _mediaPlanText;
+    /// <summary>Nội dung ô danh sách phát ứng với các ảnh dải đang hiện — thứ tự mục của dải chỉ đúng khi bằng nội dung ô.</summary>
+    private string? _stripText;
     private readonly Button _btnTextAction = new() { Text = "◎ Bắt phần tử (3 giây)", AutoSize = true };
     private readonly Label _lblVariable = Caption("Lưu vào biến:");
     private readonly ComboBox _cboVariable = new() { DropDownStyle = ComboBoxStyle.DropDown, Width = 240 };
@@ -117,6 +122,14 @@ internal sealed class StepEditorForm : BaseForm
     private readonly NumericUpDown _numDelay = Num(0, 86_400_000, 120);
     private readonly CheckBox _chkWaitUser = new() { Text = "Tạm dừng flow cho tới khi bấm \"Đã hiểu\"", AutoSize = true };
     private readonly CheckBox _chkForce = new() { Text = "", AutoSize = true };
+
+    // Phát video: màn hình phát (máy nhiều màn hình)
+    private readonly Label _lblMonitor = Caption("Màn hình phát:");
+    private readonly FlowLayoutPanel _pnlMonitor = Row();
+    private readonly ComboBox _cboMonitor = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 360, AccessibleName = "Màn hình phát" };
+    private readonly Button _btnIdentify = new() { Text = "Hiện số màn hình", AutoSize = true, Margin = new Padding(8, 2, 3, 2) };
+    /// <summary>Giá trị (<see cref="Native.Displays"/>) ứng với từng dòng của <see cref="_cboMonitor"/>.</summary>
+    private readonly List<int> _monitorChoices = [];
 
     private readonly Label _lblError = Caption("Khi bước lỗi:");
     private readonly FlowLayoutPanel _pnlError = Row();
@@ -237,6 +250,7 @@ internal sealed class StepEditorForm : BaseForm
         AddRow(_lblHeaders, _txtHeaders);
         AddRow(_lblText, _txtText, _btnTextAction);
         AddRow(null, _lblMediaInfo, span: true);
+        AddRow(null, _mediaStrip, span: true);
         AddRow(_lblArgs, _cboArgs, _btnArgsAction);
         AddRow(_lblD365Extra, _cboD365Extra);
         AddRow(_lblVariable, _cboVariable);
@@ -265,6 +279,9 @@ internal sealed class StepEditorForm : BaseForm
         AddRow(_lblDelay, _numDelay);
         AddRow(null, _chkWaitUser);
         AddRow(null, _chkForce);
+        _pnlMonitor.Controls.AddRange([_cboMonitor, _btnIdentify]);
+        AddRow(_lblMonitor, _pnlMonitor, span: true);
+        _btnIdentify.Click += (_, _) => IdentifyScreens.Show(this);
 
         _pnlError.Controls.AddRange([Small("Thử lại"), _numRetries, Small("lần, cách (ms)"), _numRetryDelay, Small("rồi"), _cboOnError, _cboErrorLabel]);
         ((Label)_pnlError.Controls[0]).Margin = new Padding(0, 6, 2, 0);
@@ -295,6 +312,7 @@ internal sealed class StepEditorForm : BaseForm
                 _mediaTimer.Stop();
                 btnOk.Enabled = false;
                 _txtText.ReadOnly = true;
+                _mediaStrip.Enabled = false;   // không sửa danh sách từ dải trong lúc chờ
                 try
                 {
                     while (!IsDisposed && CurrentType == StepType.PlayMedia && _mediaPlanText != _txtText.Text)
@@ -306,6 +324,7 @@ internal sealed class StepEditorForm : BaseForm
                     {
                         btnOk.Enabled = true;
                         _txtText.ReadOnly = false;
+                        _mediaStrip.Enabled = true;
                     }
                 }
                 // Hộp thoại đã bị đóng / hủy trong lúc chờ.
@@ -322,6 +341,19 @@ internal sealed class StepEditorForm : BaseForm
         {
             _mediaTimer.Stop();
             _mediaTimer.Dispose();
+            _previewCts?.Cancel();
+        };
+        _mediaStrip.PlayRequested += async path => await PreviewMediaAsync(path);
+        _mediaStrip.MoveRequested += (from, to) => EditPlaylist(PlaylistText.Move(_txtText.Text, from, to));
+        _mediaStrip.RemoveRequested += item => EditPlaylist(PlaylistText.Remove(_txtText.Text, item));
+        _mediaStrip.FilesDropped += AddMediaPaths;
+        // Kéo thả file video / thư mục từ Explorer vào ô danh sách cũng được.
+        _txtText.AllowDrop = true;
+        _txtText.DragEnter += (_, e) =>
+            e.Effect = CurrentType == StepType.PlayMedia && !_txtText.ReadOnly && PlaylistText.DroppedPaths(e.Data).Length > 0 ? DragDropEffects.Copy : DragDropEffects.None;
+        _txtText.DragDrop += (_, e) =>
+        {
+            if (CurrentType == StepType.PlayMedia) AddMediaPaths(PlaylistText.DroppedPaths(e.Data));
         };
         _txtText.TextChanged += (_, _) =>
         {
@@ -458,6 +490,7 @@ internal sealed class StepEditorForm : BaseForm
         _numDelay.Value = Math.Clamp(_step.DelayMs, 0, 86_400_000);
         _chkWaitUser.Checked = _step.WaitForUser;
         _chkForce.Checked = _step.Force;
+        FillMonitors(_step.Monitor);
         _numAfter.Value = Math.Clamp(_step.DelayAfterMs, 0, 600_000);
         _chkEnabled.Checked = _step.Enabled;
         _chkBreakpoint.Checked = _step.Breakpoint;
@@ -537,6 +570,7 @@ internal sealed class StepEditorForm : BaseForm
         s.DelayMs = (int)_numDelay.Value;
         s.WaitForUser = _chkWaitUser.Checked;
         s.Force = _chkForce.Visible && _chkForce.Checked;
+        s.Monitor = type == StepType.PlayMedia && _cboMonitor.SelectedIndex >= 0 ? _monitorChoices[_cboMonitor.SelectedIndex] : 0;
         s.DelayAfterMs = (int)_numAfter.Value;
         s.Enabled = _chkEnabled.Checked;
         s.Breakpoint = !_markerType && _chkBreakpoint.Checked;
@@ -563,7 +597,9 @@ internal sealed class StepEditorForm : BaseForm
         if (lines.Count == 0)
         {
             (_mediaPlan, _mediaPlanText) = (null, text);
-            _lblMediaInfo.Text = "Chưa có file nào — bấm \"＋ Thêm file…\" hoặc dán đường dẫn, mỗi dòng một file.";
+            _lblMediaInfo.Text = "Chưa có file nào — bấm \"＋ Thêm file…\", kéo thả video vào hoặc dán đường dẫn, mỗi dòng một file.";
+            _mediaStrip.SetPlan(null);
+            _stripText = text;
             return;
         }
         _lblMediaInfo.Text = "Đang tính thời lượng…";
@@ -575,16 +611,118 @@ internal sealed class StepEditorForm : BaseForm
         }
         catch (Exception ex)
         {
+            if (IsDisposed) return;
+            // Vẫn coi như đã tính xong nội dung này (thời lượng chưa rõ = 0) — nút OK không chờ mãi.
+            if (text == _txtText.Text) (_mediaPlan, _mediaPlanText) = (null, text);
             if (version == _mediaVersion) _lblMediaInfo.Text = "✖ Không tính được thời lượng: " + ex.Message;
             return;
         }
         if (IsDisposed) return;
         // Kết quả vẫn đúng với nội dung hiện tại thì giữ (kể cả khi có lần tính khác chồng lên); chỉ lần tính mới nhất được hiện.
         if (text == _txtText.Text) (_mediaPlan, _mediaPlanText) = (plan, text);
-        if (version == _mediaVersion) _lblMediaInfo.Text = DescribePlan(plan);
+        if (version != _mediaVersion) return;
+        // Từng file (ảnh, thứ tự, thời lượng, lỗi) hiện ở dải ảnh thu nhỏ — nhãn chỉ còn dòng tổng.
+        _lblMediaInfo.Text = DescribePlan(plan, details: false);
+        _mediaStrip.SetPlan(plan);
+        _stripText = text;
     }
 
-    internal static string DescribePlan(Services.MediaInfo.Plan plan)
+    /// <summary>
+    /// Danh sách màn hình: chính, đang có chuột, rồi từng màn hình đang cắm. Màn hình đã chọn mà giờ không cắm (vd máy chiếu)
+    /// vẫn giữ lựa chọn và ghi rõ "chưa cắm" — khi chạy sẽ phát ở màn hình chính.
+    /// </summary>
+    private void FillMonitors(int selected)
+    {
+        var displays = Native.Displays.All();
+        _cboMonitor.Items.Clear();
+        _monitorChoices.Clear();
+        void Add(int value, string text)
+        {
+            _monitorChoices.Add(value);
+            _cboMonitor.Items.Add(text);
+        }
+        Add(Native.Displays.Primary, "Màn hình chính");
+        Add(Native.Displays.UnderMouse, "Màn hình đang có chuột (lúc phát)");
+        foreach (var d in displays) Add(d.Number, Native.Displays.Label(d, displays));
+        if (selected > 0 && displays.All(d => d.Number != selected)) Add(selected, $"Màn hình {selected} (chưa cắm — sẽ phát ở màn hình chính)");
+        _cboMonitor.SelectedIndex = Math.Max(0, _monitorChoices.IndexOf(selected));
+        _btnIdentify.Enabled = displays.Count > 1;
+        _btnIdentify.Text = displays.Count > 1 ? "Hiện số màn hình" : "Máy có 1 màn hình";
+    }
+
+    /// <summary>Sửa danh sách phát từ dải ảnh thu nhỏ (đổi thứ tự, bỏ mục) rồi tính lại ngay.</summary>
+    private void EditPlaylist(string text)
+    {
+        // Dải đang hiện danh sách cũ (vừa gõ, chưa tính lại) → thứ tự mục không còn đúng với ô văn bản.
+        if (_stripText != _txtText.Text || _txtText.ReadOnly || text == _txtText.Text) return;
+        _txtText.Text = text;
+        _mediaTimer.Stop();
+        _ = RefreshMediaInfoAsync();
+    }
+
+    /// <summary>Thêm file / thư mục vào cuối danh sách phát (nút "＋ Thêm file…", kéo thả từ Explorer).</summary>
+    internal void AddMediaPaths(IReadOnlyCollection<string> paths)
+    {
+        // Đang chờ tính thời lượng để lưu (đã bấm OK) → không đổi danh sách nữa.
+        if (paths.Count == 0 || _txtText.ReadOnly) return;
+        _txtText.Text = PlaylistText.Append(_txtText.Text, paths);
+        _mediaTimer.Stop();
+        _ = RefreshMediaInfoAsync();
+        ShowInfo($"✔ Đã thêm {paths.Count} mục — kéo ảnh thu nhỏ để đổi thứ tự, chuột phải để bỏ.", true);
+    }
+
+    /// <summary>Phát thử riêng một file (cửa sổ thường, không toàn màn hình) — nhấp đúp ảnh thu nhỏ.</summary>
+    private async Task PreviewMediaAsync(string path)
+    {
+        if (_previewCts != null) return;
+        using var cts = _previewCts = new CancellationTokenSource();
+        try
+        {
+            int volume = int.TryParse(_cboArgs.Text.Trim().TrimEnd('%'), out int v) ? Math.Clamp(v, 0, 100) : 100;
+            ShowInfo($"▶ Đang phát thử \"{Path.GetFileName(path)}\" — Esc trong cửa sổ phát: dừng.", true);
+            var r = await Services.MediaPlayback.PlayAsync([path], fullscreen: false, volume, cts.Token);
+            if (IsDisposed) return;
+            var (message, ok) = DescribePreview(r, path);
+            ShowInfo(message, ok);
+        }
+        catch (OperationCanceledException)
+        {
+            if (!IsDisposed) ShowInfo("■ Đã dừng phát thử.", true);
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed) ShowInfo("✖ Không phát được: " + ex.Message, false);
+        }
+        finally
+        {
+            _previewCts = null;
+        }
+    }
+
+    /// <summary>Kết quả phát thử một file: phát xong, dừng, bỏ qua (→ / N / PageDown) — chỉ báo lỗi khi thật sự có lỗi.</summary>
+    internal static (string Text, bool Ok) DescribePreview(Services.PlaybackResult r, string path)
+    {
+        var name = Path.GetFileName(path);
+        if (r.Played > 0) return ($"✔ Đã phát xong \"{name}\".", true);
+        if (r.StoppedByUser) return ("■ Đã dừng phát thử.", true);
+        if (r.Problems.Count > 0) return ("✖ Không phát được: " + string.Join("; ", r.Problems), false);
+        if (r.Skipped > 0) return ($"⏭ Đã bỏ qua phát thử \"{name}\".", true);
+        return ("■ Đã dừng phát thử.", true);
+    }
+
+    /// <summary>Đang phát thử: Esc dừng phát thử thay vì bấm "Hủy" (đóng ô sửa bước, mất mọi chỗ đã sửa).</summary>
+    protected override bool ProcessDialogKey(Keys keyData)
+    {
+        if (keyData == Keys.Escape && _previewCts != null)
+        {
+            _previewCts.Cancel();
+            return true;
+        }
+        return base.ProcessDialogKey(keyData);
+    }
+
+    /// <param name="details">Thêm từng file / dòng lỗi bên dưới dòng tổng.</param>
+    internal static string DescribePlan(Services.MediaInfo.Plan plan, bool details = true)
     {
         const int maxLines = 10;
         var sb = new System.Text.StringBuilder();
@@ -597,6 +735,12 @@ internal sealed class StepEditorForm : BaseForm
             sb.Append(plan.Complete ? "Tổng thời lượng: " : "Tổng thời lượng: ít nhất ").Append(ActionStep.FormatDuration(plan.Total))
               .Append($" · {files} file");
             if (plan.UnknownCount > 0) sb.Append($" ({plan.UnknownCount} file chưa đọc được thời lượng)");
+        }
+        if (!details)
+        {
+            int problems = plan.Entries.Count(e => e.Path == null && e.Problem != Services.MediaInfo.VariableProblem);
+            if (problems > 0) sb.Append($" · ✖ {problems} dòng lỗi (ô đỏ)");
+            return sb.ToString();
         }
         foreach (var (e, i) in plan.Entries.Take(maxLines).Select((e, i) => (e, i)))
         {
@@ -919,6 +1063,7 @@ internal sealed class StepEditorForm : BaseForm
             StepType.TypeText or StepType.KeyPress => "Cửa sổ đích (tùy chọn):",
             StepType.RunCommand => "Lệnh:",
             StepType.CloseApp => "Tên tiến trình:",
+            StepType.MinimizeWindow => "Cửa sổ (trống = cửa sổ\nđang dùng):",
             StepType.Label => "Tên nhãn:",
             StepType.Goto => "Nhảy tới nhãn:",
             StepType.Browser => br == BrowserAction.Launch ? "Trình duyệt:" : "Tab (một phần URL/tiêu đề,\ntrống = tab đầu tiên):",
@@ -953,7 +1098,7 @@ internal sealed class StepEditorForm : BaseForm
 
         bool fileTarget = t is StepType.LaunchApp or StepType.WriteData || (t == StepType.Loop && loop != LoopKind.While && loop != LoopKind.Count)
                           || (t == StepType.SetVariable && src == VarSource.File) || (cond && ck == ConditionKind.FileExists);
-        bool windowTarget = t is StepType.WaitForWindow or StepType.FocusWindow or StepType.MouseClick or StepType.TypeText or StepType.KeyPress
+        bool windowTarget = t is StepType.WaitForWindow or StepType.FocusWindow or StepType.MinimizeWindow or StepType.MouseClick or StepType.TypeText or StepType.KeyPress
                                 or StepType.MouseScroll or StepType.MouseDrag or StepType.AskAi
                             || vision || element || (t == StepType.SetVariable && src == VarSource.ScreenText)
                             || (cond && ck is ConditionKind.WindowExists);
@@ -1113,7 +1258,7 @@ internal sealed class StepEditorForm : BaseForm
         // Biến nhận kết quả
         bool variable = t switch
         {
-            StepType.SetVariable or StepType.RunCommand or StepType.HttpRequest or StepType.AskAi => true,
+            StepType.SetVariable or StepType.RunCommand or StepType.HttpRequest or StepType.AskAi or StepType.MinimizeWindow => true,
             StepType.Loop => loop is LoopKind.Rows or LoopKind.Lines or LoopKind.Files,
             StepType.Browser => br is BrowserAction.ReadText or BrowserAction.RunScript,
             StepType.Dynamics => d is D365Action.GetField or D365Action.Save or D365Action.ConfirmDialog or D365Action.GetRecordId
@@ -1127,6 +1272,7 @@ internal sealed class StepEditorForm : BaseForm
             StepType.SetVariable => src == VarSource.ListAdd ? "Tên biến danh sách:" : "Tên biến:",
             StepType.Loop => "Tên biến (tiền tố):",
             StepType.RunCommand => "Lưu output vào biến\n(tùy chọn):",
+            StepType.MinimizeWindow => "Nhớ cửa sổ vào biến\n(để mở lại sau):",
             StepType.HttpRequest => "Lưu kết quả vào biến\n(tùy chọn):",
             StepType.AskAi => "Lưu câu trả lời vào biến:",
             StepType.Dynamics => d switch
@@ -1148,7 +1294,7 @@ internal sealed class StepEditorForm : BaseForm
         SetVisible(t == StepType.CallJob, _lblJob, _cboJob);
 
         SetVisible(t == StepType.TypeText, _lblTypeMode, _cboTypeMode);
-        SetVisible(t == StepType.PlayMedia, _lblMediaInfo);
+        SetVisible(t == StepType.PlayMedia, _lblMediaInfo, _mediaStrip);
         if (t == StepType.PlayMedia && _mediaPlanText != _txtText.Text)
         {
             _mediaTimer.Stop();
@@ -1184,7 +1330,7 @@ internal sealed class StepEditorForm : BaseForm
             _cboTarget.Enabled = _btnTargetAction.Enabled = true;
         }
 
-        bool delay = vision || element || t is StepType.Wait or StepType.WaitForWindow or StepType.FocusWindow or StepType.RunCommand or StepType.Browser
+        bool delay = vision || element || t is StepType.Wait or StepType.WaitForWindow or StepType.FocusWindow or StepType.MinimizeWindow or StepType.RunCommand or StepType.Browser
                          or StepType.HttpRequest or StepType.AskAi or StepType.Dynamics
                      || (t == StepType.SetVariable && src is VarSource.Command or VarSource.Element)
                      || (cond && ck is not (ConditionKind.Compare or ConditionKind.LastStepFailed))
@@ -1200,6 +1346,7 @@ internal sealed class StepEditorForm : BaseForm
                      || (t == StepType.SetVariable && src == VarSource.AskUser) || (dyn && d is D365Action.SetField or D365Action.WebApi)
                      || (t == StepType.Browser && br == BrowserAction.Launch) || t == StepType.PlayMedia;
         SetVisible(force, _chkForce);
+        SetVisible(t == StepType.PlayMedia, _lblMonitor, _pnlMonitor);
         _chkForce.Text = t switch
         {
             StepType.CloseApp => "Buộc đóng (kill tiến trình, không hỏi lưu)",
@@ -1287,7 +1434,10 @@ internal sealed class StepEditorForm : BaseForm
         StepType.Wait => "Tạm dừng flow một khoảng thời gian (1000 ms = 1 giây).",
         StepType.WaitForWindow => "Nhập một phần tiêu đề cửa sổ hoặc tên tiến trình (vd: Notepad, chrome, EXCEL, exe:chrome), hoặc chọn từ danh sách. " +
                                   "Bước lỗi nếu hết timeout mà chưa thấy cửa sổ.",
-        StepType.FocusWindow => "Đưa cửa sổ lên trên cùng và nhận bàn phím (khôi phục nếu đang thu nhỏ).",
+        StepType.FocusWindow => "Đưa cửa sổ lên trên cùng và nhận bàn phím (khôi phục nếu đang thu nhỏ). " +
+                                "Mở lại cửa sổ đã thu nhỏ bằng bước \"Thu nhỏ cửa sổ\": nhập {{tên biến đã nhớ}} hoặc {{lastWindow}}.",
+        StepType.MinimizeWindow => "Ẩn cửa sổ xuống thanh tác vụ. Để trống = cửa sổ bạn đang dùng lúc flow chạy (không tính ScheduleApp). " +
+                                   "Cửa sổ được nhớ vào biến (và {{lastWindow}}) — thêm bước \"Kích hoạt cửa sổ\" với {{tên biến}} để mở lại đúng cửa sổ đó.",
         StepType.MouseClick => "Bấm \"Lấy tọa độ\" rồi di chuột tới vị trí cần click trong 3 giây. " +
                                "Có hình mẫu (trình ghi thao tác tự chụp, hoặc bấm \"Chụp hình mẫu\"): khi chạy tìm chỗ đó theo hình ảnh trước — cửa sổ dời chỗ, " +
                                "đổi kích thước vẫn click đúng — hết thời gian chờ mà không thấy mới click theo tọa độ X, Y.",
@@ -1358,7 +1508,9 @@ internal sealed class StepEditorForm : BaseForm
         StepType.PlayMedia =>
             "Phát lần lượt bằng trình phát có sẵn trong ScheduleApp: hết file này tự sang file kế, phát xong cả danh sách mới chạy bước sau. " +
             "Mỗi dòng một file (dán đường dẫn \"Copy as path\" của Explorer được, dòng # là ghi chú); dòng là thư mục thì phát mọi video trong đó theo tên. " +
-            "Thời lượng từng file và tổng hiện ngay dưới danh sách (tự tính khi thêm / đổi file). File thiếu / lỗi được bỏ qua và ghi vào nhật ký. " +
+            "Ảnh thu nhỏ (như Explorer), thứ tự phát và thời lượng từng file hiện ngay dưới danh sách: kéo ảnh để đổi thứ tự, nhấp đúp để phát thử, " +
+            "chuột phải để bỏ; kéo thả video từ Explorer vào để thêm. Máy nhiều màn hình: chọn \"Màn hình phát\" (vd máy chiếu). " +
+            "File thiếu / lỗi được bỏ qua và ghi vào nhật ký. " +
             "Sau bước: {{media.played}} (số file đã phát), {{media.duration}} (tổng thời lượng, vd 0:26).",
         StepType.HttpRequest =>
             "Gọi REST API: kết quả trong {{http.body}}, mã trả về trong {{http.status}}. Trích một giá trị bằng đường dẫn JSON, vd value[0].accountid, " +
@@ -1485,7 +1637,7 @@ internal sealed class StepEditorForm : BaseForm
             foreach (var p in WindowHelper.GetOpenWindows().Select(w => w.ProcessName).Distinct(StringComparer.OrdinalIgnoreCase).Order())
                 _cboTarget.Items.Add(p);
         }
-        else if (t is StepType.WaitForWindow or StepType.FocusWindow or StepType.MouseClick or StepType.TypeText or StepType.KeyPress
+        else if (t is StepType.WaitForWindow or StepType.FocusWindow or StepType.MinimizeWindow or StepType.MouseClick or StepType.TypeText or StepType.KeyPress
                      or StepType.ClickImage or StepType.WaitForImage or StepType.ClickText or StepType.WaitForText
                      or StepType.ClickElement or StepType.SetElementText or StepType.WaitForElement or StepType.MouseScroll or StepType.MouseDrag or StepType.AskAi
                  || (t == StepType.SetVariable && CurrentSource is VarSource.ScreenText or VarSource.Element)
@@ -1545,10 +1697,7 @@ internal sealed class StepEditorForm : BaseForm
             Filter = $"Video / nhạc ({exts})|{exts}|Tất cả file (*.*)|*.*"
         };
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
-        var lines = _txtText.Text.Replace("\r\n", "\n").TrimEnd('\n');
-        var added = dlg.FileNames.Order(Services.MediaPlayback.NameOrder);
-        _txtText.Text = string.Join("\r\n", (lines.Length > 0 ? lines.Split('\n') : []).Concat(added));
-        ShowInfo($"✔ Đã thêm {dlg.FileNames.Length} file — sửa thứ tự bằng cách sắp xếp lại các dòng.", true);
+        AddMediaPaths(dlg.FileNames.Order(Services.MediaPlayback.NameOrder).ToList());
     }
 
     /// <summary>Nạp tên sheet của file Excel và hiện cột tiêu đề để gợi ý biến {{row.Cột}}.</summary>

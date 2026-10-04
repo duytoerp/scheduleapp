@@ -20,6 +20,16 @@ public enum NotifyMode
     Never
 }
 
+/// <summary>Khung trạng thái ở góc phải màn hình khi công việc chạy.</summary>
+public enum RunOverlayMode
+{
+    /// <summary>Theo cài đặt chung (Cài đặt → Chung).</summary>
+    Default,
+    Show,
+    /// <summary>Không hiện — vd đang trình chiếu / phát video, không muốn khung che màn hình.</summary>
+    Hide
+}
+
 /// <summary>Biến khai báo sẵn của công việc (giá trị ban đầu).</summary>
 public sealed class VariableDef
 {
@@ -63,6 +73,9 @@ public sealed class Job
     public bool SkipHolidays { get; set; }
 
     public NotifyMode NotifyMode { get; set; } = NotifyMode.OnError;
+
+    /// <summary>Hiện khung trạng thái ở góc phải màn hình khi chạy công việc này.</summary>
+    public RunOverlayMode RunOverlay { get; set; }
 
     /// <summary>Công việc chạy dọn dẹp khi flow thất bại (vd đóng ứng dụng, gửi báo cáo).</summary>
     public Guid? OnFailureJobId { get; set; }
