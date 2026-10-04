@@ -80,7 +80,7 @@ internal sealed class FlowDesigner : Control
 
     // Font theo mức thu phóng (tạo lại khi đổi) và font cố định cho nút điều khiển.
     private float _fontZoom = -1;
-    private Font? _titleFont, _subFont, _smallFont, _glyphFont, _badgeFont;
+    private Font? _titleFont, _subFont, _smallFont, _glyphFont, _badgeFont, _portFont;
     private Font _uiGlyph = null!, _uiFont = null!;
 
     public event EventHandler? SelectionChanged;
@@ -144,6 +144,21 @@ internal sealed class FlowDesigner : Control
     public FlowStructure Structure => _structure;
 
     internal FlowGraphLayout Graph => _layout;
+
+    private string _startSubtitle = "theo lịch, kích hoạt hoặc chạy tay";
+
+    /// <summary>Dòng mô tả dưới nút Bắt đầu (lịch chạy / trình kích hoạt của công việc).</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public string StartSubtitle
+    {
+        get => _startSubtitle;
+        set
+        {
+            if (_startSubtitle == value) return;
+            _startSubtitle = value;
+            Invalidate();
+        }
+    }
 
     internal float Zoom => _zoom;
 
@@ -402,8 +417,31 @@ internal sealed class FlowDesigner : Control
     private void Changed()
     {
         Rebuild();
+        KeepContentInView();
         Invalidate();
         StepsChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Sau khi thêm / xóa / di chuyển bước: flow còn nhỏ thì giữ cả sơ đồ trong khung (cuộn vừa đủ, hoặc thu nhỏ tới 75%)
+    /// để không phải đi tìm bước mới hay nút "+" cuối; flow lớn thì giữ nguyên khung nhìn (đã có bản đồ thu nhỏ).
+    /// </summary>
+    private void KeepContentInView()
+    {
+        if (!_viewReady || ClientSize.Width <= S(100)) return;
+        var b = _layout.ContentBounds;
+        b.Inflate(S(30), S(30));
+        float w = ClientSize.Width, h = ClientSize.Height - S(50);
+        if (b.Width * _zoom > w || b.Height * _zoom > h)
+        {
+            float fit = Math.Min(w / b.Width, h / b.Height);
+            if (fit < 0.75f) return;
+            _zoom = Math.Min(_zoom, fit);
+        }
+        var r = new RectangleF(b.X * _zoom + _pan.X, b.Y * _zoom + _pan.Y, b.Width * _zoom, b.Height * _zoom);
+        float dx = r.Left < 0 ? -r.Left : r.Right > w ? w - r.Right : 0;
+        float dy = r.Top < 0 ? -r.Top : r.Bottom > h ? h - r.Bottom : 0;
+        _pan = new PointF(_pan.X + dx, _pan.Y + dy);
     }
 
     private void Rebuild()
@@ -475,6 +513,8 @@ internal sealed class FlowDesigner : Control
         if (!_viewReady) return;
         var r = ToScreen(_layout.Bounds[i]!.Value);
         r = Rectangle.FromLTRB(r.Left - S(20), r.Top - S(44), r.Right + S(20), r.Bottom + (int)(_layout.Size.Label * _zoom));
+        // Bước cuối: giữ cả nút "+" phía sau trong khung để thêm bước tiếp ngay.
+        if (i == _steps.Count - 1) r = Rectangle.Union(r, Rectangle.Inflate(ToScreen(_layout.StubBounds), S(16), 0));
         int m = S(12);
         float dx = r.Left < m ? m - r.Left : r.Right > ClientSize.Width - m ? ClientSize.Width - m - r.Right : 0;
         float dy = r.Top < m ? m - r.Top : r.Bottom > ClientSize.Height - m ? ClientSize.Height - m - r.Bottom : 0;
@@ -639,7 +679,7 @@ internal sealed class FlowDesigner : Control
         }
     }
 
-    private Rectangle MinimapRect => new(ClientSize.Width - S(212), ClientSize.Height - S(142), S(200), S(130));
+    private Rectangle MinimapRect => new(ClientSize.Width - S(172), ClientSize.Height - S(112), S(160), S(100));
 
     private (float Scale, PointF Offset) MinimapTransform()
     {
@@ -670,8 +710,8 @@ internal sealed class FlowDesigner : Control
 
     private void DisposeZoomFonts()
     {
-        foreach (var f in new[] { _titleFont, _subFont, _smallFont, _glyphFont, _badgeFont }) f?.Dispose();
-        _titleFont = _subFont = _smallFont = _glyphFont = _badgeFont = null;
+        foreach (var f in new[] { _titleFont, _subFont, _smallFont, _glyphFont, _badgeFont, _portFont }) f?.Dispose();
+        _titleFont = _subFont = _smallFont = _glyphFont = _badgeFont = _portFont = null;
         _fontZoom = -1;
     }
 
@@ -685,6 +725,7 @@ internal sealed class FlowDesigner : Control
         _smallFont = new Font(Font.FontFamily, Math.Max(1f, (size - 1.5f) * z));
         _glyphFont = StepVisuals.CreateIconFont(Font.FontFamily, (size + 13f) * z);
         _badgeFont = StepVisuals.CreateIconFont(Font.FontFamily, (size - 1f) * z);
+        _portFont = new Font(Font.FontFamily, Math.Max(1f, size * z), FontStyle.Bold);
         _fontZoom = z;
     }
 
@@ -735,6 +776,10 @@ internal sealed class FlowDesigner : Control
             else DrawNode(g, i, r);
         }
         DrawStub(g);
+
+        // Nhánh Nếu / thân lặp còn trống: nút "+" luôn hiện để biết thêm bước vào đâu.
+        for (int k = 0; k < _layout.Edges.Count; k++)
+            if (_layout.Edges[k].IsSlot && k != _hoverEdge && k != _dropEdge) DrawSlotPlus(g, PlusRect(_layout.Edges[k]));
 
         int plus = _dropEdge >= 0 ? _dropEdge : _hoverEdge;
         if (plus >= 0 && plus < _layout.Edges.Count && _layout.Edges[plus].Kind != GraphEdgeKind.Stub)
@@ -815,6 +860,14 @@ internal sealed class FlowDesigner : Control
         DrawCross(g, r, active ? Color.White : TextColor);
     }
 
+    private void DrawSlotPlus(Graphics g, Rectangle r)
+    {
+        using var path = StepVisuals.RoundRect(r, S(5));
+        using (var fill = new SolidBrush(Color.White)) g.FillPath(fill, path);
+        using (var pen = new Pen(Color.FromArgb(160, 166, 176), S(1)) { DashStyle = DashStyle.Dash }) g.DrawPath(pen, path);
+        DrawCross(g, r, MutedColor);
+    }
+
     private void DrawCross(Graphics g, Rectangle r, Color color)
     {
         float cx = r.X + r.Width / 2f, cy = r.Y + r.Height / 2f, h = r.Width * 0.27f;
@@ -838,7 +891,7 @@ internal sealed class FlowDesigner : Control
         TextRenderer.DrawText(g, StepVisuals.UiGlyph("", "▶"), _glyphFont, r, StartColor,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
         DrawOutPort(g, new PointF(r.Right, r.Y + r.Height / 2f));
-        DrawLabels(g, r, "Bắt đầu", "theo lịch, kích hoạt hoặc chạy tay", null, TextColor);
+        DrawLabels(g, r, "Bắt đầu", _startSubtitle, null, TextColor);
     }
 
     private void DrawStub(Graphics g)
@@ -1033,9 +1086,9 @@ internal sealed class FlowDesigner : Control
     {
         DrawOutPort(g, port);
         if (_zoom < 0.5f) return;
-        var size = TextRenderer.MeasureText(g, text, _smallFont, Size.Empty, TextFormatFlags.NoPadding);
+        var size = TextRenderer.MeasureText(g, text, _portFont, Size.Empty, TextFormatFlags.NoPadding);
         var rect = new Rectangle((int)(port.X + 8 * _zoom), (int)(port.Y - size.Height - 2 * _zoom), size.Width + 2, size.Height);
-        TextRenderer.DrawText(g, text, _smallFont, rect, color, OneLine);
+        TextRenderer.DrawText(g, text, _portFont, rect, color, OneLine);
     }
 
     /// <summary>Nút gộp tròn của "Hết Nếu".</summary>
@@ -1117,7 +1170,7 @@ internal sealed class FlowDesigner : Control
         var m = MinimapRect;
         using (var path = StepVisuals.RoundRect(m, S(6)))
         {
-            using var fill = new SolidBrush(Color.FromArgb(235, 255, 255, 255));
+            using var fill = new SolidBrush(Color.FromArgb(200, 255, 255, 255));
             g.FillPath(fill, path);
             using var pen = new Pen(NodeBorder);
             g.DrawPath(pen, path);
@@ -1209,8 +1262,10 @@ internal sealed class FlowDesigner : Control
             OpenPicker(StubEdge, new Point(ToScreen(_layout.StubBounds).Right + S(8), ToScreen(_layout.StubBounds).Top));
             return;
         }
+        // Bấm vào nút "+" hoặc bất kỳ chỗ nào trên dây (kể cả "+" luôn hiện của nhánh trống) → chọn thao tác chèn vào đó.
         int edge = EdgeAt(e.Location);
-        if (edge >= 0 && PlusRect(_layout.Edges[edge]).Contains(e.Location))
+        if (edge < 0) edge = _layout.Edges.FindIndex(x => x.IsSlot && PlusRect(x).Contains(e.Location));
+        if (edge >= 0)
         {
             var plus = PlusRect(_layout.Edges[edge]);
             OpenPicker(_layout.Edges[edge], new Point(plus.Right + S(8), plus.Top));

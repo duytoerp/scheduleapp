@@ -65,7 +65,11 @@ internal sealed class TemplatePickerForm : BaseForm
     {
         var asm = Assembly.GetExecutingAssembly();
         var result = new List<Job>();
-        foreach (var name in asm.GetManifestResourceNames().Where(n => n.EndsWith(".json", StringComparison.OrdinalIgnoreCase)).Order())
+        // Ví dụ cơ bản trước, rồi nâng cao, tích hợp, cuối cùng là kiểm thử Dynamics 365 — người mới thấy mẫu dễ trước.
+        string[] priority = ["vi-du-mau", "mau-nang-cao", "mau-tich-hop", "mau-kiem-thu"];
+        int Rank(string n) => Array.FindIndex(priority, p => n.Contains(p, StringComparison.OrdinalIgnoreCase)) is int i and >= 0 ? i : priority.Length;
+        foreach (var name in asm.GetManifestResourceNames().Where(n => n.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                     .OrderBy(Rank).ThenBy(n => n, StringComparer.Ordinal))
         {
             try
             {
@@ -80,6 +84,13 @@ internal sealed class TemplatePickerForm : BaseForm
         }
         // Mẫu có lịch hoặc trình kích hoạt (theo dõi thư mục, phím tắt…) để tắt sẵn — người dùng tự bật sau khi xem lại.
         foreach (var j in result) j.Enabled = j.Schedule.Type == ScheduleType.Manual && j.Triggers.Count == 0;
+        // Ngày trong mẫu là ngày lúc soạn mẫu → dời về hôm nay (giữ giờ); "Một lần" đã qua giờ thì sang ngày mai.
+        foreach (var s in result.Select(j => j.Schedule).Where(s => s.Type != ScheduleType.Manual && s.StartAt < DateTime.Now))
+        {
+            var at = DateTime.Today + s.StartAt.TimeOfDay;
+            if (s.Type == ScheduleType.Once && at <= DateTime.Now) at = at.AddDays(1);
+            s.StartAt = at;
+        }
         return result;
     }
 

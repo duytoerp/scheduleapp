@@ -7,7 +7,11 @@ internal sealed record HelpAction(string Text, string Command);
 /// Một chủ đề hướng dẫn. <see cref="Body"/> dùng cú pháp gọn: <c>## tiêu đề</c>, <c>1. bước</c>, <c>- ý</c>,
 /// <c>&gt; mẹo</c>, <c>! lưu ý</c>, khối <c>```</c> mã, trong dòng có <c>**đậm**</c> và <c>`mã`</c>. Mỗi dòng là một đoạn.
 /// </summary>
-internal sealed record HelpTopic(string Id, string Group, string Title, string Summary, string Body, params HelpAction[] Actions);
+internal sealed record HelpTopic(string Id, string Group, string Title, string Summary, string Body, params HelpAction[] Actions)
+{
+    // Tên mục trong danh sách (trình đọc màn hình / UI Automation đọc ToString của mục).
+    public override string ToString() => Title;
+}
 
 internal static class HelpContent
 {
@@ -102,6 +106,33 @@ internal static class HelpContent
             - `Ctrl` + lăn chuột thu phóng · `1` vừa khung · `0` về 100% · nút ⊕ ⊖ góc trái dưới
             - `←` `→` chọn bước · `Ctrl+←` `Ctrl+→` di chuyển · `Tab` thêm bước sau bước chọn · `Space` bật/tắt · `F9` điểm dừng · `Delete` xóa
             - `Ctrl+C` / `Ctrl+V` sao chép bước (cả sang công việc khác) · `Ctrl+D` nhân bản · `Ctrl+Z` / `Ctrl+Y` hoàn tác / làm lại
+            """,
+            new HelpAction("＋ Thêm công việc", CmdNewJob)),
+
+        new("conditions", "Bắt đầu", "Điều kiện (Nếu) & vòng lặp",
+            "Cho flow tự quyết định: chỉ làm khi đúng điều kiện, làm khác khi sai, lặp lại nhiều lần.",
+            """
+            Bước **Nếu (điều kiện)** chia flow làm hai dây: **đúng** (đi lên) chạy khi điều kiện đúng, **sai** (đi xuống) chạy khi điều kiện sai. Hai dây gặp lại nhau ở nút tròn *Hết Nếu* rồi flow chạy tiếp.
+            ## Đặt điều kiện "So sánh giá trị / biến"
+            1. Thêm bước **Nếu (điều kiện)**, chọn *Điều kiện*: **So sánh giá trị / biến**.
+            2. Ô **Giá trị**: thứ cần kiểm tra — thường là một biến trong ngoặc nhọn kép, vd `{{now:HH}}` (giờ hiện tại).
+            3. **Phép so sánh**: bằng, khác, chứa, >, <, rỗng…
+            4. Ô **So với**: giá trị mong muốn, vd `12`.
+            5. Bấm **▶ Thử bước này** để xem ngay điều kiện đang ĐÚNG hay SAI → **OK**.
+            6. Trên sơ đồ, bấm **+** trên dây *đúng* để thêm việc làm khi đúng; bấm **+** trên dây *sai* để thêm việc làm khi sai (bước *Không thì* tự được tạo).
+            ## Ví dụ đời thường
+            - Chỉ nhắc nộp báo cáo vào thứ Sáu: Giá trị `{{today:dddd}}` · **bằng** · So với `Thứ Sáu`.
+            - Buổi sáng mới chạy: Giá trị `{{now:HH}}` · **<** · So với `12`.
+            - Có file thì mới gửi: chọn điều kiện **File / thư mục tồn tại**, nhập đường dẫn file.
+            - Bước trước lỗi thì báo: chọn điều kiện **Bước trước bị lỗi**, nhánh *đúng* thêm bước **Thông báo**.
+            > Các biến hay dùng được gợi ý ngay dưới ô chữ trong form soạn bước; xem thêm chủ đề **Biến & bí mật**.
+            ## Lặp
+            - **Lặp N lần**: làm lại các bước bên trong đúng N lần; `{{loop.index}}` là lần thứ mấy (1, 2, 3…).
+            - **Mỗi dòng của file Excel / CSV**: mỗi lần lặp là một dòng; dùng `{{row.TênCột}}`, vd `{{row.Email}}`.
+            - **Mỗi file trong thư mục**, **Mỗi dòng văn bản**, **Lặp khi điều kiện đúng** (điều kiện đặt giống bước Nếu).
+            - Trên sơ đồ, các bước trong vòng lặp nằm ở hàng dưới nút **Lặp**; dây quay về cho biết chúng được làm lại.
+            - **Thoát vòng lặp** dừng lặp ngay; **Bỏ qua, sang lần lặp kế** bỏ phần còn lại của lần này.
+            ! Lặp nhiều lần với bước click/gõ phím: thêm bước **Chờ** ngắn để ứng dụng kịp phản hồi.
             """,
             new HelpAction("＋ Thêm công việc", CmdNewJob)),
 

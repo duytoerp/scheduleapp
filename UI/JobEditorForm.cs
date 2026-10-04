@@ -190,23 +190,42 @@ internal sealed class JobEditorForm : BaseForm
         var designerPanel = new Panel { Dock = DockStyle.Fill, BorderStyle = BorderStyle.FixedSingle, Margin = new Padding(0, 3, 0, 3) };
         designerPanel.Controls.Add(_designer);
 
-        var buttons = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, Dock = DockStyle.Fill, WrapContents = false };
+        // Cột nút bên phải: chạy thử lên đầu (luôn thấy), cả cột cuộn được khi cửa sổ thấp.
+        var buttons = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.TopDown, Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true, Margin = new Padding(3, 0, 0, 0)
+        };
+        _btnUndo.Click += (_, _) => Undo();
+        _btnRedo.Click += (_, _) => Redo();
+        foreach (var b in new[] { _btnTest, _btnRunFrom, _btnStepMode }) b.MinimumSize = new Size(LogicalToDeviceUnits(190), 0);
+        _btnTest.Margin = new Padding(3, 3, 3, 2);
+        _btnTest.Font = new Font(Font, FontStyle.Bold);
+        _btnTest.Click += async (_, _) => await TestRunAsync(new RunOptions { UseBreakpoints = _chkBreakpoints.Checked });
+        _btnRunFrom.Click += async (_, _) => await RunFromAsync(_designer.SelectedIndex);
+        _btnStepMode.Click += async (_, _) => await TestRunAsync(new RunOptions { StepMode = true, UseBreakpoints = true });
+        _tips.SetToolTip(_btnTest, "Chạy cả flow ngay để thử (F5)");
+        _chkBreakpoints.Margin = new Padding(6, 2, 3, 12);
+        buttons.Controls.AddRange([_btnTest, _btnRunFrom, _btnStepMode, _chkBreakpoints]);
+
         var btnAi = SideButton("✨ Tạo bằng AI…", (_, _) => GenerateWithAi());
         btnAi.ForeColor = Color.FromArgb(110, 60, 190);
         buttons.Controls.Add(btnAi);
         var btnRecord = SideButton("⏺ Ghi thao tác…", async (_, _) => await RecordAsync());
         btnRecord.ForeColor = Color.FromArgb(196, 43, 28);
-        btnRecord.Margin = new Padding(3, 2, 3, 12);
         buttons.Controls.Add(btnRecord);
-        var btnRecordD365 = SideButton("⏺ Ghi thao tác D365…", async (_, _) => await RecordD365Async());
-        btnRecordD365.ForeColor = Color.FromArgb(116, 39, 116);
-        btnRecordD365.Margin = new Padding(3, 0, 3, 2);
-        _tips.SetToolTip(btnRecordD365, "Thao tác trên form Dynamics 365 trong trình duyệt — các bước được tạo tự động");
-        buttons.Controls.Add(btnRecordD365);
-        var btnAssert = SideButton("✓ Kiểm tra từ form D365…", async (_, _) => await AddD365AssertsAsync());
-        btnAssert.Margin = new Padding(3, 0, 3, 12);
-        _tips.SetToolTip(btnAssert, "Chọn các field trên form đang mở → tạo bước Kiểm tra với giá trị hiện tại");
-        buttons.Controls.Add(btnAssert);
+
+        // Hai công cụ Dynamics 365 gom vào một nút menu — đỡ rối cho người không dùng D365.
+        var d365Menu = new ContextMenuStrip();
+        d365Menu.Items.Add("⏺ Ghi thao tác trên form D365…", null, async (_, _) => await RecordD365Async());
+        d365Menu.Items.Add("✓ Kiểm tra từ form D365 đang mở…", null, async (_, _) => await AddD365AssertsAsync());
+        var btnD365 = SideButton("Dynamics 365  ▾", (_, _) => { });
+        btnD365.ForeColor = Color.FromArgb(116, 39, 116);
+        btnD365.Margin = new Padding(3, 2, 3, 12);
+        btnD365.Click += (_, _) => d365Menu.Show(btnD365, new Point(0, btnD365.Height));
+        _tips.SetToolTip(btnD365, "Ghi kịch bản trên form Dynamics 365, hoặc tạo bước Kiểm tra từ các field của form đang mở");
+        buttons.Controls.Add(btnD365);
+        Disposed += (_, _) => d365Menu.Dispose();
+
         buttons.Controls.Add(SideButton("Sửa bước…", (_, _) => EditStep(_designer.SelectedIndex)));
         buttons.Controls.Add(SideButton("Nhân bản", (_, _) => _designer.DuplicateSelected()));
         buttons.Controls.Add(SideButton("Bật / Tắt", (_, _) => _designer.ToggleSelected()));
@@ -216,19 +235,12 @@ internal sealed class JobEditorForm : BaseForm
         _btnExpand.Click += (_, _) => _toggleCanvas();
         _tips.SetToolTip(_btnExpand, "Ẩn / hiện phần lịch chạy, kích hoạt, biến… để có chỗ rộng cho sơ đồ");
         buttons.Controls.Add(_btnExpand);
-        _btnUndo.Click += (_, _) => Undo();
-        _btnRedo.Click += (_, _) => Redo();
-        _btnTest.Margin = new Padding(3, 18, 3, 3);
-        foreach (var b in new[] { _btnTest, _btnRunFrom, _btnStepMode }) b.MinimumSize = new Size(LogicalToDeviceUnits(190), 0);
-        _btnTest.Click += async (_, _) => await TestRunAsync(new RunOptions { UseBreakpoints = _chkBreakpoints.Checked });
-        _btnRunFrom.Click += async (_, _) => await RunFromAsync(_designer.SelectedIndex);
-        _btnStepMode.Click += async (_, _) => await TestRunAsync(new RunOptions { StepMode = true, UseBreakpoints = true });
-        buttons.Controls.AddRange([_btnTest, _btnRunFrom, _btnStepMode, _chkBreakpoints, _lblStepCount, HelpLink()]);
+        buttons.Controls.AddRange([_lblStepCount, HelpLink()]);
 
         var stepsLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 2 };
         stepsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, LogicalToDeviceUnits(235)));
         stepsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        stepsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        stepsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, LogicalToDeviceUnits(222)));
         stepsLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         stepsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         stepsLayout.Controls.Add(toolboxPanel, 0, 0);
@@ -278,6 +290,7 @@ internal sealed class JobEditorForm : BaseForm
 
         Controls.Add(root);
 
+        _chkEnabled.CheckedChanged += (_, _) => UpdateStartSubtitle();
         _designer.EditRequested += EditStep;
         _designer.AddRequested += AddStep;
         _designer.RunFromRequested += async i => await RunFromAsync(i);
@@ -557,6 +570,58 @@ internal sealed class JobEditorForm : BaseForm
         UpdateStepCount();
         UpdateScheduleUi();
         Snapshot();
+        _savedState = CurrentState();
+    }
+
+    // ───────────────────────────── Thay đổi chưa lưu ─────────────────────────────
+
+    private string _savedState = "";
+    private bool _discardConfirmed;
+
+    /// <summary>Trạng thái hiện tại của mọi ô + các bước (JSON) — so với lúc mở để biết có thay đổi chưa lưu không.</summary>
+    private string CurrentState()
+    {
+        var copy = _job.Clone();
+        ApplyTo(copy);
+        return JsonSerializer.Serialize(copy, JsonDefaults.Options);
+    }
+
+    /// <summary>Có thay đổi so với lúc mở trình soạn (tên, lịch, bước…).</summary>
+    internal bool HasUnsavedChanges => CurrentState() != _savedState;
+
+    /// <summary>Hỏi khi đóng mà còn thay đổi chưa lưu: Yes = lưu, No = bỏ, Cancel = quay lại (thay được trong kiểm thử).</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal Func<IWin32Window, DialogResult> AskSaveChanges { get; set; } = owner =>
+    {
+        using var ask = new ConfirmForm("Chưa lưu", "Công việc có thay đổi chưa lưu. Lưu lại trước khi đóng?",
+            "Lưu", "Bỏ thay đổi", "Quay lại sửa", topMost: false);
+        return ask.ShowDialog(owner);
+    };
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        // Hủy / Esc / nút X khi đã sửa gì đó: hỏi trước — tránh mất cả flow vì lỡ tay.
+        // Nút Hủy / Esc (CancelButton) đóng hộp thoại với CloseReason.None; nút X là UserClosing.
+        if (DialogResult != DialogResult.OK && !_discardConfirmed && !e.Cancel
+            && e.CloseReason is CloseReason.UserClosing or CloseReason.None && HasUnsavedChanges)
+        {
+            var answer = AskSaveChanges(this);
+            if (answer == DialogResult.Yes)
+            {
+                e.Cancel = true;
+                DialogResult = DialogResult.None;
+                BeginInvoke(new MethodInvoker(Save));
+                return;
+            }
+            if (answer == DialogResult.Cancel)
+            {
+                e.Cancel = true;
+                DialogResult = DialogResult.None;
+                return;
+            }
+            _discardConfirmed = true;
+        }
+        base.OnFormClosing(e);
     }
 
     // ───────────────────────────── Hoàn tác / phiên bản ─────────────────────────────
@@ -643,6 +708,18 @@ internal sealed class JobEditorForm : BaseForm
     {
         _lstTriggers.Items.Clear();
         foreach (var t in _job.Triggers) _lstTriggers.Items.Add(t.Describe());
+        UpdateStartSubtitle();
+    }
+
+    /// <summary>Nút "Bắt đầu" trên sơ đồ ghi rõ khi nào flow chạy: lịch + số trình kích hoạt.</summary>
+    private void UpdateStartSubtitle()
+    {
+        var schedule = ReadSchedule();
+        var text = schedule.Type == ScheduleType.Manual ? "chạy tay" : schedule.Describe();
+        int triggers = _job.Triggers.Count(t => t.Enabled);
+        if (triggers > 0) text += $" · {triggers} trình kích hoạt";
+        if (!_chkEnabled.Checked) text = "(đang tắt) " + text;
+        _designer.StartSubtitle = text;
     }
 
     private void LoadSchedule(ScheduleConfig s)
@@ -727,6 +804,7 @@ internal sealed class JobEditorForm : BaseForm
 
     private void UpdateNextPreview()
     {
+        UpdateStartSubtitle();
         var schedule = ReadSchedule();
         if (schedule.Type == ScheduleType.Manual)
         {
@@ -889,6 +967,8 @@ internal sealed class JobEditorForm : BaseForm
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
+        // Mốc so sánh "có thay đổi chưa lưu" lấy khi form đã hiện hẳn (các ô đã nạp xong giá trị).
+        _savedState = CurrentState();
         // Danh sách phát dùng {{biến}} của công việc → sửa biến thì tính lại thời lượng.
         _varsTimer.Tick += (_, _) =>
         {

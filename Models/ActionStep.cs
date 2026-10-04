@@ -628,7 +628,7 @@ public sealed class ActionStep
     public string Describe() => Type switch
     {
         StepType.LaunchApp => $"Mở \"{Target}\"{(string.IsNullOrWhiteSpace(Arguments) ? "" : " " + Arguments)}",
-        StepType.Reminder => $"Nhắc: {Short(string.IsNullOrWhiteSpace(Text) ? Target : Text)}{(WaitForUser ? "  (chờ xác nhận)" : "")}",
+        StepType.Reminder => $"Nhắc: {Short(string.IsNullOrWhiteSpace(Target) ? Text : Target)}{(WaitForUser ? "  (chờ xác nhận)" : "")}",
         StepType.Wait => $"Chờ {FormatMs(DelayMs)}",
         StepType.WaitForWindow => $"Chờ cửa sổ \"{Target}\" (tối đa {FormatMs(DelayMs)})",
         StepType.FocusWindow => $"Kích hoạt cửa sổ \"{Target}\"",

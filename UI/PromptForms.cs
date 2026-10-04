@@ -53,18 +53,22 @@ internal sealed class InputPromptForm : BaseForm
     }
 }
 
-/// <summary>Hộp thoại Có/Không luôn trên cùng (vd chế độ an toàn hỏi có chạy tiếp flow không).</summary>
+/// <summary>
+/// Hộp thoại hỏi với nút chữ tiếng Việt (MessageBox hiện Yes/No theo ngôn ngữ Windows). Mặc định luôn trên cùng giữa màn hình
+/// (vd chế độ an toàn hỏi có chạy tiếp flow không); <paramref name="cancel"/> thêm nút thứ ba trả về <see cref="DialogResult.Cancel"/>.
+/// </summary>
 internal sealed class ConfirmForm : BaseForm
 {
-    public ConfirmForm(string title, string message, string yes, string no)
+    public ConfirmForm(string title, string message, string yes, string no, string? cancel = null, bool topMost = true)
     {
         SuspendLayout();
         Text = title + " — ScheduleApp";
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
-        StartPosition = FormStartPosition.CenterScreen;
-        TopMost = true;
+        StartPosition = topMost ? FormStartPosition.CenterScreen : FormStartPosition.CenterParent;
+        TopMost = topMost;
+        ShowInTaskbar = topMost;
         AutoSize = true;
         AutoSizeMode = AutoSizeMode.GrowAndShrink;
         Padding = new Padding(16);
@@ -75,6 +79,12 @@ internal sealed class ConfirmForm : BaseForm
         AcceptButton = btnYes;
         CancelButton = btnNo;
         var buttons = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill };
+        if (cancel != null)
+        {
+            var btnCancel = new Button { Text = cancel, AutoSize = true, MinimumSize = new Size(110, 0), DialogResult = DialogResult.Cancel };
+            CancelButton = btnCancel;
+            buttons.Controls.Add(btnCancel);
+        }
         buttons.Controls.AddRange([btnNo, btnYes]);
         var layout = new TableLayoutPanel { AutoSize = true, ColumnCount = 1, Dock = DockStyle.Fill };
         layout.Controls.Add(lbl);

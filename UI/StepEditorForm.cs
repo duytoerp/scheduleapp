@@ -391,6 +391,7 @@ internal sealed class StepEditorForm : BaseForm
             _ => "assert"
         },
         StepType.SetVariable => "variables",
+        StepType.If or StepType.Else or StepType.Loop or StepType.BreakLoop or StepType.ContinueLoop => "conditions",
         _ => "flow"
     };
     private LoopKind CurrentLoop => LoopKinds[Math.Clamp(_cboSub.SelectedIndex, 0, LoopKinds.Length - 1)];
@@ -630,7 +631,8 @@ internal sealed class StepEditorForm : BaseForm
 
     private (string Message, Control? Focus)? Validate(ActionStep s)
     {
-        string targetName = _lblTarget.Text.TrimEnd(':').Split('\n')[0];
+        // Tên ô dùng trong thông báo lỗi: bỏ phần ví dụ trong ngoặc — "Giá trị (vd {{biến}}):" → "Giá trị".
+        string targetName = System.Text.RegularExpressions.Regex.Replace(_lblTarget.Text.Split('\n')[0], @"\s*\(.*?\)", "").TrimEnd(':', ' ');
         bool targetRequired = s.Type switch
         {
             StepType.LaunchApp or StepType.WaitForWindow or StepType.FocusWindow or StepType.RunCommand or StepType.CloseApp
@@ -647,6 +649,10 @@ internal sealed class StepEditorForm : BaseForm
 
         switch (s.Type)
         {
+            case StepType.Reminder when s.Target.Trim().Length == 0 && s.Text.Trim().Length == 0:
+                return ("Hãy nhập tiêu đề hoặc nội dung nhắc nhở.", _cboTarget);
+            case StepType.LogMessage when s.Text.Trim().Length == 0:
+                return ("Hãy nhập nội dung cần ghi vào nhật ký.", _txtText);
             case StepType.TypeText when s.Text.Length == 0:
                 return ("Hãy nhập văn bản cần gõ.", _txtText);
             case StepType.KeyPress:

@@ -27,6 +27,7 @@ internal sealed class NodePicker : Form
         BackColor = Color.FromArgb(200, 204, 212);
         Padding = new Padding(1);
         Size = new Size(S(310), S(440));
+        Text = title;                         // tên cửa sổ cho trình đọc màn hình / UI Automation (không có viền nên không hiện)
 
         var header = new Label
         {
@@ -38,7 +39,7 @@ internal sealed class NodePicker : Form
             BackColor = Color.White,
             Font = new Font(owner.Font, FontStyle.Bold)
         };
-        _search = new TextBox { Dock = DockStyle.Top, PlaceholderText = "Tìm thao tác…  (vd: click, excel, d365, nếu)" };
+        _search = new TextBox { Dock = DockStyle.Top, PlaceholderText = "Tìm thao tác…  (vd: click, excel, nhắc, nếu)", AccessibleName = "Tìm thao tác" };
         var searchHost = new Panel { Dock = DockStyle.Top, Height = _search.PreferredHeight + S(12), Padding = new Padding(S(8), S(4), S(8), S(8)), BackColor = Color.White };
         searchHost.Controls.Add(_search);
         _list = new StepToolbox { Dock = DockStyle.Fill, SingleClickActivates = true };
@@ -51,16 +52,16 @@ internal sealed class NodePicker : Form
         _search.TextChanged += (_, _) => _list.SetFilter(_search.Text);
         _search.KeyDown += (_, e) =>
         {
-            if (e.KeyCode == Keys.Down)
+            // ↑ ↓ đổi mục đang chọn ngay trong ô tìm; Enter thêm mục đang chọn (mặc định là mục khớp nhất).
+            if (e.KeyCode is Keys.Down or Keys.Up)
             {
-                _list.Focus();
-                _list.SelectFirst();
+                _list.MoveSelection(e.KeyCode == Keys.Down ? 1 : -1);
                 e.Handled = e.SuppressKeyPress = true;
             }
-            else if (e.KeyCode == Keys.Enter && _list.VisibleTypes.Count > 0)
+            else if (e.KeyCode == Keys.Enter && (_list.SelectedType ?? _list.VisibleTypes.FirstOrDefault()) is { } type && _list.VisibleTypes.Count > 0)
             {
                 e.Handled = e.SuppressKeyPress = true;
-                Pick(_list.VisibleTypes[0]);
+                Pick(type);
             }
         };
         _list.ItemActivated += Pick;

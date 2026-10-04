@@ -13,7 +13,7 @@ internal interface IHelpHost
 internal sealed class HelpView : UserControl
 {
     private readonly IHelpHost? _host;
-    private readonly TextBox _search = new() { Dock = DockStyle.Top, PlaceholderText = "🔍 Tìm trong hướng dẫn…", Margin = new Padding(0) };
+    private readonly TextBox _search = new() { Dock = DockStyle.Top, PlaceholderText = "🔍 Tìm trong hướng dẫn…", Margin = new Padding(0), AccessibleName = "Tìm trong hướng dẫn" };
     private readonly ListBox _topics = new()
     {
         Dock = DockStyle.Fill,
@@ -119,13 +119,16 @@ internal sealed class HelpView : UserControl
     private void FillTopics(string? keepId)
     {
         var query = Normalize(_search.Text);
-        var topics = HelpContent.Topics.Where(t => query.Length == 0 || Matches(t, query)).ToList();
+        // Có từ khóa: xếp chủ đề khớp ở tiêu đề lên trước, rồi tóm tắt, rồi nội dung.
+        var topics = HelpContent.Topics.Where(t => query.Length == 0 || Matches(t, query))
+            .OrderByDescending(t => query.Length == 0 ? 0 : Relevance(t, query)).ToList();
         _topics.BeginUpdate();
         _topics.Items.Clear();
         string? group = null;
         foreach (var t in topics)
         {
-            if (t.Group != group) _topics.Items.Add(group = t.Group);
+            var header = query.Length == 0 ? t.Group : "Kết quả tìm";
+            if (header != group) _topics.Items.Add(group = header);
             _topics.Items.Add(t);
         }
         _topics.EndUpdate();
@@ -139,6 +142,16 @@ internal sealed class HelpView : UserControl
     {
         var text = Normalize(t.Title + " " + t.Summary + " " + t.Body);
         return query.Split(' ', StringSplitOptions.RemoveEmptyEntries).All(text.Contains);
+    }
+
+    /// <summary>Độ liên quan: từ khóa nằm trong tiêu đề > tóm tắt > nội dung.</summary>
+    internal static int Relevance(HelpTopic t, string query)
+    {
+        string title = Normalize(t.Title), summary = Normalize(t.Summary);
+        int score = 0;
+        foreach (var w in query.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            score += title.Contains(w) ? 10 : summary.Contains(w) ? 4 : 1;
+        return score;
     }
 
     private static string Normalize(string s) => ScreenOcr.RemoveDiacritics(s).Replace('đ', 'd').Replace('Đ', 'D').ToLowerInvariant().Trim();

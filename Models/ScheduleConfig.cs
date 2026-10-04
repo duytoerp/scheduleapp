@@ -203,7 +203,23 @@ public sealed class ScheduleConfig
         _ => "Chạy thủ công"
     };
 
-    private string DaysText() => string.Join(", ", Days.OrderBy(d => ((int)d + 6) % 7).Select(DayName));
+    /// <summary>Các ngày trong tuần, gộp ngày liên tiếp (≥ 3 ngày) thành khoảng: "T2–T6", "T2–T4, T7", "T2, T6".</summary>
+    private string DaysText()
+    {
+        var order = Days.Select(d => ((int)d + 6) % 7).Distinct().Order().ToList();   // T2 = 0 … CN = 6
+        if (order.Count == 7) return "Mọi ngày";
+        var parts = new List<string>();
+        for (int i = 0; i < order.Count;)
+        {
+            int j = i;
+            while (j + 1 < order.Count && order[j + 1] == order[j] + 1) j++;
+            string Name(int k) => DayName((DayOfWeek)((k + 1) % 7));
+            if (j - i >= 2) parts.Add($"{Name(order[i])}–{Name(order[j])}");
+            else for (int k = i; k <= j; k++) parts.Add(Name(order[k]));
+            i = j + 1;
+        }
+        return string.Join(", ", parts);
+    }
 
     public static string DayName(DayOfWeek d) => d switch
     {

@@ -144,13 +144,58 @@ internal static class StepVisuals
         return sb.ToString().Normalize(System.Text.NormalizationForm.FormC);
     }
 
-    /// <summary>Loại thao tác khớp từ khóa tìm kiếm (tên thao tác, tên nhóm hoặc tên tiếng Anh); từ khóa trống = khớp tất cả.</summary>
-    public static bool Matches(StepType type, string category, string query)
+    /// <summary>Từ khóa thêm cho tìm kiếm (từ người dùng hay gõ nhưng không có trong tên thao tác).</summary>
+    private static readonly Dictionary<StepType, string> Keywords = new()
     {
-        var q = Fold(query);
-        if (q.Length == 0) return true;
-        var hay = Fold(ActionStep.TypeNames[type] + " " + category + " " + type);
-        return q.Split(' ', StringSplitOptions.RemoveEmptyEntries).All(hay.Contains);
+        [StepType.Reminder] = "nhắc nhở nhắc họp lời nhắc popup reminder",
+        [StepType.LogMessage] = "log ghi chú nhật ký in ra",
+        [StepType.TypeText] = "gõ nhập chữ điền type",
+        [StepType.KeyPress] = "phím tắt hotkey enter tab",
+        [StepType.MouseClick] = "bấm click nhấp chuột",
+        [StepType.Wait] = "chờ đợi nghỉ delay sleep",
+        [StepType.SetVariable] = "biến variable gán",
+        [StepType.If] = "nếu điều kiện if so sánh",
+        [StepType.Loop] = "lặp vòng lặp loop for each",
+        [StepType.Notify] = "thông báo telegram email gửi tin",
+        [StepType.HttpRequest] = "api http rest gọi",
+        [StepType.Browser] = "web chrome edge trình duyệt trang",
+        [StepType.Dynamics] = "d365 crm dynamics power apps",
+        [StepType.PlayMedia] = "video nhạc mp4 phát",
+        [StepType.LaunchApp] = "mở chạy ứng dụng exe file url",
+        [StepType.WriteData] = "excel csv ghi file",
+        [StepType.Assert] = "kiểm tra assert test"
+    };
+
+    /// <summary>Loại thao tác khớp từ khóa tìm kiếm (tên thao tác, tên nhóm hoặc tên tiếng Anh); từ khóa trống = khớp tất cả.</summary>
+    public static bool Matches(StepType type, string category, string query) => Score(type, category, query) >= 0;
+
+    /// <summary>
+    /// Điểm khớp tìm kiếm (-1 = không khớp). Khớp đúng dấu ở đầu từ trong tên thao tác điểm cao nhất, rồi khớp không dấu,
+    /// rồi khớp từ khóa / tên nhóm — gõ "nhắc" ra "Hiện nhắc nhở" trước "Phát video / nhạc".
+    /// </summary>
+    public static int Score(StepType type, string category, string query)
+    {
+        var words = query.Trim().ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length == 0) return 0;
+        var name = ActionStep.TypeNames[type].ToLowerInvariant();
+        var nameWords = name.Split([' ', '/', '(', ')', ',', '-'], StringSplitOptions.RemoveEmptyEntries);
+        var nameFold = Fold(name);
+        var nameFoldWords = nameWords.Select(Fold).ToArray();
+        var extra = Fold((Keywords.TryGetValue(type, out var k) ? k : "") + " " + category + " " + type);
+        var extraExact = (Keywords.TryGetValue(type, out var k2) ? k2 : "").ToLowerInvariant();
+        int score = 0;
+        foreach (var w in words)
+        {
+            var wf = Fold(w);
+            if (nameWords.Any(x => x.StartsWith(w, StringComparison.Ordinal))) score += 100;
+            else if (name.Contains(w, StringComparison.Ordinal)) score += 70;
+            else if (extraExact.Split(' ').Any(x => x.StartsWith(w, StringComparison.Ordinal))) score += 55;
+            else if (nameFoldWords.Any(x => x.StartsWith(wf, StringComparison.Ordinal))) score += 40;
+            else if (nameFold.Contains(wf, StringComparison.Ordinal)) score += 25;
+            else if (extra.Contains(wf, StringComparison.Ordinal)) score += 10;
+            else return -1;
+        }
+        return score;
     }
 
     public static GraphicsPath RoundRect(Rectangle r, int radius)

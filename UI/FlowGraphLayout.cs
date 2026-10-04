@@ -33,6 +33,9 @@ internal sealed class GraphEdge
 
     /// <summary>Chỗ đặt nút "+" trên dây.</summary>
     public PointF Mid { get; init; }
+
+    /// <summary>Dây đi qua ô trống của nhánh / thân lặp chưa có bước — nút "+" luôn hiện ở <see cref="Mid"/>.</summary>
+    public bool IsSlot { get; init; }
 }
 
 /// <summary>Dây nét đứt từ bước "Nhảy tới nhãn" (hoặc bước có "khi lỗi nhảy tới nhãn") tới bước Nhãn.</summary>
@@ -255,7 +258,7 @@ internal sealed class FlowGraphLayout
                 // Thân lặp trống: lặp → ô "+" → quay về.
                 var slot = new PointF(bx + _m.Slot / 2, by);
                 var pts = Bezier(loopPort, slot).Concat(LoopBackPoints(slot, inPt, right, bottom, left).Skip(1)).ToArray();
-                Edges.Add(new GraphEdge { Kind = GraphEdgeKind.LoopBack, InsertIndex = end, Points = pts, Mid = slot });
+                Edges.Add(new GraphEdge { Kind = GraphEdgeKind.LoopBack, InsertIndex = end, Points = pts, Mid = slot, IsSlot = true });
             }
             else
             {
@@ -277,7 +280,7 @@ internal sealed class FlowGraphLayout
             return;
         }
         var pts = Bezier(port, slot).Concat(Bezier(slot, mergeIn).Skip(1)).ToArray();
-        Edges.Add(new GraphEdge { Kind = GraphEdgeKind.Forward, InsertIndex = insertIndex, NeedsElse = needsElse, Points = pts, Mid = slot });
+        Edges.Add(new GraphEdge { Kind = GraphEdgeKind.Forward, InsertIndex = insertIndex, NeedsElse = needsElse, Points = pts, Mid = slot, IsSlot = true });
     }
 
     private void AddForward(PointF from, PointF to, int insertIndex, GraphEdgeKind kind = GraphEdgeKind.Forward, bool needsElse = false)

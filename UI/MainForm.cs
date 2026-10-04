@@ -641,15 +641,28 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         int triggers = job.Triggers.Count(t => t.Enabled);
         item.Text = job.Name;
         item.SubItems[1].Text = job.Schedule.Describe() + (triggers > 0 ? $"  ⚡{string.Join(", ", job.Triggers.Where(t => t.Enabled).Select(t => t.Describe()))}" : "");
-        item.SubItems[2].Text = job.NextRun?.ToString("HH:mm:ss  dd/MM/yyyy") ?? "—";
+        item.SubItems[2].Text = !job.Enabled ? "Đang tắt"
+            : job.NextRun is DateTime n ? FriendlyTime(n)
+            : job.Schedule.Type == ScheduleType.Manual ? (triggers > 0 ? "khi có kích hoạt" : "chạy tay") : "—";
         item.SubItems[3].Text = Countdown(job);
-        item.SubItems[4].Text = job.LastRun?.ToString("HH:mm:ss  dd/MM/yyyy") ?? "—";
+        item.SubItems[4].Text = job.LastRun is DateTime last ? FriendlyTime(last) : "—";
         item.SubItems[5].Text = job.LastResult ?? "";
         item.UseItemStyleForSubItems = false;
         var color = job.Enabled ? Theme.Text : Theme.Muted;
         for (int i = 0; i < item.SubItems.Count; i++) item.SubItems[i].ForeColor = color;
         if (job.Enabled && job.LastResult is { Length: > 0 } r) item.SubItems[5].ForeColor = r.StartsWith('✔') ? Theme.Success : Theme.Danger;
         if (job.IsTestCase) item.SubItems[1].Text = "Kịch bản kiểm thử · " + item.SubItems[1].Text;
+    }
+
+    /// <summary>Thời điểm dễ đọc: "Hôm nay 08:30", "Ngày mai 08:30", "T2 05/10 08:30", năm khác thì kèm năm.</summary>
+    internal static string FriendlyTime(DateTime t)
+    {
+        var day = t.Date;
+        var today = DateTime.Today;
+        if (day == today) return $"Hôm nay {t:HH:mm}";
+        if (day == today.AddDays(1)) return $"Ngày mai {t:HH:mm}";
+        if (day == today.AddDays(-1)) return $"Hôm qua {t:HH:mm}";
+        return $"{ScheduleConfig.DayName(t.DayOfWeek)} {t:dd/MM}{(t.Year != today.Year ? $"/{t:yyyy}" : "")} {t:HH:mm}";
     }
 
     private static string Countdown(Job job)
@@ -691,7 +704,12 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         var added = editor.Job;
         _jobs.Add(added);
         JobsChanged(added);
-        Log.Info($"Đã thêm công việc \"{added.Name}\".");
+        // Nói rõ khi nào công việc sẽ tự chạy — tránh bất ngờ vì lịch mặc định "Hằng ngày 08:00".
+        var when = !added.Enabled ? "đang tắt, chưa chạy theo lịch"
+            : added.NextRun is DateTime next ? $"sẽ tự chạy lần đầu: {FriendlyTime(next)} ({added.Schedule.Describe()})"
+            : "chỉ chạy khi bấm ▶ Chạy hoặc có kích hoạt";
+        _status.Text = $"Đã thêm \"{added.Name}\" — {when}";
+        Log.Info($"Đã thêm công việc \"{added.Name}\" — {when}.");
     }
 
     private void AddFromTemplate()

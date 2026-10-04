@@ -30,24 +30,56 @@ internal sealed class StepToolbox : ListBox
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public bool SingleClickActivates { get; set; }
 
-    /// <summary>Chỉ hiện các thao tác khớp từ khóa (không phân biệt dấu); nhóm không còn thao tác nào thì ẩn.</summary>
+    /// <summary>
+    /// Không có từ khóa: hiện đủ theo nhóm. Có từ khóa: danh sách phẳng xếp theo độ khớp (khớp đúng dấu ở tên thao tác lên đầu),
+    /// mục đầu được chọn sẵn để Enter là thêm đúng thao tác đó.
+    /// </summary>
     public void SetFilter(string query)
     {
         BeginUpdate();
         Items.Clear();
-        foreach (var (name, types) in StepVisuals.Categories)
+        if (query.Trim().Length == 0)
         {
-            var match = types.Where(t => StepVisuals.Matches(t, name, query)).ToList();
-            if (match.Count == 0) continue;
-            Items.Add(name);
-            foreach (var t in match) Items.Add(t);
+            foreach (var (name, types) in StepVisuals.Categories)
+            {
+                Items.Add(name);
+                foreach (var t in types) Items.Add(t);
+            }
+        }
+        else
+        {
+            var ranked = StepVisuals.Categories
+                .SelectMany(c => c.Types.Select(t => (Type: t, Score: StepVisuals.Score(t, c.Name, query))))
+                .Where(x => x.Score >= 0)
+                .Select((x, order) => (x.Type, x.Score, order))
+                .OrderByDescending(x => x.Score).ThenBy(x => x.order)
+                .ToList();
+            if (ranked.Count > 0) Items.Add($"Kết quả cho \"{query.Trim()}\"");
+            foreach (var x in ranked) Items.Add(x.Type);
         }
         EndUpdate();
         _hover = -1;
+        if (query.Trim().Length > 0) SelectFirst();
     }
 
     /// <summary>Các thao tác đang hiện (theo thứ tự).</summary>
     public IReadOnlyList<StepType> VisibleTypes => Items.OfType<StepType>().ToList();
+
+    /// <summary>Thao tác đang chọn (null nếu chưa chọn).</summary>
+    public StepType? SelectedType => SelectedIndex >= 0 && SelectedIndex < Items.Count && Items[SelectedIndex] is StepType t ? t : null;
+
+    /// <summary>Chuyển chọn sang thao tác kế / trước (bỏ qua tiêu đề nhóm).</summary>
+    public void MoveSelection(int delta)
+    {
+        int i = SelectedIndex;
+        for (int k = i + delta; k >= 0 && k < Items.Count; k += delta)
+            if (Items[k] is StepType)
+            {
+                SelectedIndex = k;
+                return;
+            }
+        if (i < 0) SelectFirst();
+    }
 
     /// <summary>Chọn thao tác đầu tiên đang hiện (khi bấm ↓ từ ô tìm kiếm).</summary>
     public void SelectFirst()
