@@ -202,11 +202,8 @@ internal static class UiElementFinder
         InputSimulator.Click(point.X, point.Y, MouseButtonKind.Left, false);
         await Task.Delay(100, ct);
         InputSimulator.SendKeys("Ctrl+A", ct);
-        var previous = ClipboardHelper.TryGetText();
-        ClipboardHelper.SetText(text);
-        InputSimulator.SendKeys("Ctrl+V", ct);
-        await Task.Delay(300, ct);
-        if (previous != null) ClipboardHelper.SetText(previous);
+        // Giá trị điền có thể là mật khẩu ({{secret:…}}) → không để lọt vào Lịch sử / clipboard đám mây, và dọn sau khi dán.
+        await ClipboardHelper.PasteTemporarilyAsync(text, () => InputSimulator.SendKeys("Ctrl+V", ct), ct);
     }
 
     /// <summary>Giá trị / chữ của phần tử: Value → nội dung văn bản → Name.</summary>

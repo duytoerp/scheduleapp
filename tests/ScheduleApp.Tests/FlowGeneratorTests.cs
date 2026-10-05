@@ -150,6 +150,47 @@ public class FlowGeneratorTests
         Assert.Contains(r.Problems, p => p.StartsWith("Bước 2") && p.Contains("hình mẫu"));
     }
 
+    [Fact]
+    public void KeepsPropertiesIgnoredOnlyWhenDefault()
+    {
+        // Monitor / ImageOffset… có [JsonIgnore(WhenWritingDefault)] — AI trả về thì phải giữ, không rơi về 0.
+        var gen = new FlowGenerator(Ctx());
+        var r = gen.Parse(Input("""
+            [
+              {"Type":"PlayMedia","Text":"D:\\video\\a.mp4","Monitor":2},
+              {"Type":"PlayMedia","Text":"D:\\video\\b.mp4","monitor":"-1"},
+              {"Type":"ClickImage","ImageData":"(ảnh)","ImageOffsetX":7,"IsTextWrite":true}
+            ]
+            """), FlowGenerator.Mode.Replace);
+        Assert.Equal(2, r.Steps[0].Monitor);
+        Assert.Equal(-1, r.Steps[1].Monitor);
+        Assert.Equal(7, r.Steps[2].ImageOffsetX);
+    }
+
+    [Fact]
+    public void MonitorIdStaysLocalButSurvivesRef()
+    {
+        List<ActionStep> current = [new() { Type = StepType.PlayMedia, Text = @"D:\a.mp4", Monitor = 2, MonitorId = "GSM5BB2#UID4353", MediaDurationMs = 5000 }];
+        var compact = FlowGenerator.Compact(current[0], 0);
+        Assert.Equal(2, (int)compact["Monitor"]!);
+        Assert.False(compact.ContainsKey(nameof(ActionStep.MonitorId)));   // mã phần cứng không gửi cho AI
+        Assert.False(compact.ContainsKey(nameof(ActionStep.MediaDurationMs)));
+
+        var gen = new FlowGenerator(Ctx(current));
+        var same = gen.Parse(Input($"[{compact.ToJsonString()}]"), FlowGenerator.Mode.Replace);
+        Assert.Equal((2, "GSM5BB2#UID4353"), (same.Steps[0].Monitor, same.Steps[0].MonitorId));
+        // AI đổi sang màn hình khác → mã cũ không còn đúng, bỏ.
+        var moved = gen.Parse(Input("""[{"_ref":0,"Type":"PlayMedia","Text":"D:\\a.mp4","Monitor":1}]"""), FlowGenerator.Mode.Replace);
+        Assert.Equal((1, (string?)null), (moved.Steps[0].Monitor, moved.Steps[0].MonitorId));
+    }
+
+    [Fact]
+    public void SystemPromptRequiresCmdFormatterInCommands()
+    {
+        Assert.Contains("{{biến:cmd}}", FlowGenerator.SystemPrompt);
+        Assert.Contains("move {{trigger.file:cmd}}", FlowGenerator.SystemPrompt);
+    }
+
     private static string ToolUse(string id, string input) => $$"""
         {"id":"msg_{{id}}","type":"message","role":"assistant","model":"claude-opus-5-5",
          "content":[{"type":"text","text":"Đây là flow."},{"type":"tool_use","id":"{{id}}","name":"build_flow","input":{{input}} }],

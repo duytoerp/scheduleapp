@@ -48,7 +48,13 @@ public sealed partial class VariableExpander(Dictionary<string, string> vars)
             return secret;
         }
         if (name.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
-            return Environment.GetEnvironmentVariable(name[4..].Trim()) ?? "";
+        {
+            // {{env:USERPROFILE:cmd}} — phần sau dấu ':' thứ hai là định dạng.
+            var env = name[4..];
+            int f = env.IndexOf(':');
+            var envValue = Environment.GetEnvironmentVariable((f > 0 ? env[..f] : env).Trim()) ?? "";
+            return f > 0 ? ApplyFormat(envValue, env[(f + 1)..].Trim()) : envValue;
+        }
         if (name.Equals("clipboard", StringComparison.OrdinalIgnoreCase))
             return ClipboardHelper.TryGetText() ?? "";
         if (name.Equals("guid", StringComparison.OrdinalIgnoreCase))
@@ -73,8 +79,15 @@ public sealed partial class VariableExpander(Dictionary<string, string> vars)
         if (date.Success) return FormatDate(date);
 
         int colon = name.IndexOf(':');
-        if (colon > 0 && vars.TryGetValue(name[..colon].Trim(), out var raw))
-            return ApplyFormat(raw, name[(colon + 1)..].Trim());
+        if (colon > 0)
+        {
+            var baseName = name[..colon].Trim();
+            var format = name[(colon + 1)..].Trim();
+            if (vars.TryGetValue(baseName, out var raw)) return ApplyFormat(raw, format);
+            // Biến có sẵn kèm định dạng: {{clipboard:cmd}}, {{guid:upper}}…
+            if (baseName.ToLowerInvariant() is "clipboard" or "guid" or "newline" or "tab")
+                return ApplyFormat(Resolve(baseName), format);
+        }
 
         throw new InvalidOperationException($"Biến {{{{{name}}}}} chưa được gán giá trị.");
     }
@@ -120,8 +133,8 @@ public sealed partial class VariableExpander(Dictionary<string, string> vars)
         value.Replace("\r\n", "\n").Split('\n').Select(l => l.TrimEnd()).Where(l => l.Length > 0).ToList();
 
     /// <summary>
-    /// Định dạng giá trị biến: upper, lower, trim, unquote, len, url, json, số (N0, 0.00…), ngày (dd/MM/yyyy…),
-    /// danh sách (count, first, last, item(2), join(, ), sort, unique).
+    /// Định dạng giá trị biến: upper, lower, trim, unquote, len, url, json, cmd (tham số lệnh an toàn), số (N0, 0.00…),
+    /// ngày (dd/MM/yyyy…), danh sách (count, first, last, item(2), join(, ), sort, unique).
     /// </summary>
     public static string ApplyFormat(string value, string format)
     {
@@ -137,6 +150,10 @@ public sealed partial class VariableExpander(Dictionary<string, string> vars)
             case "nodiacritics": return Vision.ScreenOcr.RemoveDiacritics(value);
             // Chuỗi đặt được vào giữa dấu nháy của JSON: "ten": "{{ten:json}}".
             case "json": return System.Text.Json.JsonSerializer.Serialize(value, Models.JsonDefaults.Options)[1..^1];
+            // Một tham số an toàn cho lệnh cmd (bước Chạy lệnh): tự bọc dấu nháy, bỏ dấu nháy/xuống dòng trong giá trị
+            // để dữ liệu không tin cậy (tên file tải về, nội dung email, ô Excel…) không thoát ra ngoài dấu nháy và
+            // chạy như lệnh. Dùng không kèm dấu nháy của mình: move {{tep:cmd}} D:\x.
+            case "cmd": return QuoteForCmd(value);
             case "count": return ListItems(value).Count.ToString(CultureInfo.InvariantCulture);
             case "first": return ListItems(value).FirstOrDefault() ?? "";
             case "last": return ListItems(value).LastOrDefault() ?? "";
@@ -157,6 +174,17 @@ public sealed partial class VariableExpander(Dictionary<string, string> vars)
         if (DateTime.TryParse(value, Vi, DateTimeStyles.None, out var d) || DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out d))
             return d.ToString(format, Vi);
         return value;
+    }
+
+    /// <summary>
+    /// Bọc dấu nháy cho một tham số lệnh. Dấu \ ở cuối (ổ đĩa "D:\", thư mục chọn từ hộp thoại) được nhân đôi:
+    /// chương trình đọc tham số kiểu C (robocopy, powershell, đa số .exe) hiểu \" là dấu nháy thường → dính tham số sau.
+    /// </summary>
+    private static string QuoteForCmd(string value)
+    {
+        var s = value.Replace("\"", "").Replace("\r", "").Replace("\n", "");
+        int slashes = s.Length - s.TrimEnd('\\').Length;
+        return "\"" + s + new string('\\', slashes) + "\"";
     }
 
     /// <summary>Đọc số theo dạng chuẩn (1234.5) hoặc kiểu Việt Nam (1.234,5).</summary>

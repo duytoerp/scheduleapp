@@ -232,7 +232,7 @@ public sealed class FlowGenerator
                 if (s.ImageData.Length > 0) o[key] = ImagePlaceholder;
                 continue;
             }
-            if (key is nameof(ActionStep.Breakpoint) or nameof(ActionStep.JobRef) or nameof(ActionStep.MediaDurationMs)) continue;
+            if (key is nameof(ActionStep.Breakpoint) or nameof(ActionStep.JobRef) or nameof(ActionStep.MediaDurationMs) or nameof(ActionStep.MonitorId)) continue;
             if (key == nameof(ActionStep.Type) || !JsonNode.DeepEquals(value, defaults[key])) o[key] = value?.DeepClone();
         }
         return o;
@@ -240,9 +240,11 @@ public sealed class FlowGenerator
 
     // ───────────────────────────── Đọc & kiểm tra kết quả ─────────────────────────────
 
+    // Chỉ bỏ các trường [JsonIgnore] luôn-bỏ; GIỮ các trường [JsonIgnore(WhenWritingDefault/WhenWritingNull)]
+    // (Monitor, MonitorId, ImageOffset…) để không đánh rơi giá trị AI trả về (vd "Monitor": 2 bị thành 0).
     private static readonly Dictionary<string, string> StepProperties =
         typeof(ActionStep).GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Where(p => p.CanWrite && p.GetCustomAttribute<JsonIgnoreAttribute>() == null)
+            .Where(p => p.CanWrite && p.GetCustomAttribute<JsonIgnoreAttribute>() is not { Condition: JsonIgnoreCondition.Always })
             .ToDictionary(p => p.Name, p => p.Name, StringComparer.OrdinalIgnoreCase);
 
     private static readonly JsonSerializerOptions Lenient = new(JsonDefaults.Options)
@@ -351,6 +353,8 @@ public sealed class FlowGenerator
                 step.ImageOffsetY = original.ImageOffsetY;
             }
             if (original.Type == StepType.CallJob && step.Type == StepType.CallJob && step.Target == original.Target) step.JobRef = original.JobRef;
+            // Mã màn hình thật không gửi cho AI → giữ lại nếu AI không đổi số màn hình.
+            if (step.MonitorId == null && step.Type == original.Type && step.Monitor == original.Monitor) step.MonitorId = original.MonitorId;
         }
         else if (placeholder)
         {
@@ -716,6 +720,8 @@ public sealed class FlowGenerator
         - MinimizeWindow: Target = cửa sổ (trống = cửa sổ người dùng đang dùng); Variable = biến nhớ cửa sổ (vd "ungDungTruoc") để FocusWindow mở lại.
         - CloseApp: Target = tên tiến trình ("notepad"); Force=true để buộc đóng.
         - RunCommand: Target = lệnh cmd; Variable = biến nhận output (tùy chọn); DelayMs = timeout (0 = không chờ).
+          BẮT BUỘC: mọi biến chứa dữ liệu (tên file, đường dẫn, nội dung do người/email/web/Excel đưa vào — {{trigger.file}}, {{row.…}}, {{clipboard}}, {{ai.answer}}, biến AskUser…)
+          khi đặt vào lệnh phải dùng {{biến:cmd}} (tự bọc dấu nháy an toàn) — KHÔNG tự thêm dấu nháy quanh nó: move {{trigger.file:cmd}} D:\dich. Tránh để dữ liệu chạy thành lệnh.
         Cách ghi Target cửa sổ: một phần tiêu đề (không phân biệt hoa thường) hoặc "exe:tên_tiến_trình" ("exe:EXCEL", "exe:notepad", "exe:msedge") — dùng "exe:" khi tiêu đề thay đổi theo tài liệu đang mở.
 
         ## Bàn phím & chuột
@@ -841,7 +847,7 @@ public sealed class FlowGenerator
         {{tên}} được thay khi chạy, dùng trong mọi ô chữ. Có sẵn: {{today}} {{yesterday}} {{tomorrow}} (dd/MM/yyyy), {{now}}, {{time}}, {{today-1}}, {{today+7}},
         {{today-1M:MM/yyyy}} (đơn vị d w h m M y), {{now:HH:mm}} (định dạng ngày giờ .NET), {{clipboard}}, {{env:USERNAME}}, {{secret:Tên}} (bí mật mã hóa),
         {{random:1-100}}, {{guid}}, {{newline}}, {{lastOutput}}, {{lastError}}, {{job.name}}.
-        Định dạng: {{x:upper}} lower trim unquote (bỏ dấu nháy bao quanh) len url json nodiacritics · số {{x:N0}} {{x:N2}} · ngày {{x:dd/MM/yyyy}} · danh sách {{ds:count}} first last sort unique {{ds:item(2)}} {{ds:join(, )}}.
+        Định dạng: {{x:upper}} lower trim unquote (bỏ dấu nháy bao quanh) len url json cmd (tham số lệnh an toàn cho RunCommand) nodiacritics · số {{x:N0}} {{x:N2}} · ngày {{x:dd/MM/yyyy}} · danh sách {{ds:count}} first last sort unique {{ds:item(2)}} {{ds:join(, )}}.
         Biến chưa có giá trị mà bị dùng sẽ báo lỗi — khai báo trong "variables" (bộ đếm "0", danh sách rỗng "").
         Dữ liệu test ngẫu nhiên, sinh mới ở mỗi lần chạy: giá trị biến trong "variables" viết dạng công thức — "=hoten()" (hoặc "=hoten(nữ)"), "=ho()", "=ten()",
         "=email()" / "=email(cty.vn)", "=sdt()", "=diachi()", "=thanhpho()", "=congty()", "=random(1, 100)" / "=random(1, 100, 2)", "=chuso(6)", "=chuoi(8)",

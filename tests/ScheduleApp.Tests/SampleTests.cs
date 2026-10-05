@@ -27,7 +27,12 @@ public class SampleTests
             // Mẫu có lịch / trình kích hoạt không được tự bật khi người dùng thêm vào.
             if (job.Schedule.Type != ScheduleType.Manual || job.Triggers.Count > 0) Assert.False(job.Enabled, job.Name);
             foreach (var s in job.Steps.Where(s => s.Type == StepType.WriteData))
-                Assert.NotEmpty(TabularWriter.ParseAssignments(s.Text, x => x));
+            {
+                // Ghi văn bản (thêm vào cuối file) không dùng dạng TênCột=giá trị.
+                if (s.IsTextWrite) Assert.NotEmpty(s.Text);
+                else Assert.NotEmpty(TabularWriter.ParseAssignments(s.Text, x => x));
+                Assert.NotEmpty(s.Target);
+            }
         }
     }
 

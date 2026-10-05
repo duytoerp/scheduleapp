@@ -604,11 +604,9 @@ public static class StepExecutor
         }
 
         Log.Info(ime != null ? $"      Dán qua clipboard (phát hiện bộ gõ {ime})." : "      Dán qua clipboard.");
-        var previous = ClipboardHelper.TryGetText();
-        ClipboardHelper.SetText(s.Text.Replace("\r\n", "\n").Replace("\n", "\r\n"));
-        InputSimulator.SendKeys("Ctrl+V", ct);
-        await Task.Delay(300, ct); // ứng dụng đích đọc clipboard bất đồng bộ
-        if (previous != null) ClipboardHelper.SetText(previous);
+        // Chữ dán có thể là mật khẩu ({{secret:…}}) → không lưu vào Lịch sử clipboard / clipboard đám mây, dọn ngay sau khi dán.
+        await ClipboardHelper.PasteTemporarilyAsync(s.Text.Replace("\r\n", "\n").Replace("\n", "\r\n"),
+            () => InputSimulator.SendKeys("Ctrl+V", ct), ct);
     }
 
     private static async Task FocusTargetAsync(ActionStep s, CancellationToken ct)
@@ -632,8 +630,10 @@ public static class StepExecutor
         if (string.IsNullOrWhiteSpace(command)) throw new InvalidOperationException("Chưa nhập lệnh.");
         bool wait = timeoutMs > 0;
         // cmd.exe chỉ đọc code page lúc khởi động, nên lệnh phải chạy trong một cmd con khởi động SAU chcp 65001
-        // thì output tiếng Việt mới đúng UTF-8.
-        var psi = new ProcessStartInfo("cmd.exe", $"/d /c chcp 65001>nul & cmd /d /s /c \"{command}\"")
+        // thì output tiếng Việt mới đúng UTF-8. Lệnh được bọc thêm một cặp nháy ngoài → phải "trung hòa" cho lớp
+        // cmd NGOÀI (xem EscapeForOuterCmd) để dữ liệu nằm trong dấu nháy không bị hiểu thành lệnh. Việc này KHÔNG
+        // chặn được dữ liệu tự chứa dấu nháy ("{{x}}" với x = a" & calc & ") ở lớp trong — chỉ {{x:cmd}} mới an toàn.
+        var psi = new ProcessStartInfo("cmd.exe", $"/d /c chcp 65001>nul & cmd /d /s /c \"{EscapeForOuterCmd(command)}\"")
         {
             UseShellExecute = false,
             CreateNoWindow = true,
@@ -711,6 +711,27 @@ public static class StepExecutor
         }
         if (!s.Force && withoutWindow == procs.Length)
             Log.Warn($"      \"{name}\" không có cửa sổ nào để đóng — bật \"Buộc đóng\" để kill tiến trình.");
+    }
+
+    /// <summary>
+    /// Trung hòa lệnh cho lớp cmd NGOÀI của "cmd /d /c chcp 65001 & cmd /d /s /c \"{lệnh}\"".
+    /// Vì ta thêm một cặp nháy bao quanh lệnh, trạng thái "trong/ngoài dấu nháy" của lớp ngoài NGƯỢC với lệnh thật:
+    /// ký tự người dùng đặt TRONG dấu nháy (vd tên file) lại nằm NGOÀI dấu nháy đối với lớp ngoài, nên "&amp; | &lt; &gt; ^ ( )"
+    /// trong dữ liệu sẽ bị chạy như lệnh. Ta đi dọc lệnh với cờ nháy bắt đầu là "đang trong nháy", đảo khi gặp dấu ",
+    /// và khi lớp ngoài đang NGOÀI nháy thì thêm ^ trước các ký tự đặc biệt đó. Lớp ngoài bỏ ^ rồi truyền ĐÚNG lệnh gốc
+    /// cho lớp trong tự phân tích một lần như người dùng viết — giữ nguyên %VAR%, &amp;, |, &gt; và dấu ngoặc có chủ đích.
+    /// </summary>
+    internal static string EscapeForOuterCmd(string command)
+    {
+        var sb = new StringBuilder(command.Length + 16);
+        bool insideQuote = true; // cặp nháy mở do ProcessStartInfo thêm vào ngay trước lệnh
+        foreach (char c in command)
+        {
+            if (c == '"') insideQuote = !insideQuote;
+            else if (!insideQuote && c is '&' or '|' or '<' or '>' or '^' or '(' or ')') sb.Append('^');
+            sb.Append(c);
+        }
+        return sb.ToString();
     }
 
     private static string Truncate(string s) => s.Length > 500 ? s[..500] + "…" : s;
