@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace ScheduleApp.Models;
 
 public enum TriggerType
@@ -16,18 +18,28 @@ public enum TriggerType
     SessionUnlock,
     /// <summary>Khi ScheduleApp khởi động (thường là lúc đăng nhập Windows).</summary>
     AppStartup,
-    /// <summary>Có email mới chưa đọc (Value = tiêu đề chứa, Value2 = người gửi chứa, Minutes = chu kỳ kiểm tra).</summary>
+    /// <summary>Có email mới chưa đọc (Value = tiêu đề chứa, Value2 = người gửi: địa chỉ hoặc @tên miền, Minutes = chu kỳ kiểm tra).</summary>
     EmailReceived
 }
 
 /// <summary>Một điều kiện kích hoạt công việc ngoài lịch chạy.</summary>
-public sealed class JobTrigger
+public sealed class JobTrigger : IJsonOnDeserializing
 {
     public TriggerType Type { get; set; } = TriggerType.Hotkey;
     public bool Enabled { get; set; } = true;
     public string Value { get; set; } = "";
     public string Value2 { get; set; } = "";
     public int Minutes { get; set; } = 10;
+
+    /// <summary>
+    /// Email: chỉ chạy với thư mà máy chủ nhận thư xác nhận đúng người gửi (DMARC / DKIM / SPF đạt). Bật sẵn cho trình kích hoạt mới;
+    /// trình kích hoạt đã lưu từ bản cũ (file không có trường này) giữ là tắt để không tự dưng ngừng chạy.
+    /// </summary>
+    public bool RequireAuthenticatedEmail { get; set; } = true;
+
+    void IJsonOnDeserializing.OnDeserializing() => RequireAuthenticatedEmail = false;
+
+    public JobTrigger Clone() => (JobTrigger)MemberwiseClone();
 
     public static readonly Dictionary<TriggerType, string> TypeNames = new()
     {
@@ -53,6 +65,7 @@ public sealed class JobTrigger
         TriggerType.EmailReceived => "Email mới" +
                                      (string.IsNullOrWhiteSpace(Value) ? "" : $" tiêu đề chứa \"{Value}\"") +
                                      (string.IsNullOrWhiteSpace(Value2) ? "" : $" từ \"{Value2}\"") +
+                                     (RequireAuthenticatedEmail ? ", đã xác thực" : "") +
                                      $" (kiểm tra mỗi {Math.Max(1, Minutes)} phút)",
         _ => Type.ToString()
     };

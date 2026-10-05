@@ -31,11 +31,12 @@ internal sealed class LoopFrame
 
     /// <summary>Tạo vòng lặp; đọc sẵn dữ liệu (file Excel/CSV, dòng văn bản, danh sách file).</summary>
     /// <param name="expanded">Bước Lặp đã thay {{biến}}.</param>
-    public static LoopFrame Create(ActionStep expanded, int start, int end) =>
+    /// <param name="original">Bước Lặp gốc (chưa thay biến) — để biết đường dẫn được ghi thẳng trong bước hay lấy từ biến.</param>
+    public static LoopFrame Create(ActionStep expanded, int start, int end, ActionStep? original = null) =>
         new(expanded, start, end, expanded.LoopKind switch
         {
             LoopKind.Rows => LoadRows(expanded),
-            LoopKind.Lines => LoadLines(expanded),
+            LoopKind.Lines => LoadLines(expanded, original),
             LoopKind.Files => LoadFiles(expanded),
             _ => null
         });
@@ -95,11 +96,16 @@ internal sealed class LoopFrame
         return items;
     }
 
-    private static List<Dictionary<string, string>> LoadLines(ActionStep s)
+    /// <summary>
+    /// "File hoặc {{biến}}": là đường dẫn tới file có thật → đọc file, ngược lại coi chính nó là nội dung. Đường dẫn mạng (\\máy\..., ổ mạng)
+    /// chỉ được mở khi tên máy (ổ đĩa) ghi thẳng trong bước; lấy từ biến (vd nội dung email / API) thì coi là nội dung — chỉ cần kiểm tra
+    /// file trên máy lạ là Windows đã tự gửi thông tin đăng nhập (NTLM) tới máy đó.
+    /// </summary>
+    private static List<Dictionary<string, string>> LoadLines(ActionStep s, ActionStep? original)
     {
         var source = s.Target;
         var path = Environment.ExpandEnvironmentVariables(source.Trim().Trim('"'));
-        string text = path.Length > 0 && path.Length < 260 && File.Exists(path)
+        string text = path.Length > 0 && path.Length < 260 && path.IndexOfAny(['\r', '\n']) < 0 && MayOpen(path, original) && File.Exists(path)
             ? File.ReadAllText(path)
             : source; // không phải file → coi là nội dung (vd {{danhSach}})
         return text.Replace("\r\n", "\n").Split('\n')
@@ -107,6 +113,60 @@ internal sealed class LoopFrame
             .Where(l => l.Length > 0)
             .Select(l => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { [s.LoopVar] = l })
             .ToList();
+    }
+
+    private static bool MayOpen(string path, ActionStep? original)
+    {
+        if (!IsNetworkPath(path) || RootWrittenInStep(original, path)) return true;
+        Log.Warn($"      \"{path}\" là đường dẫn mạng lấy từ biến — không mở (tránh gửi thông tin đăng nhập Windows tới máy lạ), coi là nội dung văn bản. " +
+                 "Muốn đọc file trên máy khác, ghi thẳng \\\\tên-máy\\thư-mục trong bước.");
+        return false;
+    }
+
+    /// <summary>Đường dẫn UNC (\\máy\..., //máy/..., \\?\UNC\...) hoặc nằm trên ổ mạng đã ánh xạ. Không hiểu được đường dẫn → coi là mạng.</summary>
+    internal static bool IsNetworkPath(string path)
+    {
+        var p = path.Trim().Replace('/', '\\');
+        if (p.StartsWith(@"\\", StringComparison.Ordinal)) return true;
+        try
+        {
+            var full = Path.GetFullPath(p);
+            return full.StartsWith(@"\\", StringComparison.Ordinal)
+                   || (full.Length >= 2 && full[1] == ':' && new DriveInfo(full[..1]).DriveType == DriveType.Network);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException or System.Security.SecurityException)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Bước gốc ghi thẳng đường dẫn (không có {{biến}}), hoặc ít nhất ghi thẳng ổ đĩa / \\máy\thư-mục-chung và đường dẫn sau khi thay biến
+    /// vẫn nằm trong đó — vd "\\nas\chung\{{tenFile}}.txt" vẫn được mở, "{{duongDan}}" thì không.
+    /// </summary>
+    private static bool RootWrittenInStep(ActionStep? original, string path)
+    {
+        if (original == null) return false;
+        var t = original.Target.Trim().Trim('"').Replace('/', '\\');
+        if (!t.Contains("{{", StringComparison.Ordinal)) return true;
+        string root;
+        if (t.Length >= 2 && char.IsAsciiLetter(t[0]) && t[1] == ':') root = t[..2];
+        else
+        {
+            int server = t.StartsWith(@"\\", StringComparison.Ordinal) ? t.IndexOf('\\', 2) : -1;
+            int share = server > 2 ? t.IndexOf('\\', server + 1) : -1;
+            if (share < 0) return false;
+            root = t[..(share + 1)];
+            if (root.Contains("{{", StringComparison.Ordinal) || root.Contains('%') || root[2] is '?' or '.') return false;
+        }
+        try
+        {
+            return Path.GetFullPath(path.Replace('/', '\\')).StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException)
+        {
+            return false;
+        }
     }
 
     private static List<Dictionary<string, string>> LoadFiles(ActionStep s)

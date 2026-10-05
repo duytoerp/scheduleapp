@@ -59,6 +59,7 @@ internal sealed class SettingsForm : BaseForm
     private readonly TextBox _txtImapHost = new() { Width = 200 };
     private readonly NumericUpDown _numImapPort = new() { Minimum = 1, Maximum = 65535, Width = 70 };
     private readonly CheckBox _chkImapSsl = new() { Text = "SSL", AutoSize = true };
+    private readonly CheckBox _chkImapPlain = new() { Text = "Cho phép gửi mật khẩu không mã hóa", AutoSize = true };
     private readonly TextBox _txtImapUser = new() { Width = 220 };
     private readonly TextBox _txtImapPass = new() { Width = 180, UseSystemPasswordChar = true };
     private readonly TextBox _txtMailFolder = new() { Width = 220, PlaceholderText = "trống = Hộp thư đến" };
@@ -273,6 +274,7 @@ internal sealed class SettingsForm : BaseForm
 
         _cboMailSource.Items.AddRange(["Outlook trên máy (không cần mật khẩu)", "Hộp thư IMAP (Gmail, Outlook.com, Yahoo…)"]);
         _cboMailSource.SelectedIndexChanged += (_, _) => UpdateMailUi();
+        _chkImapSsl.CheckedChanged += (_, _) => UpdateMailUi();
         var testMail = new Button { Text = "Thử hộp thư", AutoSize = true };
         testMail.Click += async (_, _) => await TestAsync("hộp thư", async () =>
         {
@@ -281,7 +283,7 @@ internal sealed class SettingsForm : BaseForm
         }, silent: true);
         col.Controls.Add(Caption("Hộp thư cho trình kích hoạt \"Có email mới\":"));
         col.Controls.Add(Line(Caption("   Nguồn:"), _cboMailSource, testMail));
-        col.Controls.Add(Line(Caption("   Máy chủ IMAP:"), _txtImapHost, Caption("Cổng:"), _numImapPort, _chkImapSsl));
+        col.Controls.Add(Line(Caption("   Máy chủ IMAP:"), _txtImapHost, Caption("Cổng:"), _numImapPort, _chkImapSsl, _chkImapPlain));
         col.Controls.Add(Line(Caption("   Tài khoản:"), _txtImapUser, Caption("Mật khẩu:"), _txtImapPass));
         col.Controls.Add(Line(Caption("   Thư mục:"), _txtMailFolder, _chkMarkRead));
         col.Controls.Add(Hint("Outlook: cần Outlook bản cài trên máy (classic) đang đăng nhập; thư mục con nhập dạng \"Đơn hàng\" hoặc \"Hộp thư đến/Đơn hàng\". " +
@@ -294,6 +296,7 @@ internal sealed class SettingsForm : BaseForm
     {
         bool imap = _cboMailSource.SelectedIndex == (int)MailSource.Imap;
         _txtImapHost.Enabled = _numImapPort.Enabled = _chkImapSsl.Enabled = _txtImapUser.Enabled = _txtImapPass.Enabled = imap;
+        _chkImapPlain.Enabled = imap && !_chkImapSsl.Checked;
     }
 
     private AiSettings ReadAi() => new()
@@ -309,6 +312,7 @@ internal sealed class SettingsForm : BaseForm
         Host = _txtImapHost.Text.Trim(),
         Port = (int)_numImapPort.Value,
         UseSsl = _chkImapSsl.Checked,
+        AllowPlaintext = _chkImapPlain.Checked,
         User = _txtImapUser.Text.Trim(),
         Password = _txtImapPass.Text == Unchanged ? _s.Inbox.Password : _txtImapPass.Text.Length == 0 ? "" : Protector.Protect(_txtImapPass.Text),
         Folder = _txtMailFolder.Text.Trim(),
@@ -415,6 +419,7 @@ internal sealed class SettingsForm : BaseForm
         _txtImapHost.Text = _s.Inbox.Host;
         _numImapPort.Value = Math.Clamp(_s.Inbox.Port, 1, 65535);
         _chkImapSsl.Checked = _s.Inbox.UseSsl;
+        _chkImapPlain.Checked = _s.Inbox.AllowPlaintext;
         _txtImapUser.Text = _s.Inbox.User;
         _txtImapPass.Text = _s.Inbox.Password.Length > 0 ? Unchanged : "";
         _txtMailFolder.Text = _s.Inbox.Folder;

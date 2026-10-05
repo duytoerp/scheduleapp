@@ -262,11 +262,11 @@ public class MailTests
     public void FilterIgnoresCaseAndDiacritics()
     {
         var m = new IncomingMail("id", "Đơn hàng mới #123", "orders@shop.vn", "Phòng Bán Hàng", "nội dung", new DateTime(2026, 10, 1, 9, 30, 0), ["C:\\a.pdf"], "C:\\");
-        Assert.True(MailWatcher.Matches(m, "don hang", ""));
-        Assert.True(MailWatcher.Matches(m, "", "phong ban"));
-        Assert.True(MailWatcher.Matches(m, "#123", "shop.vn"));
-        Assert.False(MailWatcher.Matches(m, "hóa đơn", ""));
-        Assert.False(MailWatcher.Matches(m, "đơn", "khac@x.com"));
+        Assert.True(MailWatcher.Matches(m, new MailFilter("don hang", "", false)));
+        Assert.False(MailWatcher.Matches(m, new MailFilter("", "phong ban", false))); // tên hiển thị không được so (ai cũng đặt được)
+        Assert.True(MailWatcher.Matches(m, new MailFilter("#123", "shop.vn", false)));
+        Assert.False(MailWatcher.Matches(m, new MailFilter("hóa đơn", "", false)));
+        Assert.False(MailWatcher.Matches(m, new MailFilter("đơn", "khac@x.com", false)));
         var v = m.ToVariables();
         Assert.Equal("01/10/2026 09:30", v["email.date"]);
         Assert.Equal("1", v["email.attachmentCount"]);

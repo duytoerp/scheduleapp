@@ -1620,7 +1620,8 @@
         "Enabled": true,
         "Value": "hóa đơn",
         "Value2": "",
-        "Minutes": 5
+        "Minutes": 5,
+        "RequireAuthenticatedEmail": true
       }
     ],
     "Variables": [],

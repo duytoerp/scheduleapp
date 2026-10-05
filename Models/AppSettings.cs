@@ -178,6 +178,11 @@ public sealed class MailInboxSettings
     public string Folder { get; set; } = "";
     /// <summary>Đánh dấu đã đọc email đã xử lý (để không chạy lại lần sau).</summary>
     public bool MarkAsRead { get; set; } = true;
+    /// <summary>
+    /// IMAP không SSL: vẫn đăng nhập khi máy chủ không hỗ trợ STARTTLS (mật khẩu đi qua mạng không mã hóa). Mặc định tắt — khi tắt,
+    /// máy chủ không mã hóa được thì báo lỗi thay vì gửi mật khẩu (máy chủ localhost luôn được phép).
+    /// </summary>
+    public bool AllowPlaintext { get; set; }
 }
 
 public sealed class UpdateSettings

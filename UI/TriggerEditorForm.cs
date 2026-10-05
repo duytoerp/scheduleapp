@@ -10,6 +10,7 @@ internal sealed class TriggerEditorForm : BaseForm
     private static readonly TriggerType[] Types = Enum.GetValues<TriggerType>();
 
     private readonly JobTrigger _trigger;
+    private readonly IReadOnlyList<ActionStep> _steps;
     private readonly ComboBox _cboType = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 320 };
     private readonly Label _lblValue = new() { AutoSize = true, Margin = new Padding(3, 7, 8, 3) };
     private readonly ComboBox _cboValue = new() { DropDownStyle = ComboBoxStyle.DropDown, Width = 320 };
@@ -18,14 +19,17 @@ internal sealed class TriggerEditorForm : BaseForm
     private readonly TextBox _txtValue2 = new() { Width = 320 };
     private readonly Label _lblMinutes = new() { Text = "Số phút rảnh:", AutoSize = true, Margin = new Padding(3, 7, 8, 3) };
     private readonly NumericUpDown _numMinutes = new() { Minimum = 1, Maximum = 1440, Width = 90 };
+    private readonly CheckBox _chkVerified = new() { Text = "Chỉ nhận email đã xác thực (DMARC/DKIM đạt)", AutoSize = true };
     private readonly CheckBox _chkEnabled = new() { Text = "Bật", AutoSize = true };
     private readonly Label _lblHint = new() { AutoSize = true, ForeColor = UiText.Muted, MaximumSize = new Size(520, 0), Margin = new Padding(3, 10, 3, 3) };
 
     public JobTrigger Trigger => _trigger;
 
-    public TriggerEditorForm(JobTrigger trigger)
+    /// <param name="steps">Các bước của công việc — để cảnh báo trình kích hoạt email không giới hạn người gửi mà công việc chạy lệnh / mở ứng dụng / gõ chữ.</param>
+    public TriggerEditorForm(JobTrigger trigger, IReadOnlyList<ActionStep>? steps = null)
     {
         _trigger = trigger;
+        _steps = steps ?? [];
         SuspendLayout();
         Text = "Kích hoạt công việc";
         FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -48,8 +52,9 @@ internal sealed class TriggerEditorForm : BaseForm
         grid.Controls.Add(_txtValue2, 1, 2);
         grid.Controls.Add(_lblMinutes, 0, 3);
         grid.Controls.Add(_numMinutes, 1, 3);
-        grid.Controls.Add(_chkEnabled, 1, 4);
-        grid.Controls.Add(_lblHint, 0, 5);
+        grid.Controls.Add(_chkVerified, 1, 4);
+        grid.Controls.Add(_chkEnabled, 1, 5);
+        grid.Controls.Add(_lblHint, 0, 6);
         grid.SetColumnSpan(_lblHint, 3);
 
         var ok = new Button { Text = "OK", AutoSize = true, MinimumSize = new Size(90, 0) };
@@ -74,6 +79,7 @@ internal sealed class TriggerEditorForm : BaseForm
         _txtValue2.Text = trigger.Value2;
         _numMinutes.Value = Math.Clamp(trigger.Minutes, 1, 1440);
         _chkEnabled.Checked = trigger.Enabled;
+        _chkVerified.Checked = trigger.RequireAuthenticatedEmail;
     }
 
     private TriggerType CurrentType => Types[Math.Max(0, _cboType.SelectedIndex)];
@@ -86,6 +92,7 @@ internal sealed class TriggerEditorForm : BaseForm
         _btnValue.Visible = t is TriggerType.FileCreated or TriggerType.ProcessStarted or TriggerType.ProcessExited or TriggerType.EmailReceived;
         _lblValue2.Visible = _txtValue2.Visible = t is TriggerType.FileCreated or TriggerType.EmailReceived;
         _lblMinutes.Visible = _numMinutes.Visible = t is TriggerType.Idle or TriggerType.EmailReceived;
+        _chkVerified.Visible = t == TriggerType.EmailReceived;
         _lblValue.Text = t switch
         {
             TriggerType.Hotkey => "Phím tắt (bấm tổ hợp phím):",
@@ -93,7 +100,7 @@ internal sealed class TriggerEditorForm : BaseForm
             TriggerType.EmailReceived => "Tiêu đề chứa (trống = mọi thư):",
             _ => "Tên tiến trình:"
         };
-        _lblValue2.Text = t == TriggerType.EmailReceived ? "Người gửi chứa (tùy chọn):" : "Chỉ file (vd *.pdf;*.xlsx):";
+        _lblValue2.Text = t == TriggerType.EmailReceived ? "Người gửi (địa chỉ hoặc @tên miền):" : "Chỉ file (vd *.pdf;*.xlsx):";
         _lblMinutes.Text = t == TriggerType.EmailReceived ? "Kiểm tra mỗi (phút):" : "Số phút rảnh:";
         _btnValue.Text = t switch
         {
@@ -115,7 +122,10 @@ internal sealed class TriggerEditorForm : BaseForm
             TriggerType.EmailReceived =>
                 "Chạy một lần cho mỗi email CHƯA ĐỌC khớp bộ lọc (không phân biệt hoa thường/dấu), rồi đánh dấu đã đọc. Hộp thư (Outlook trên máy hoặc IMAP) " +
                 "cấu hình trong ⚙ Cài đặt → Tích hợp. Trong flow dùng {{email.subject}}, {{email.from}}, {{email.body}}, {{email.date}}, " +
-                "{{email.attachments}} (đường dẫn các file đính kèm, mỗi dòng một file — lặp bằng \"Mỗi dòng văn bản\"), {{email.attachmentDir}}.",
+                "{{email.attachments}} (đường dẫn các file đính kèm, mỗi dòng một file — lặp bằng \"Mỗi dòng văn bản\"), {{email.attachmentDir}}.\n" +
+                "Người gửi: địa chỉ đầy đủ (ketoan@congty.vn) hoặc cả tên miền (@congty.vn), nhiều mục cách nhau bởi dấu ; — chỉ so địa chỉ, " +
+                "không so tên hiển thị (ai cũng đặt được). \"Chỉ nhận email đã xác thực\": bỏ qua thư mà máy chủ thư không xác nhận được người gửi " +
+                "(DMARC/DKIM/SPF); thư bị xác định là giả mạo luôn bị bỏ qua. File đính kèm được đánh dấu \"tải từ Internet\".",
             _ => ""
         };
         if (t == TriggerType.EmailReceived && _numMinutes.Value == 10 && _trigger.Type != TriggerType.EmailReceived) _numMinutes.Value = 2;
@@ -188,6 +198,7 @@ internal sealed class TriggerEditorForm : BaseForm
             MessageBox.Show(this, $"Hãy nhập \"{_lblValue.Text.TrimEnd(':')}\".", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
+        if (t == TriggerType.EmailReceived && !ConfirmEmailSender(_txtValue2.Text.Trim())) return;
         if (t == TriggerType.Hotkey)
         {
             try { TriggerManager.ParseHotkey(value); }
@@ -202,7 +213,22 @@ internal sealed class TriggerEditorForm : BaseForm
         _trigger.Value2 = _txtValue2.Visible ? _txtValue2.Text.Trim() : "";
         _trigger.Minutes = (int)_numMinutes.Value;
         _trigger.Enabled = _chkEnabled.Checked;
+        _trigger.RequireAuthenticatedEmail = _chkVerified.Checked;
         DialogResult = DialogResult.OK;
         Close();
+    }
+
+    /// <summary>Kiểm tra bộ lọc người gửi; không giới hạn người gửi mà công việc có bước rủi ro → hỏi lại. False = chưa lưu.</summary>
+    private bool ConfirmEmailSender(string from)
+    {
+        if (MailWatcher.SenderFilterError(from) is { } error)
+        {
+            MessageBox.Show(this, error, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            _txtValue2.Focus();
+            return false;
+        }
+        var probe = new JobTrigger { Type = TriggerType.EmailReceived, Value2 = from };
+        return MailWatcher.OpenSenderWarning(probe, _steps) is not { } warning
+               || MessageBox.Show(this, warning + "\n\nVẫn lưu?", Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) == DialogResult.Yes;
     }
 }

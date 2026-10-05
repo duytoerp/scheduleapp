@@ -249,12 +249,13 @@ public sealed class TriggerManager : IDisposable
     {
         try
         {
-            var filters = triggers.Select(x => (x.Trigger.Value, x.Trigger.Value2)).Distinct().ToList();
+            MailWatcher.WarnRiskyTriggers(triggers);
+            var filters = triggers.Select(x => MailFilter.Of(x.Trigger)).Distinct().ToList();
             var mails = await Task.Run(() => MailWatcher.FetchAsync(filters, CancellationToken.None));
             _lastMailError = "";
             foreach (var mail in mails)
             {
-                var matched = triggers.Where(x => MailWatcher.Matches(mail, x.Trigger.Value, x.Trigger.Value2)).Select(x => x.Job).Distinct().ToList();
+                var matched = triggers.Where(x => MailWatcher.Matches(mail, MailFilter.Of(x.Trigger))).Select(x => x.Job).Distinct().ToList();
                 Log.Info($"✉ Email mới: \"{mail.Subject}\" từ {mail.From}" + (mail.Attachments.Count > 0 ? $" ({mail.Attachments.Count} file đính kèm)" : ""));
                 foreach (var job in matched)
                     Enqueue(job, mail.Id, $"email \"{(mail.Subject.Length > 40 ? mail.Subject[..40] + "…" : mail.Subject)}\"", mail.ToVariables());

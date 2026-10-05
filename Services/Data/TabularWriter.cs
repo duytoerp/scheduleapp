@@ -121,7 +121,7 @@ public static partial class TabularWriter
             int col = Column(name);
             var row = table[target];
             while (row.Count <= col) row.Add("");
-            row[col] = value;
+            row[col] = CsvSafe(value);
         }
 
         var sb = new StringBuilder();
@@ -146,6 +146,16 @@ public static partial class TabularWriter
             if (col < table[i].Count && SameValue(table[i][col], keyValue!)) return i;
         throw new InvalidOperationException($"Không có dòng nào có {keyColumn} = \"{keyValue}\".");
     }
+
+    [GeneratedRegex(@"^[+-]?(\d+([.,]\d+)*|[.,]\d+)([eE][+-]?\d+)?$")]
+    private static partial Regex CsvNumber();
+
+    /// <summary>
+    /// Chống chèn công thức vào CSV: giá trị bắt đầu bằng = + - @ Tab hoặc CR (vd "=HYPERLINK(…)" lấy từ email / API) được thêm dấu '
+    /// phía trước để Excel hiển thị như chữ thay vì chạy công thức. Số thật như "-5", "-3.2" giữ nguyên. File .xlsx không cần vì ô được ghi dạng chữ.
+    /// </summary>
+    internal static string CsvSafe(string value) =>
+        value.Length > 0 && value[0] is '=' or '+' or '-' or '@' or '\t' or '\r' && !CsvNumber().IsMatch(value) ? "'" + value : value;
 
     private static string CsvQuote(string value, char sep) =>
         value.IndexOfAny([sep, '"', '\r', '\n']) >= 0 || (value.Length > 0 && (char.IsWhiteSpace(value[0]) || char.IsWhiteSpace(value[^1])))

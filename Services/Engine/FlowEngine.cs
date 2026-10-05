@@ -112,7 +112,7 @@ public static class FlowEngine
                     LoopFrame? frame = null;
                     var a = await TryAsync(step, pc, ctx, async s =>
                     {
-                        frame = LoopFrame.Create(s, pc, fs.Match[pc]);
+                        frame = LoopFrame.Create(s, pc, fs.Match[pc], step);
                         if (!await frame.MoveNextAsync(step, ctx)) frame = null;
                     });
                     if (!a.Ok)

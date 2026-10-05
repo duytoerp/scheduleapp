@@ -19,6 +19,12 @@ public sealed record DataTableResult(List<string> Headers, List<string[]> Rows, 
 /// </summary>
 public static class TabularReader
 {
+    /// <summary>Giới hạn của Excel: 1.048.576 dòng × 16.384 cột — ô nằm ngoài là file hỏng hoặc cố ý làm treo máy.</summary>
+    internal const int MaxRows = 1_048_576, MaxColumns = 16_384;
+
+    /// <summary>Số ô trống chèn thêm tối đa để giữ đúng vị trí cột (file thưa có ô ở rất xa cột A sẽ làm tràn bộ nhớ).</summary>
+    internal const long MaxPaddingCells = 20_000_000;
+
     public static DataTableResult Read(string path, string? sheet = null)
     {
         Gate(path);
@@ -38,6 +44,9 @@ public static class TabularReader
         if (raw.Count == 0) return new DataTableResult([], [], []);
 
         int width = raw.Max(r => r.Length);
+        if (raw.Sum(r => (long)(width - r.Length)) > MaxPaddingCells)
+            throw new InvalidDataException($"File \"{Path.GetFileName(path)}\" có ô nằm quá xa: bảng {raw.Count:N0} dòng × {width:N0} cột mà phần lớn là ô trống " +
+                                           "— xóa các ô thừa ở xa rồi lưu lại.");
         var headers = new List<string>();
         var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (int c = 0; c < width; c++)
@@ -162,14 +171,22 @@ public static class TabularReader
         var dateStyles = DateStyleIndexes(Load(zip, "xl/styles.xml"));
 
         var rows = new List<string[]>();
+        long padding = 0;
         foreach (var rowEl in sheetXml.Descendants(Main + "row"))
         {
-            int rowNumber = (int?)rowEl.Attribute("r") ?? rows.Count + 1;
+            var rowRef = (string?)rowEl.Attribute("r");
+            long rowNumber = rowRef == null ? rows.Count + 1
+                : long.TryParse(rowRef, NumberStyles.None, CultureInfo.InvariantCulture, out var n) ? n : 0;
+            if (rowNumber is < 1 or > MaxRows) throw OutsideExcel($"dòng {rowRef}");
             while (rows.Count < rowNumber - 1) rows.Add([]); // giữ đúng vị trí khi có dòng bị bỏ trống
             var cells = new List<string>();
             foreach (var c in rowEl.Elements(Main + "c"))
             {
                 int col = ColumnIndex((string?)c.Attribute("r")) ?? cells.Count;
+                if (col >= MaxColumns) throw OutsideExcel($"ô {(string?)c.Attribute("r")}");
+                padding += Math.Max(0, col - cells.Count);
+                if (padding > MaxPaddingCells)
+                    throw new InvalidDataException($"File Excel có ô nằm quá xa (ô {(string?)c.Attribute("r")}) — phần lớn bảng là ô trống. Xóa các ô thừa ở xa rồi lưu lại.");
                 while (cells.Count < col) cells.Add("");
                 cells.Add(CellValue(c, shared, dateStyles));
             }
@@ -177,6 +194,9 @@ public static class TabularReader
         }
         return rows;
     }
+
+    private static InvalidDataException OutsideExcel(string what) =>
+        new($"File Excel không hợp lệ: {what} nằm ngoài giới hạn của Excel ({MaxRows:N0} dòng × {MaxColumns:N0} cột).");
 
     /// <summary>Đường dẫn trong file zip của sheet (trống = sheet đầu tiên).</summary>
     internal static string SheetPath(ZipArchive zip, string? sheetName)
@@ -274,13 +294,16 @@ public static class TabularReader
         return s.IndexOfAny(['d', 'y']) >= 0 || (s.Contains('m') && (s.Contains('h') || s.Contains('s')));
     }
 
-    /// <summary>"C12" → 2 (cột tính từ 0).</summary>
+    /// <summary>"C12" → 2 (cột tính từ 0). Cột vượt giới hạn Excel → <see cref="MaxColumns"/> (dừng sớm, không tràn số).</summary>
     internal static int? ColumnIndex(string? cellRef)
     {
         if (string.IsNullOrEmpty(cellRef)) return null;
         int col = 0, i = 0;
-        for (; i < cellRef.Length && char.IsLetter(cellRef[i]); i++)
+        for (; i < cellRef.Length && char.IsAsciiLetter(cellRef[i]); i++)
+        {
             col = col * 26 + (char.ToUpperInvariant(cellRef[i]) - 'A' + 1);
+            if (col > MaxColumns) return MaxColumns;
+        }
         return i == 0 ? null : col - 1;
     }
 }

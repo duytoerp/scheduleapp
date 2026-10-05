@@ -418,7 +418,7 @@ internal sealed class JobEditorForm : BaseForm
 
         add.Click += (_, _) =>
         {
-            using var dlg = new TriggerEditorForm(new JobTrigger());
+            using var dlg = new TriggerEditorForm(new JobTrigger(), _job.Steps);
             if (dlg.ShowDialog(this) != DialogResult.OK) return;
             _job.Triggers.Add(dlg.Trigger);
             RefreshTriggers();
@@ -427,8 +427,7 @@ internal sealed class JobEditorForm : BaseForm
         {
             int i = _lstTriggers.SelectedIndex;
             if (i < 0) return;
-            var copy = new JobTrigger { Type = _job.Triggers[i].Type, Enabled = _job.Triggers[i].Enabled, Value = _job.Triggers[i].Value, Value2 = _job.Triggers[i].Value2, Minutes = _job.Triggers[i].Minutes };
-            using var dlg = new TriggerEditorForm(copy);
+            using var dlg = new TriggerEditorForm(_job.Triggers[i].Clone(), _job.Steps);
             if (dlg.ShowDialog(this) != DialogResult.OK) return;
             _job.Triggers[i] = dlg.Trigger;
             RefreshTriggers();

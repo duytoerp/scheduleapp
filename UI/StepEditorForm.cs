@@ -2138,7 +2138,7 @@ internal sealed class StepEditorForm : BaseForm
                     }
                     if (step.Type == StepType.Loop)
                     {
-                        var frame = LoopFrame.Create(expanded, 0, 1);
+                        var frame = LoopFrame.Create(expanded, 0, 1, step);
                         if (!await frame.MoveNextAsync(step, ctx)) return "Không có lần lặp nào.";
                         return $"{frame.Total ?? 0} lần lặp. Lần đầu: " + VarDiff(before, ctx.Vars);
                     }
