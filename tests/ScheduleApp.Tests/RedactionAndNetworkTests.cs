@@ -44,7 +44,7 @@ public class RedactionAndNetworkTests
     [Fact]
     public void DecryptedCredentialIsMaskedWhenDecrypted()
     {
-        var secret = NewSecret("Tok-");
+        var secret = NewSecret("Tq9Dec_");   // không trùng mảnh bí mật ngắn test khác đã đăng ký che (vd "k-1")
         var stored = Protector.Protect(secret);
         Assert.Contains(secret, Log.Redact(secret));            // chưa giải mã → chưa biết để che
         Assert.True(Protector.TryUnprotect(stored, out var plain));
