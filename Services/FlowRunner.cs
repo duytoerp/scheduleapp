@@ -282,9 +282,20 @@ public sealed class FlowRunner
         ctx.Vars["lastError"] = "";
         ctx.Vars["lastOutput"] = "";
         Log.Info($"▶ Bắt đầu \"{job.Name}\" ({trigger}) — {total} bước" + (options.StartIndex > 0 ? $", từ bước {options.StartIndex + 1}" : ""));
-        // Biến của môi trường / dòng dữ liệu kiểm thử — công thức "=hoten()"… được sinh mới ở mỗi lần chạy.
+        // Biến của môi trường / dòng dữ liệu kiểm thử — công thức "=hoten()"… được sinh mới ở mỗi lần chạy; {{secret:Tên}} được thay
+        // (và che trong nhật ký), biến khác trong giá trị giữ nguyên.
         if (options.Variables != null)
-            foreach (var (k, v) in options.Variables) ctx.Vars[k] = ctx.InitialValue(k, v);
+        {
+            try
+            {
+                foreach (var (k, v) in options.Variables) ctx.Vars[k] = ctx.InitialValue(k, VariableExpander.ExpandSecrets(v));
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or FormatException)
+            {
+                Log.Error($"✖ \"{job.Name}\" lỗi biến môi trường / dữ liệu kiểm thử: {ex.Message}");
+                return new FlowResult(false, ex.Message);
+            }
+        }
 
         IDisposable? awake = null;
         FlowResult? result = null;

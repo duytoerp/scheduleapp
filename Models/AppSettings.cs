@@ -42,7 +42,10 @@ public sealed class AppSettings
     /// <summary>Kết nối API dùng cho bước "Gọi API" (URL gốc + cách xác thực).</summary>
     public List<ApiConnection> ApiConnections { get; set; } = [];
 
-    /// <summary>Giá trị biến đã điền ở màn hình "Thiết lập mẫu" (vd tenant, d365Url) — tự điền sẵn khi thêm mẫu khác dùng cùng biến.</summary>
+    /// <summary>
+    /// Giá trị biến đã điền ở màn hình "Thiết lập mẫu" (vd tenant, d365Url) — tự điền sẵn khi thêm mẫu khác dùng cùng biến.
+    /// Lưu chữ thường (biến của mẫu không đánh dấu được là mật khẩu) — mật khẩu nên để trong 🔑 Bí mật và dùng {{secret:Tên}}.
+    /// </summary>
     public Dictionary<string, string> TemplateValues { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     public AiSettings Ai { get; set; } = new();
@@ -51,6 +54,12 @@ public sealed class AppSettings
     public MailInboxSettings Inbox { get; set; } = new();
 
     public UpdateSettings Update { get; set; } = new();
+
+    /// <summary>
+    /// Tên máy trang đăng nhập riêng của tổ chức (ADFS / SSO, vd adfs.contoso.com) được nhận mật khẩu / mã TOTP của bước
+    /// "Đăng nhập Microsoft" — ngoài login.microsoftonline.com và login.microsoft.com. Chỉ qua https.
+    /// </summary>
+    public List<string> TrustedLoginHosts { get; set; } = [];
 
     /// <summary>Lần cuối ScheduleApp còn chạy — dùng để phát hiện lịch bị lỡ khi app tắt.</summary>
     public DateTime? LastAlive { get; set; }
@@ -65,7 +74,10 @@ public sealed class AppSettings
     public string TestFolder { get; set; } = "";
 }
 
-/// <summary>Môi trường kiểm thử: tên + các biến (vd d365Url, tài khoản test) dùng chung cho mọi kịch bản khi chạy ở môi trường này.</summary>
+/// <summary>
+/// Môi trường kiểm thử: tên + các biến (vd d365Url, tài khoản test) dùng chung cho mọi kịch bản khi chạy ở môi trường này.
+/// Giá trị lưu chữ thường (còn xuất ra thư mục kiểm thử) — mật khẩu ghi dạng {{secret:Tên}}, được thay khi chạy.
+/// </summary>
 public sealed class TestEnvironment
 {
     public string Name { get; set; } = "";
@@ -132,7 +144,7 @@ public sealed class ApiConnection
     /// <summary>OAuth: URL lấy token.</summary>
     public string TokenUrl { get; set; } = "";
 
-    /// <summary>Header gửi kèm mọi lần gọi, mỗi dòng "Tên: giá trị".</summary>
+    /// <summary>Header gửi kèm mọi lần gọi, mỗi dòng "Tên: giá trị" — cả chuỗi mã hóa DPAPI (thường chứa khóa / token).</summary>
     public string Headers { get; set; } = "";
 }
 
@@ -199,6 +211,6 @@ public sealed class EmailSettings
 public sealed class WebhookSettings
 {
     public bool Enabled { get; set; }
-    /// <summary>URL webhook Teams / Slack / Discord / Google Chat…</summary>
+    /// <summary>URL webhook Teams / Slack / Discord / Google Chat… (mã hóa DPAPI — URL chứa sẵn khóa gửi tin).</summary>
     public string Url { get; set; } = "";
 }

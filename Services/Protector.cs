@@ -21,6 +21,15 @@ public static class Protector
         return Prefix + Convert.ToBase64String(Crypt(Encoding.UTF8.GetBytes(plain), protect: true));
     }
 
+    /// <summary>Chuỗi đã mã hóa (có tiền tố "dpapi:").</summary>
+    public static bool IsProtected(string? stored) => stored != null && stored.StartsWith(Prefix, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Mã hóa nếu còn là chữ thường (dữ liệu cũ / sửa tay trong file); đã mã hóa hoặc rỗng thì giữ nguyên — không mã hóa chồng.
+    /// </summary>
+    public static string EnsureProtected(string? value) =>
+        string.IsNullOrEmpty(value) ? "" : IsProtected(value) ? value : Protect(value);
+
     /// <summary>
     /// Giải mã; chuỗi không có tiền tố "dpapi:" được coi là chưa mã hóa và trả về nguyên văn. Không giải mã được (dữ liệu chép từ
     /// máy / tài khoản Windows khác, chuỗi hỏng) → trả về "" và ghi một cảnh báo vào nhật ký, không báo lỗi.
@@ -32,7 +41,7 @@ public static class Protector
     {
         plain = "";
         if (string.IsNullOrEmpty(stored)) return true;
-        if (!stored.StartsWith(Prefix, StringComparison.Ordinal))
+        if (!IsProtected(stored))
         {
             plain = stored;
             return true;

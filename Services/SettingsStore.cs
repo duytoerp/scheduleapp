@@ -16,8 +16,53 @@ public static class SettingsStore
     {
         get
         {
-            lock (Sync) return _current ??= Load();
+            lock (Sync)
+            {
+                if (_current == null)
+                {
+                    _current = Load();
+                    // Bản cũ / sửa tay còn mật khẩu, token chữ thường → mã hóa và lưu ngay một lần.
+                    if (ProtectPlaintextSecrets(_current)) Save();
+                }
+                return _current;
+            }
         }
+    }
+
+    /// <summary>
+    /// Mã hóa DPAPI các ô bí mật còn là chữ thường (khóa AI, mật khẩu SMTP / IMAP, token Telegram / GitHub, secret và header của
+    /// kết nối API, URL webhook). Ô đã mã hóa giữ nguyên.
+    /// </summary>
+    /// <returns>true nếu có ô vừa được mã hóa (cần lưu lại).</returns>
+    internal static bool ProtectPlaintextSecrets(AppSettings s)
+    {
+        bool changed = false;
+        string Fix(string value)
+        {
+            var result = Protector.EnsureProtected(value);
+            if (result != value) changed = true;
+            return result;
+        }
+        try
+        {
+            s.Telegram.BotToken = Fix(s.Telegram.BotToken);
+            s.Email.Password = Fix(s.Email.Password);
+            s.Inbox.Password = Fix(s.Inbox.Password);
+            s.Ai.ApiKey = Fix(s.Ai.ApiKey);
+            s.Update.Token = Fix(s.Update.Token);
+            s.Webhook.Url = Fix(s.Webhook.Url);
+            foreach (var c in s.ApiConnections)
+            {
+                c.Secret = Fix(c.Secret);
+                c.Headers = Fix(c.Headers);
+            }
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            Log.Warn("Không mã hóa được mật khẩu / token trong cài đặt: " + ex.Message);
+        }
+        if (changed) Log.Info("Đã mã hóa các mật khẩu / token còn lưu chữ thường trong cài đặt.");
+        return changed;
     }
 
     private static AppSettings Load() => Load(FilePath);

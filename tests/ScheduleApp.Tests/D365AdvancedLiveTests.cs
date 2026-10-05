@@ -126,6 +126,7 @@ public sealed class D365AdvancedLiveTests
     public async Task MicrosoftLoginWithMfaAndExpiredSession()
     {
         using var server = new FakeD365Server();
+        using var trust = new TrustedTestLogin(server.BaseUrl);   // trang đăng nhập giả lập ở http://localhost
         await using var browser = await LiveBrowser.StartAsync(9338, server.BaseUrl + "adfs/ls/?client=d365");
         var d = new D365Steps();
 

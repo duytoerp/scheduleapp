@@ -98,9 +98,20 @@ internal sealed class StepEditorForm : BaseForm
     private readonly Label _lblRowRef = Caption("Dòng cần sửa:");
     private readonly ComboBox _cboRowRef = new() { DropDownStyle = ComboBoxStyle.DropDown, Dock = DockStyle.Fill };
 
-    // Dynamics 365: ô phụ — form chính (mở form), dòng subgrid, chữ tìm trong view, khóa TOTP (đăng nhập)
+    // Dynamics 365: ô phụ — form chính (mở form), dòng subgrid, chữ tìm trong view
     private readonly Label _lblD365Extra = Caption("");
     private readonly ComboBox _cboD365Extra = new() { DropDownStyle = ComboBoxStyle.DropDown, Dock = DockStyle.Fill };
+
+    // Dynamics 365 → Đăng nhập: mật khẩu / khóa TOTP che ký tự, gõ thẳng thì lưu mã hóa DPAPI; {{secret:Tên}} hiện rõ và lưu nguyên.
+    private readonly Label _lblD365Password = Caption("Mật khẩu\n(nên dùng {{secret:Tên}}):");
+    private readonly TextBox _txtD365Password = new() { Dock = DockStyle.Fill, PasswordChar = SecretChar };
+    private readonly Button _btnD365Password = new() { Text = "🔑 Bí mật…", AutoSize = true };
+    private readonly Label _lblD365Totp = Caption("Khóa TOTP cho MFA (tùy chọn,\nnên dùng {{secret:Tên}}):");
+    private readonly TextBox _txtD365Totp = new() { Dock = DockStyle.Fill, PasswordChar = SecretChar };
+    private readonly Button _btnD365Totp = new() { Text = "🔑 Bí mật…", AutoSize = true };
+    private const char SecretChar = '●';
+    /// <summary>Ô mật khẩu đang giữ giá trị đã lưu (không hiện lại mật khẩu).</summary>
+    private const string Unchanged = "••••••••";
 
     private readonly CheckBox _chkRelative = new() { Text = "Tọa độ tương đối theo cửa sổ (click đúng kể cả khi cửa sổ bị di chuyển)", AutoSize = true };
     private readonly Label _lblXY = Caption("Tọa độ X, Y:");
@@ -253,6 +264,8 @@ internal sealed class StepEditorForm : BaseForm
         AddRow(null, _mediaStrip, span: true);
         AddRow(_lblArgs, _cboArgs, _btnArgsAction);
         AddRow(_lblD365Extra, _cboD365Extra);
+        AddRow(_lblD365Password, _txtD365Password, _btnD365Password);
+        AddRow(_lblD365Totp, _txtD365Totp, _btnD365Totp);
         AddRow(_lblVariable, _cboVariable);
         AddRow(_lblCount, _numCount);
         AddRow(_lblJob, _cboJob);
@@ -383,6 +396,12 @@ internal sealed class StepEditorForm : BaseForm
             else await CaptureElementAsync();
         };
         _btnArgsAction.Click += (_, _) => ShowRealProfiles();
+        foreach (var (box, button) in new[] { (_txtD365Password, _btnD365Password), (_txtD365Totp, _btnD365Totp) })
+        {
+            // {{secret:Tên}} / {{biến}} không phải mật khẩu → hiện rõ để thấy đang dùng bí mật nào.
+            box.TextChanged += (_, _) => box.PasswordChar = box.Text.TrimStart().StartsWith("{{", StringComparison.Ordinal) ? '\0' : SecretChar;
+            button.Click += (_, _) => ShowSecretMenu(button, box);
+        }
         _cboTarget.TextChanged += (_, _) => { if (!_loading && IsBrowserLaunch) FillProfileList(); };
         _cboTarget.SelectionChangeCommitted += (_, _) =>
         {
@@ -472,6 +491,9 @@ internal sealed class StepEditorForm : BaseForm
         _txtHeaders.Text = _step.Headers.Replace("\r\n", "\n").Replace("\n", "\r\n");
         _cboRowRef.Text = _step.Type == StepType.WriteData ? _step.RowRef : "";
         _cboD365Extra.Text = _step.Type != StepType.Dynamics ? "" : _step.D365Action == D365Action.OpenForm ? _step.Form : _step.RowRef;
+        bool login = _step.Type == StepType.Dynamics && _step.D365Action == D365Action.Login;
+        _txtD365Password.Text = login ? Masked(_step.Arguments) : "";
+        _txtD365Totp.Text = login ? Masked(_step.RowRef) : "";
         _cboCondition.SelectedIndex = Array.IndexOf(Conditions, _step.Condition);
         _chkNegate.Checked = _step.Negate;
         _cboCompare.SelectedIndex = Array.IndexOf(CompareOps, _step.CompareOp);
@@ -543,6 +565,11 @@ internal sealed class StepEditorForm : BaseForm
         s.RowRef = type == StepType.WriteData && CurrentData == DataAction.UpdateRow ? _cboRowRef.Text.Trim()
             : type == StepType.Dynamics && D365Extra(CurrentD365) != null && CurrentD365 != D365Action.OpenForm ? _cboD365Extra.Text.Trim() : "";
         s.Form = type == StepType.Dynamics && CurrentD365 == D365Action.OpenForm ? _cboD365Extra.Text.Trim() : "";
+        if (type == StepType.Dynamics && CurrentD365 == D365Action.Login)
+        {
+            s.Arguments = StoredSecret(_txtD365Password.Text, _step.Arguments, trim: false);
+            s.RowRef = StoredSecret(_txtD365Totp.Text, _step.RowRef, trim: true);
+        }
         s.Method = type == StepType.HttpRequest || (type == StepType.Dynamics && CurrentD365 == D365Action.WebApi)
             ? (_cboMethod.Text.Trim().Length == 0 ? "GET" : _cboMethod.Text.Trim().ToUpperInvariant())
             : "GET";
@@ -906,11 +933,11 @@ internal sealed class StepEditorForm : BaseForm
                         break;
                     case D365Action.Login:
                         if (s.Text.Trim().Length == 0) return ("Hãy nhập tài khoản đăng nhập (email của tài khoản test).", _txtText);
-                        if (s.Arguments.Trim().Length == 0) return ("Hãy nhập mật khẩu — nên lưu trong mục Bí mật rồi dùng {{secret:Tên}}.", _cboArgs);
-                        if (s.RowRef.Length > 0 && !s.RowRef.Contains("{{"))
+                        if (s.Arguments.Trim().Length == 0) return ("Hãy nhập mật khẩu — nên lưu trong mục Bí mật rồi dùng {{secret:Tên}}.", _txtD365Password);
+                        if (s.RowRef.Length > 0 && !s.RowRef.Contains("{{") && Protector.TryUnprotect(s.RowRef, out var totp))
                         {
-                            try { Automation.Totp.DecodeBase32(s.RowRef); }
-                            catch (FormatException ex) { return (ex.Message, _cboD365Extra); }
+                            try { Automation.Totp.DecodeBase32(totp); }
+                            catch (FormatException ex) { return (ex.Message, _txtD365Totp); }
                         }
                         break;
                 }
@@ -1056,6 +1083,7 @@ internal sealed class StepEditorForm : BaseForm
         SetVisible(http, _lblHeaders, _txtHeaders, _pnlHttp.Controls[1], _cboConnection);
         SetVisible(t == StepType.WriteData && data == DataAction.UpdateRow, _lblRowRef, _cboRowRef);
         SetVisible(dyn && D365Extra(d) != null, _lblD365Extra, _cboD365Extra);
+        SetVisible(dyn && d == D365Action.Login, _lblD365Password, _txtD365Password, _btnD365Password, _lblD365Totp, _txtD365Totp, _btnD365Totp);
         _lblD365Extra.Text = dyn ? D365Extra(d) ?? "" : "";
         if (_cboRowRef.Items.Count == 0) _cboRowRef.Items.AddRange(["{{row.rowNumber}}", "MaKH={{row.MaKH}}", "{{lastRow}}"]);
 
@@ -1133,7 +1161,7 @@ internal sealed class StepEditorForm : BaseForm
             StepType.Loop => loop is LoopKind.Rows or LoopKind.Files,
             StepType.Browser => br is BrowserAction.SetValue or BrowserAction.Launch,
             StepType.Dynamics => d is D365Action.OpenForm or D365Action.OpenView or D365Action.WaitForm or D365Action.SetField or D365Action.WebApi
-                or D365Action.SubgridGetValue or D365Action.ViewQuery or D365Action.ViewOpenRecord or D365Action.QuickCreate or D365Action.Login,
+                or D365Action.SubgridGetValue or D365Action.ViewQuery or D365Action.ViewOpenRecord or D365Action.QuickCreate,
             _ => (compareCond && CurrentCompare is not (CompareOp.IsEmpty or CompareOp.IsNotEmpty))
                  || (cond && ck is ConditionKind.D365FieldState or ConditionKind.D365SubgridRow or ConditionKind.D365Command)
         };
@@ -1164,7 +1192,6 @@ internal sealed class StepEditorForm : BaseForm
                 D365Action.SubgridGetValue => "Cột (logical name,\ntrống = cột tên):",
                 D365Action.ViewQuery or D365Action.ViewOpenRecord => "View (tên hoặc Id,\ntrống = view mặc định):",
                 D365Action.QuickCreate => "Bảng (logical name,\nvd contact):",
-                D365Action.Login => "Mật khẩu\n(nên dùng {{secret:Tên}}):",
                 _ => "Giá trị:"
             },
             _ when cond => ck switch
@@ -1182,9 +1209,7 @@ internal sealed class StepEditorForm : BaseForm
         if (!((t == StepType.Loop && loop == LoopKind.Rows) || t == StepType.WriteData)) _cboArgs.Items.Clear();
         if (cond && ck == ConditionKind.D365FieldState) _cboArgs.Items.AddRange([.. ActionStep.D365FieldStates.Keys]);
         if (cond && ck == ConditionKind.D365Command) _cboArgs.Items.AddRange([.. ActionStep.D365CommandStates.Keys]);
-        if (dyn && d == D365Action.Login) _cboArgs.Items.AddRange([.. SecretStore.Names.Select(n => "{{secret:" + n + "}}")]);
         _cboD365Extra.Items.Clear();
-        if (dyn && d == D365Action.Login) _cboD365Extra.Items.AddRange([.. SecretStore.Names.Select(n => "{{secret:" + n + "}}")]);
         if (t == StepType.Browser && br == BrowserAction.Launch) FillProfileList();
 
         // Ô văn bản
@@ -1425,7 +1450,6 @@ internal sealed class StepEditorForm : BaseForm
         D365Action.OpenForm => "Form chính (tên hoặc Id,\ntrống = form mặc định):",
         D365Action.SubgridOpenRow or D365Action.SubgridGetValue => "Dòng (số thứ tự hoặc chữ\ncó trong dòng, trống = 1):",
         D365Action.ViewQuery or D365Action.ViewOpenRecord => "Tìm theo tên (tùy chọn,\nnhư ô tìm nhanh):",
-        D365Action.Login => "Khóa TOTP cho MFA (tùy chọn,\nnên dùng {{secret:Tên}}):",
         _ => null
     };
 
@@ -1625,11 +1649,43 @@ internal sealed class StepEditorForm : BaseForm
         D365Action.QuickCreate => "Mở form tạo nhanh, điền sẵn giá trị (mỗi dòng field=giá trị, giá trị gốc: số cho option set, bảng:guid cho lookup), " +
                                   "bấm \"Lưu và đóng\" rồi lấy Id bản ghi mới ({{d365.lastId}}, được ghi vào {{d365.created}} để dọn).",
         D365Action.Login => "Đăng nhập trang Microsoft bằng tài khoản test: email → mật khẩu → mã xác thực TOTP (nếu tài khoản có MFA bằng ứng dụng " +
-                            "xác thực) → duy trì đăng nhập. Đặt sau bước \"Mở trình duyệt\". Đã đăng nhập sẵn thì bỏ qua. Lưu mật khẩu và khóa TOTP trong " +
-                            "mục Bí mật. Không tự duyệt được thông báo đẩy (Authenticator push).",
+                            "xác thực) → duy trì đăng nhập. Đặt sau bước \"Mở trình duyệt\". Đã đăng nhập sẵn thì bỏ qua. Mật khẩu / khóa gõ thẳng được mã hóa, " +
+                            "chỉ máy và tài khoản Windows này dùng được — công việc sẽ xuất / chia sẻ thì lưu trong mục 🔑 Bí mật rồi dùng {{secret:Tên}}. " +
+                            "Chỉ điền vào trang https://login.microsoftonline.com (hoặc trang đăng nhập riêng khai báo trong ⚙ Cài đặt → Chung). " +
+                            "Không tự duyệt được thông báo đẩy (Authenticator push).",
         D365Action.GetUser => "Đọc người dùng đang đăng nhập: {{d365.user}}, {{d365.userId}}, {{d365.roles}} (mỗi dòng một vai trò).",
         _ => ""
     };
+
+    /// <summary>Hiện giá trị đã lưu của ô mật khẩu: {{secret:Tên}} hiện nguyên, mật khẩu (mã hóa hay chữ thường của bước cũ) thành ••••••••.</summary>
+    private static string Masked(string stored) => stored.Length == 0 ? "" : stored.Contains("{{") ? stored : Unchanged;
+
+    /// <summary>
+    /// Giá trị lưu vào bước: {{secret:Tên}} / {{biến}} giữ nguyên, mật khẩu gõ thẳng (và chữ thường của bước cũ) mã hóa DPAPI —
+    /// jobs.json, bản xuất, lịch sử phiên bản không còn mật khẩu chữ thường.
+    /// </summary>
+    private static string StoredSecret(string typed, string original, bool trim)
+    {
+        var value = typed == Unchanged ? original : trim ? typed.Trim() : typed;
+        if (value.Trim().Length == 0) return "";
+        if (value.Contains("{{")) return value.Trim();
+        return Protector.EnsureProtected(value);
+    }
+
+    /// <summary>Danh sách bí mật đã lưu — chọn để điền {{secret:Tên}} vào ô.</summary>
+    private void ShowSecretMenu(Button button, TextBox box)
+    {
+        var menu = new ContextMenuStrip();
+        foreach (var name in SecretStore.Names)
+        {
+            var value = "{{secret:" + name + "}}";
+            menu.Items.Add(value, null, (_, _) => box.Text = value);
+        }
+        if (menu.Items.Count == 0)
+            menu.Items.Add(new ToolStripMenuItem("Chưa có bí mật — thêm trong mục 🔑 Bí mật ở màn hình chính") { Enabled = false });
+        menu.Closed += (_, _) => BeginInvoke(menu.Dispose);
+        menu.Show(button, new Point(0, button.Height));
+    }
 
     private static void SetVisible(bool visible, params Control[] controls)
     {

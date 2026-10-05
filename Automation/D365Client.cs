@@ -623,6 +623,44 @@ internal static class D365Client
     /// <summary>Tab ưu tiên khi đăng nhập: trang đăng nhập Microsoft, rồi tới tab Dynamics 365.</summary>
     private static readonly string[] LoginTabs = ["login.microsoftonline.com", "login.live.com", "login.windows.net", "/adfs/ls", "main.aspx", ".dynamics.com", ".crm"];
 
+    /// <summary>Trang đăng nhập Microsoft được nhận mật khẩu / mã TOTP (đúng tên máy, qua https).</summary>
+    private static readonly string[] MicrosoftLoginHosts = ["login.microsoftonline.com", "login.microsoft.com"];
+
+    /// <summary>
+    /// Chỉ cho kiểm thử: origin (vd http://127.0.0.1:5000) của trang đăng nhập giả lập được coi là tin cậy. Mặc định rỗng —
+    /// không nới quy tắc https + tên máy cho người dùng.
+    /// </summary>
+    internal static List<string> TestLoginOrigins { get; } = [];
+
+    /// <summary>
+    /// Trang <paramref name="url"/> được nhận mật khẩu / mã TOTP không: https và tên máy đúng bằng login.microsoftonline.com,
+    /// login.microsoft.com hoặc một máy trong <paramref name="trustedHosts"/> (trang đăng nhập riêng của tổ chức — ADFS / SSO).
+    /// So khớp nguyên tên máy, không theo chuỗi con (login.microsoftonline.com.evil.vn, evil.vn/login.microsoftonline.com bị từ chối).
+    /// </summary>
+    internal static bool IsTrustedLoginPage(string url, IEnumerable<string> trustedHosts)
+    {
+        if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri)) return false;
+        var origin = uri.GetLeftPart(UriPartial.Authority);
+        lock (TestLoginOrigins)
+            if (TestLoginOrigins.Any(o => o.TrimEnd('/').Equals(origin, StringComparison.OrdinalIgnoreCase))) return true;
+        if (uri.Scheme != Uri.UriSchemeHttps || uri.UserInfo.Length > 0) return false;
+        return MicrosoftLoginHosts.Concat(trustedHosts.Select(HostOf)).Any(h => h.Length > 0 && uri.IdnHost.Equals(h, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Tên máy người dùng khai báo: "adfs.contoso.com" hoặc dán cả URL "https://adfs.contoso.com/adfs/ls".</summary>
+    private static string HostOf(string entry)
+    {
+        var e = (entry ?? "").Trim().TrimEnd('/');
+        if (e.Contains("://", StringComparison.Ordinal)) return Uri.TryCreate(e, UriKind.Absolute, out var u) ? u.IdnHost : "";
+        return e.Contains('/') || e.Contains(':') ? "" : e;
+    }
+
+    /// <summary>Mật khẩu / khóa TOTP lưu trong bước: đã mã hóa (dpapi:) thì giải mã; chữ thường (bước cũ, {{secret:…}} đã thay) giữ nguyên.</summary>
+    private static string StepSecret(string stored, string what) =>
+        Protector.TryUnprotect(stored, out var plain) ? plain
+            : throw new InvalidOperationException($"Không giải mã được {what} lưu trong bước Đăng nhập (công việc chép từ máy / tài khoản Windows khác) — " +
+                                                  "nhập lại trong bước, hoặc lưu trong 🔑 Bí mật rồi dùng {{secret:Tên}}.");
+
     /// <summary>Trạng thái trang đăng nhập (xem <see cref="LoginAsync"/>).</summary>
     private const string LoginProbe = """
         const vis = sel => { const e = document.querySelector(sel); return e && __visible(e) ? e : null; };
@@ -648,8 +686,10 @@ internal static class D365Client
     {
         var ct = ctx.Ct;
         var user = Required(s.Text, "tài khoản đăng nhập (email)");
-        var password = s.Arguments;
-        var totpSecret = s.RowRef.Trim();
+        var password = StepSecret(s.Arguments, "mật khẩu");
+        var totpSecret = StepSecret(s.RowRef, "khóa TOTP").Trim();
+        Log.Mask(password);
+        Log.Mask(totpSecret);
         if (totpSecret.Length > 0) Totp.DecodeBase32(totpSecret); // báo lỗi khóa sai ngay từ đầu
         var sw = Stopwatch.StartNew();
         string last = "";
@@ -697,8 +737,14 @@ internal static class D365Client
                 };
                 if (action != null)
                 {
-                    await EvalAsync(tab, Script(LoginActions + action + "\nreturn 'ok';"), ct);
-                    Log.Info($"      Đăng nhập: {LoginStepName(state)}");
+                    if (state is "password" or "otp")
+                    {
+                        // Chỉ điền mật khẩu / mã vào đúng trang đăng nhập tin cậy; trang đổi địa chỉ giữa chừng thì không điền.
+                        var origin = TrustedLoginOrigin(await EvalAsync(tab, Script("return location.href;"), ct));
+                        action = $"if (location.origin.toLowerCase() !== {Js(origin)}) return 'moved';\n" + action;
+                    }
+                    if (await EvalAsync(tab, Script(LoginActions + action + "\nreturn 'ok';"), ct) == "ok")
+                        Log.Info($"      Đăng nhập: {LoginStepName(state)}");
                 }
             }
             catch (InvalidOperationException ex) when (IsTransient(ex.Message))
@@ -711,6 +757,18 @@ internal static class D365Client
                                            "Trang đăng nhập của tổ chức có thể khác trang Microsoft chuẩn (ADFS, SSO riêng) — đăng nhập tay một lần trong hồ sơ trình duyệt.");
             await Task.Delay(state is "loading" || state.StartsWith("other", StringComparison.Ordinal) ? 500 : 1500, ct);
         }
+    }
+
+    /// <summary>Origin (scheme://máy[:cổng]) của trang đăng nhập tin cậy; trang khác → lỗi, không điền gì.</summary>
+    private static string TrustedLoginOrigin(string href)
+    {
+        if (!IsTrustedLoginPage(href, SettingsStore.Current.TrustedLoginHosts))
+        {
+            var shown = Uri.TryCreate(href, UriKind.Absolute, out var u) ? u.GetLeftPart(UriPartial.Authority) : href;
+            throw new InvalidOperationException($"Trang đang hỏi mật khẩu ({shown}) không phải trang đăng nhập Microsoft (https://login.microsoftonline.com) " +
+                                                "hay trang đăng nhập riêng đã khai báo trong ⚙ Cài đặt → Chung — không điền mật khẩu / mã xác thực.");
+        }
+        return new Uri(href.Trim()).GetLeftPart(UriPartial.Authority).ToLowerInvariant();
     }
 
     private static string LoginStepName(string state) => state switch

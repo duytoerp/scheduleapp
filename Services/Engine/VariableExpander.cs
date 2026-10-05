@@ -28,6 +28,26 @@ public sealed partial class VariableExpander(Dictionary<string, string> vars)
         return Placeholder().Replace(template, m => Resolve(m.Groups[1].Value.Trim()));
     }
 
+    [GeneratedRegex(@"\{\{\s*secret:([^{}\r\n]+?)\s*\}\}", RegexOptions.IgnoreCase)]
+    private static partial Regex SecretPlaceholder();
+
+    /// <summary>
+    /// Chỉ thay {{secret:Tên}} (lấy từ 🔑 Bí mật, che trong nhật ký) — cho biến của môi trường kiểm thử / dòng dữ liệu nạp sẵn trước khi chạy.
+    /// Không thay biến khác và không thay tiếp bên trong giá trị bí mật.
+    /// </summary>
+    public static string ExpandSecrets(string value)
+    {
+        if (string.IsNullOrEmpty(value) || !value.Contains("{{")) return value;
+        return SecretPlaceholder().Replace(value, m => ResolveSecret(m.Groups[1].Value.Trim()));
+    }
+
+    private static string ResolveSecret(string key)
+    {
+        var secret = SecretStore.Get(key) ?? throw new InvalidOperationException($"Chưa có bí mật \"{key}\" (thêm trong mục 🔑 Bí mật).");
+        Log.Mask(secret);
+        return secret;
+    }
+
     /// <summary>Tên biến có trong chuỗi (để kiểm tra / gợi ý).</summary>
     public static IEnumerable<string> Names(string template) =>
         Placeholder().Matches(template ?? "").Select(m => m.Groups[1].Value.Trim());
@@ -41,12 +61,7 @@ public sealed partial class VariableExpander(Dictionary<string, string> vars)
             catch (FormatException ex) { throw new InvalidOperationException(ex.Message, ex); }
         }
         if (name.StartsWith("secret:", StringComparison.OrdinalIgnoreCase))
-        {
-            var key = name[7..].Trim();
-            var secret = SecretStore.Get(key) ?? throw new InvalidOperationException($"Chưa có bí mật \"{key}\" (thêm trong mục 🔑 Bí mật).");
-            Log.Mask(secret);
-            return secret;
-        }
+            return ResolveSecret(name[7..].Trim());
         if (name.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
         {
             // {{env:USERPROFILE:cmd}} — phần sau dấu ':' thứ hai là định dạng.

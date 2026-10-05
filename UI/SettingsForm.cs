@@ -15,6 +15,7 @@ internal sealed class SettingsForm : BaseForm
     private readonly CheckBox _chkSafe = new() { Text = "Chế độ an toàn: tạm dừng flow và hỏi khi tôi dùng chuột/bàn phím trong lúc flow chạy", AutoSize = true };
     private readonly CheckBox _chkAwake = new() { Text = "Không cho máy ngủ / tắt màn hình khi flow đang chạy", AutoSize = true };
     private readonly CheckBox _chkOverlay = new() { Text = "Hiện khung trạng thái ở góc phải màn hình khi flow đang chạy", AutoSize = true };
+    private readonly TextBox _txtLoginHosts = new() { Width = 360, PlaceholderText = "vd adfs.contoso.com, sso.contoso.vn" };
 
     // Ngày nghỉ
     private readonly TextBox _txtHolidays = new() { Multiline = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, AcceptsReturn = true };
@@ -34,7 +35,7 @@ internal sealed class SettingsForm : BaseForm
     private readonly TextBox _txtTo = new() { Width = 380 };
     private readonly CheckBox _chkAttach = new() { Text = "Đính kèm ảnh chụp màn hình lỗi", AutoSize = true };
     private readonly CheckBox _chkWebhook = new() { Text = "Gửi tới webhook (Teams / Slack / Discord / Google Chat)", AutoSize = true };
-    private readonly TextBox _txtWebhook = new() { Width = 520 };
+    private readonly TextBox _txtWebhook = new() { Width = 520, UseSystemPasswordChar = true };
     private readonly CheckBox _chkTgCommands = new() { Text = "Nhận lệnh điều khiển từ chat này (/run, /stop, /status, /screenshot, /new tạo công việc bằng AI…)", AutoSize = true, Margin = new Padding(22, 3, 3, 3) };
     private readonly CheckBox _chkTgUnsafe = new()
     {
@@ -127,6 +128,9 @@ internal sealed class SettingsForm : BaseForm
         col.Controls.Add(Hint("Khi bật, nếu bạn click / gõ phím vào ứng dụng khác lúc flow đang chạy, flow tạm dừng trước bước kế tiếp và hỏi chạy tiếp hay dừng. " +
                               "Tránh việc flow gõ nhầm vào chỗ bạn đang làm."));
         col.Controls.Add(_chkAwake);
+        col.Controls.Add(Line(Caption("Trang đăng nhập riêng (ADFS / SSO):"), _txtLoginHosts));
+        col.Controls.Add(Hint("Bước \"Dynamics 365 → Đăng nhập Microsoft\" chỉ điền mật khẩu / mã xác thực vào https://login.microsoftonline.com " +
+                              "hoặc https://login.microsoft.com. Tổ chức đăng nhập qua trang riêng thì ghi tên máy của trang đó ở đây (cách nhau dấu phẩy, chỉ qua https)."));
         col.Controls.Add(Caption("Dòng lệnh:"));
         col.Controls.Add(Hint("ScheduleApp.exe --run \"Tên công việc\"   ·   ScheduleApp.exe --stop   ·   ScheduleApp.exe --minimized\n" +
                               "Chuột phải một công việc → \"Tạo shortcut trên Desktop\" để chạy bằng 1 cú nhấp đúp."));
@@ -358,10 +362,11 @@ internal sealed class SettingsForm : BaseForm
         col.Controls.Add(Hint("Gmail: smtp.gmail.com, cổng 587, SSL — dùng \"App password\" thay cho mật khẩu thường. Nhiều người nhận cách nhau dấu phẩy."));
 
         var testHook = new Button { Text = "Gửi thử", AutoSize = true };
-        testHook.Click += async (_, _) => await TestAsync("Webhook", () => NotificationService.SendWebhookAsync(new WebhookSettings { Url = _txtWebhook.Text }, "🔔 ScheduleApp", "Tin nhắn thử"));
+        testHook.Click += async (_, _) => await TestAsync("Webhook", () =>
+            NotificationService.SendWebhookAsync(new WebhookSettings { Url = Protector.Unprotect(ReadWebhook().Url) }, "🔔 ScheduleApp", "Tin nhắn thử"));
         col.Controls.Add(_chkWebhook);
         col.Controls.Add(Line(Caption("   URL:"), _txtWebhook, testHook));
-        col.Controls.Add(Hint("Mật khẩu và token được mã hóa bằng Windows DPAPI theo tài khoản của bạn. Chọn khi nào gửi trong tab \"Lỗi & thông báo\" của từng công việc."));
+        col.Controls.Add(Hint("Mật khẩu, token và URL webhook được mã hóa bằng Windows DPAPI theo tài khoản của bạn. Chọn khi nào gửi trong tab \"Lỗi & thông báo\" của từng công việc."));
         page.Controls.Add(col);
         return page;
     }
@@ -373,6 +378,7 @@ internal sealed class SettingsForm : BaseForm
         _chkSafe.Checked = _s.SafeMode;
         _chkAwake.Checked = _s.PreventSleepWhileRunning;
         _chkOverlay.Checked = _s.ShowRunOverlay;
+        _txtLoginHosts.Text = string.Join(", ", _s.TrustedLoginHosts);
         _txtHolidays.Text = string.Join(Environment.NewLine, _s.Holidays);
 
         _chkTelegram.Checked = _s.Telegram.Enabled;
@@ -391,7 +397,7 @@ internal sealed class SettingsForm : BaseForm
         _chkAttach.Checked = _s.Email.AttachScreenshot;
 
         _chkWebhook.Checked = _s.Webhook.Enabled;
-        _txtWebhook.Text = _s.Webhook.Url;
+        _txtWebhook.Text = _s.Webhook.Url.Length > 0 ? Unchanged : "";
         _chkTgCommands.Checked = _s.Telegram.AllowCommands;
         _chkTgUnsafe.Checked = _s.Telegram.RunWithoutApproval;
         UpdateTelegramWarning();
@@ -447,6 +453,12 @@ internal sealed class SettingsForm : BaseForm
         AttachScreenshot = _chkAttach.Checked
     };
 
+    private WebhookSettings ReadWebhook() => new()
+    {
+        Enabled = _chkWebhook.Checked,
+        Url = _txtWebhook.Text == Unchanged ? _s.Webhook.Url : Protector.Protect(_txtWebhook.Text.Trim())
+    };
+
     private async Task TestAsync(string channel, Func<Task> send, bool silent = false)
     {
         UseWaitCursor = true;
@@ -482,10 +494,12 @@ internal sealed class SettingsForm : BaseForm
         _s.SafeMode = _chkSafe.Checked;
         _s.PreventSleepWhileRunning = _chkAwake.Checked;
         _s.ShowRunOverlay = _chkOverlay.Checked;
+        _s.TrustedLoginHosts = [.. _txtLoginHosts.Text.Split([',', ';', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase)];
         _s.Holidays = holidays;
         _s.Telegram = ReadTelegram();
         _s.Email = ReadEmail();
-        _s.Webhook = new WebhookSettings { Enabled = _chkWebhook.Checked, Url = _txtWebhook.Text.Trim() };
+        _s.Webhook = ReadWebhook();
         _s.Update = ReadUpdate();
         _s.Ai = ReadAi();
         _s.Inbox = ReadInbox();

@@ -94,7 +94,7 @@ internal sealed class ApiConnectionForm : BaseForm
         _txtTenant.Text = connection.TenantId;
         _txtScope.Text = connection.Scope;
         _txtTokenUrl.Text = connection.TokenUrl;
-        _txtHeaders.Text = connection.Headers.Replace("\r\n", "\n").Replace("\n", Environment.NewLine);
+        _txtHeaders.Text = Protector.Unprotect(connection.Headers).Replace("\r\n", "\n").Replace("\n", Environment.NewLine);
         _cboAuth.SelectedIndexChanged += (_, _) => UpdateUi();
         UpdateUi();
     }
@@ -133,7 +133,7 @@ internal sealed class ApiConnectionForm : BaseForm
                 "— scope tự lấy là https://contoso.crm5.dynamics.com/.default. Microsoft Graph: URL gốc https://graph.microsoft.com/v1.0/ .",
             ApiAuthType.Windows => "Dùng tài khoản Windows đang đăng nhập — phù hợp Dynamics 365 on-premises, SharePoint / API nội bộ trong domain.",
             _ => "Bước \"Gọi API\" chọn kết nối này rồi chỉ cần nhập phần sau URL gốc, vd accounts?$select=name&$top=5. " +
-                 "Mật khẩu / token / secret được mã hóa bằng Windows DPAPI."
+                 "Mật khẩu / token / secret và header mặc định được mã hóa bằng Windows DPAPI."
         };
     }
 
@@ -156,7 +156,8 @@ internal sealed class ApiConnectionForm : BaseForm
         TenantId = _txtTenant.Visible ? _txtTenant.Text.Trim() : "",
         Scope = _txtScope.Visible ? _txtScope.Text.Trim() : "",
         TokenUrl = _txtTokenUrl.Visible ? _txtTokenUrl.Text.Trim() : "",
-        Headers = _txtHeaders.Text.Replace("\r\n", "\n").Trim()
+        // Header thường chứa khóa / token → lưu cả chuỗi đã mã hóa.
+        Headers = Protector.Protect(_txtHeaders.Text.Replace("\r\n", "\n").Trim())
     };
 
     private string? Validate(ApiConnection c)
@@ -164,7 +165,7 @@ internal sealed class ApiConnectionForm : BaseForm
         if (c.Name.Length == 0) return "Hãy nhập tên kết nối.";
         if (_otherNames.Contains(c.Name, StringComparer.CurrentCultureIgnoreCase)) return $"Đã có kết nối tên \"{c.Name}\".";
         if (c.BaseUrl.Length > 0 && !Uri.TryCreate(c.BaseUrl, UriKind.Absolute, out _)) return "URL gốc không hợp lệ (cần dạng https://…).";
-        try { _ = ApiClient.ParseHeaders(c.Headers).ToList(); }
+        try { _ = ApiClient.ParseHeaders(Protector.Unprotect(c.Headers)).ToList(); }
         catch (FormatException ex) { return ex.Message; }
         if (c.Auth == ApiAuthType.EntraId && (c.TenantId.Length == 0 || c.User.Length == 0)) return "Hãy nhập Tenant ID và Client ID.";
         if (c.Auth == ApiAuthType.OAuthClientCredentials && (c.TokenUrl.Length == 0 || c.User.Length == 0)) return "Hãy nhập URL lấy token và Client ID.";
