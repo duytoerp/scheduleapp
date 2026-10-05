@@ -3,8 +3,14 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace ScheduleApp.Native;
 
-/// <summary>Kết quả kiểm chữ ký số Authenticode nhúng trong file exe/dll.</summary>
-internal sealed record SignatureInfo(bool Valid, string Thumbprint, string Subject, string Error);
+/// <summary>
+/// Kết quả kiểm chữ ký số Authenticode nhúng trong file exe/dll. <see cref="HasSignature"/>: file có chữ ký nhúng (kể cả chữ ký đã hết hạn,
+/// chứng chỉ không còn được tin cậy, file bị sửa sau khi ký) — khác với file chưa từng được ký.
+/// </summary>
+internal sealed record SignatureInfo(bool Valid, string Thumbprint, string Subject, string Error)
+{
+    public bool HasSignature { get; init; } = Valid;
+}
 
 /// <summary>
 /// Kiểm chữ ký số Authenticode nhúng trong file bằng WinVerifyTrust (không kiểm thu hồi chứng chỉ → không cần mạng).
@@ -76,7 +82,13 @@ internal static class Authenticode
             int result = WinVerifyTrust(new IntPtr(-1), ref action, ref data);
             data.dwStateAction = WTD_STATEACTION_CLOSE;
             WinVerifyTrust(new IntPtr(-1), ref action, ref data);
-            if (result != 0) return new SignatureInfo(false, "", "", Describe(result));
+            if (result == TRUST_E_NOSIGNATURE) return new SignatureInfo(false, "", "", Describe(result));
+            if (result != 0)
+            {
+                // Có chữ ký nhưng không hợp lệ (hết hạn, không được tin cậy, file bị sửa…) — vẫn đọc người ký để báo lỗi rõ.
+                var (thumb, subject) = Signer(file);
+                return new SignatureInfo(false, thumb, subject, Describe(result)) { HasSignature = true };
+            }
 
             // Chữ ký đã được WinVerifyTrust xác nhận — đọc chứng chỉ người ký để so sánh giữa hai bản.
 #pragma warning disable SYSLIB0057 // chỉ đọc chứng chỉ người ký trong chữ ký Authenticode, không có API thay thế
@@ -93,6 +105,19 @@ internal static class Authenticode
             Marshal.FreeHGlobal(fileInfo);
             Marshal.FreeHGlobal(path);
         }
+    }
+
+    /// <summary>Người ký trong chữ ký nhúng (rỗng nếu không đọc được).</summary>
+    private static (string Thumbprint, string Subject) Signer(string file)
+    {
+        try
+        {
+#pragma warning disable SYSLIB0057
+            using var cert = new X509Certificate2(X509Certificate.CreateFromSignedFile(file));
+#pragma warning restore SYSLIB0057
+            return (cert.Thumbprint, cert.Subject);
+        }
+        catch (System.Security.Cryptography.CryptographicException) { return ("", ""); }
     }
 
     private static string Describe(int hr) => hr switch

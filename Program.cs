@@ -40,6 +40,7 @@ internal static class Program
         if (!isFirstInstance)
         {
             // Đã có một phiên bản đang chạy → chuyển lệnh cho nó rồi thoát.
+            UpdateService.NoteSecondInstance(); // do script cập nhật mở → không coi là bản mới hỏng
             var command = runJob != null ? "run " + runJob : stop ? "stop" : "show";
             if (!CommandServer.Send(command))
                 MessageBox.Show("ScheduleApp đang chạy nhưng không nhận được lệnh. Hãy thử lại.", "ScheduleApp",

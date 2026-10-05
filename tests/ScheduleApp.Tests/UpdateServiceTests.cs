@@ -385,12 +385,12 @@ public class UpdateServiceTests : IDisposable
         File.Copy(SignedDotNet, sameCert);
         var (signed, text) = UpdateService.CheckSignature(SignedDotNet, sameCert);
         Assert.True(signed);
-        Assert.Contains("cùng chứng chỉ", text);
+        Assert.Contains("cùng người ký", text);
 
         var otherCert = Path.Combine(dir, "khac.exe");
         File.Copy(SignedOther, otherCert);
         var ex = Assert.Throws<InvalidOperationException>(() => UpdateService.CheckSignature(SignedDotNet, otherCert));
-        Assert.Contains("chứng chỉ khác", ex.Message);
+        Assert.Contains("ký bởi người khác", ex.Message);
 
         var unsignedCopy = Path.Combine(dir, "chua-ky.exe");
         File.Copy(UnsignedApp, unsignedCopy);
@@ -402,6 +402,15 @@ public class UpdateServiceTests : IDisposable
         bytes[bytes.Length / 2] ^= 0xFF;
         File.WriteAllBytes(tampered, bytes);
         Assert.Throws<InvalidOperationException>(() => UpdateService.CheckSignature(SignedDotNet, tampered));
+
+        // Chữ ký của bản đang chạy không còn hợp lệ (hết hạn, bị sửa…) vẫn là "đã ký" → không được lùi về chỉ kiểm SHA-256.
+        var running = Authenticode.Inspect(tampered);
+        Assert.True(running.HasSignature);
+        Assert.False(running.Valid);
+        ex = Assert.Throws<InvalidOperationException>(() => UpdateService.CheckSignature(tampered, unsignedCopy));
+        Assert.Contains("không có chữ ký số", ex.Message);
+        Assert.True(UpdateService.CheckSignature(tampered, sameCert).Signed);
+        Assert.False(Authenticode.Inspect(UnsignedApp).HasSignature);
 
         // Bản đang chạy chưa ký → chỉ dựa vào SHA-256, không chặn.
         (signed, text) = UpdateService.CheckSignature(UnsignedApp, unsignedCopy);
@@ -442,7 +451,8 @@ public class UpdateServiceTests : IDisposable
     /// <summary>Hộp cát: thư mục cài (tên có dấu + ngoặc), bản cũ, thư mục tải về chứa bản mới, script — rồi chạy script thật.</summary>
     private sealed record Sandbox(string Target, string OldBytesFrom, string DownloadDir, string NewExe, string Marker, string Script);
 
-    private static Sandbox MakeSandbox(string appName, string oldExe, string newExe, int healthSeconds, string launchArgs, int waitPid)
+    private static Sandbox MakeSandbox(string appName, string oldExe, string newExe, int healthSeconds, string launchArgs, int waitPid,
+        IReadOnlyList<(string Backup, string Original)>? restore = null)
     {
         var dir = Path.Combine(NewDir(), "Thư mục cài (x86)");
         Directory.CreateDirectory(dir);
@@ -455,7 +465,8 @@ public class UpdateServiceTests : IDisposable
         var marker = Path.Combine(download, "started.ok");
         var script = Path.Combine(download, "update.cmd");
         File.WriteAllText(script, UpdateService.BuildUpdateScript(fresh, target, waitPid, restart: true, markerPath: marker,
-            healthSeconds: healthSeconds, cleanupDir: download, newVersion: "2.9.0", launchArgs: launchArgs.Replace("{marker}", marker)), new UTF8Encoding(false));
+            healthSeconds: healthSeconds, cleanupDir: download, newVersion: "2.9.0", launchArgs: launchArgs.Replace("{marker}", marker),
+            restoreOnRollback: restore), new UTF8Encoding(false));
         return new Sandbox(target, oldExe, download, fresh, marker, script);
     }
 
@@ -495,6 +506,80 @@ public class UpdateServiceTests : IDisposable
         Assert.Contains("đã thoát ngay khi mở", note);
         Assert.Contains("đã quay về bản cũ", note);
         Assert.Null(UpdateService.TakeRollbackNote(s.Target)); // chỉ báo một lần
+    }
+
+    [Fact]
+    public async Task RollbackRestoresDataAndSkipsTheFailedVersion()
+    {
+        // Bản mới đã kịp đổi dữ liệu (vd mã hóa thêm trường) rồi mới hỏng → quay về bản cũ phải trả lại dữ liệu bản cũ đọc được.
+        var data = Path.Combine(NewDir(), "settings.json");
+        File.WriteAllText(data, "{\"cu\":1}");
+        var backup = Path.Combine(NewDir(), "settings.json");
+        File.Copy(data, backup);
+        using var app = OldApp();
+        var s = MakeSandbox("UngDungThuD", Hostname, UpdateService.SystemCmd, healthSeconds: 30,
+            launchArgs: $"/d /c copy /y nul \"{data}\"", app.Id, restore: [(backup, data)]);
+        using var run = RunScript(s);
+        await run.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(60));
+
+        Assert.Equal(File.ReadAllBytes(Hostname), File.ReadAllBytes(s.Target));
+        Assert.Equal("{\"cu\":1}", File.ReadAllText(data));
+        Assert.NotNull(UpdateService.TakeRollbackNote(s.Target, out var failed));
+        Assert.Equal("2.9.0", failed);   // → bỏ qua bản này, không mời cập nhật lại
+    }
+
+    [Fact]
+    public async Task HungBeforeWritingPidIsStoppedByPath()
+    {
+        // Bản mới treo trước khi tới Main (vd hộp thoại "cần cài .NET") nên không có started.ok.pid → script dừng theo đường dẫn file.
+        const string name = "UngDungThuG";
+        using var app = OldApp();
+        var s = MakeSandbox(name, Hostname, UpdateService.SystemCmd, healthSeconds: 4, launchArgs: "/d /c \"for /l %%i in (0,0,1) do @rem\"", app.Id);
+        try
+        {
+            using var run = RunScript(s);
+            await run.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(90));
+            Assert.DoesNotContain(Process.GetProcessesByName(name), p => { using (p) return !p.HasExited; });
+            Assert.Equal(File.ReadAllBytes(Hostname), File.ReadAllBytes(s.Target));
+            Assert.Contains("không báo khởi động xong", UpdateService.TakeRollbackNote(s.Target));
+        }
+        finally
+        {
+            KillByName(name);
+        }
+    }
+
+    [Fact]
+    public async Task SecondInstanceDuringSwapIsNotAFailure()
+    {
+        // Người dùng mở ScheduleApp đúng lúc đang thay file: bản mới gặp khóa chạy một phiên bản, báo ".second" rồi thoát → giữ bản mới.
+        using var app = OldApp();
+        var s = MakeSandbox("UngDungThuE", Hostname, UpdateService.SystemCmd, healthSeconds: 30,
+            launchArgs: "/d /c copy /y nul \"{marker}" + UpdateService.SecondInstanceSuffix + "\"", app.Id);
+        using var run = RunScript(s);
+        await run.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(60));
+
+        Assert.Equal(File.ReadAllBytes(UpdateService.SystemCmd), File.ReadAllBytes(s.Target));
+        Assert.False(File.Exists(s.Target + ".old"));
+        Assert.Null(UpdateService.TakeRollbackNote(s.Target));
+    }
+
+    [Fact]
+    public async Task LockedTargetKeepsOldVersionAndLeavesANote()
+    {
+        using var app = OldApp();
+        var s = MakeSandbox("UngDungThuF", Hostname, UpdateService.SystemCmd, healthSeconds: 30, launchArgs: "/d /c exit 0", app.Id);
+        string? note, failed;
+        // Mở file không cho xóa / đổi tên (như phần mềm diệt virus đang quét) → script không thay được.
+        using (new FileStream(s.Target, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            using var run = RunScript(s);
+            await run.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(60));
+        }
+        Assert.Equal(File.ReadAllBytes(Hostname), File.ReadAllBytes(s.Target));
+        note = UpdateService.TakeRollbackNote(s.Target, out failed);
+        Assert.Contains("Không thay được file", note);
+        Assert.Null(failed);              // không phải lỗi của bản mới → không bỏ qua bản này
     }
 
     [Fact]

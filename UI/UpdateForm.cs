@@ -15,6 +15,8 @@ internal sealed class UpdateForm : BaseForm
     /// <summary>Đã tải xong và chạy script cập nhật — nơi gọi phải thoát ứng dụng.</summary>
     public bool ExitRequested { get; private set; }
 
+    private bool _updating;
+
     public UpdateForm(UpdateInfo info)
     {
         _info = info;
@@ -82,10 +84,19 @@ internal sealed class UpdateForm : BaseForm
         };
     }
 
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        // Đang tải / kiểm tra / thay file: đóng cửa sổ (nút X, Alt+F4) không hủy được việc đang chạy và bản mới vẫn được cài
+        // lúc thoát app — nên không cho đóng tới khi xong (lỗi thì các nút được bật lại).
+        if (_updating && e.CloseReason == CloseReason.UserClosing && !ExitRequested) e.Cancel = true;
+        base.OnFormClosing(e);
+    }
+
     private async Task UpdateAsync()
     {
         _btnUpdate.Enabled = _btnSkip.Enabled = _btnLater.Enabled = false;
         _progress.Visible = true;
+        _updating = true;
         try
         {
             var progress = new Progress<int>(p => _progress.Value = Math.Clamp(p, 0, 100));
@@ -108,6 +119,10 @@ internal sealed class UpdateForm : BaseForm
             MessageBox.Show(this, "Cập nhật không thành công:\n" + UpdateService.Explain(ex), Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
             _btnUpdate.Enabled = _btnSkip.Enabled = _btnLater.Enabled = true;
             _progress.Visible = false;
+        }
+        finally
+        {
+            _updating = false;
         }
     }
 }

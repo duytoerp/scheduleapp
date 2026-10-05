@@ -21,6 +21,8 @@ jobs:
       - name: Test
         run: dotnet test ScheduleApp.slnx -c Release --nologo
 
+      # Chưa ký số exe / bộ cài: máy khách chỉ kiểm SHA-256 + phiên bản. Khi bắt đầu ký (signtool sau bước Publish, trước khi tính SHA-256),
+      # phải ký mọi bản về sau bằng chứng chỉ cùng Subject — bản đã ký sẽ từ chối bản mới chưa ký hoặc ký bởi người khác (gia hạn chứng chỉ thì được).
       - name: Publish
         shell: pwsh
         run: |

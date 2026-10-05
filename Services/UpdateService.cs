@@ -20,7 +20,7 @@ public sealed record UpdateDownload(string File, string Directory, Version Versi
 /// "github:chủ/repo" (GitHub Releases, repo riêng tư cần token), URL https tới version.json, hoặc thư mục dùng chung chứa version.json.
 /// version.json: {"version":"2.1.0","url":"ScheduleApp.exe","notes":"…","sha256":"…"} — url tương đối tính theo vị trí version.json.
 /// An toàn: bắt buộc có SHA-256, nguồn qua mạng chỉ dùng https, file tải về phải đúng phiên bản đã báo và mới hơn bản đang chạy,
-/// bản đang chạy có chữ ký số thì bản mới phải cùng chứng chỉ; bản mới không khởi động được thì script tự quay về bản cũ.
+/// bản đang chạy có chữ ký số thì bản mới phải cùng người ký; bản mới không khởi động được thì script tự quay về bản cũ (cả dữ liệu).
 /// </summary>
 public static class UpdateService
 {
@@ -32,6 +32,9 @@ public static class UpdateService
 
     /// <summary>Đuôi file ghi chú script để lại cạnh ScheduleApp.exe khi phải quay về bản cũ.</summary>
     internal const string RollbackNoteSuffix = ".update-failed.txt";
+
+    /// <summary>Đuôi file bản mới để lại khi mở lên mà đã có ScheduleApp khác giữ khóa chạy một phiên bản.</summary>
+    internal const string SecondInstanceSuffix = ".second";
 
     /// <summary>HttpClient dùng chung (kiểm thử thay bằng client tin chứng chỉ của máy chủ https cục bộ).</summary>
     internal static HttpClient Http { get; set; } = new() { Timeout = TimeSpan.FromMinutes(10) };
@@ -286,23 +289,24 @@ public static class UpdateService
     }
 
     /// <summary>
-    /// Chữ ký số Authenticode: bản đang chạy có chữ ký hợp lệ thì bản mới cũng phải có chữ ký hợp lệ của đúng chứng chỉ đó (cùng thumbprint);
-    /// bản đang chạy chưa ký thì chỉ dựa vào SHA-256 (ghi nhật ký). Trả về (bản mới có chữ ký hợp lệ?, mô tả cho người dùng).
+    /// Chữ ký số Authenticode: bản đang chạy có chữ ký nhúng (kể cả chữ ký nay đã hết hạn / không còn được tin cậy) thì bản mới phải có
+    /// chữ ký hợp lệ của cùng người ký (cùng Subject — gia hạn chứng chỉ đổi thumbprint nhưng giữ Subject); bản đang chạy chưa từng ký
+    /// thì chỉ dựa vào SHA-256 (ghi nhật ký). Trả về (bản mới có chữ ký hợp lệ?, mô tả cho người dùng).
     /// </summary>
     internal static (bool Signed, string Text) CheckSignature(string? runningExe, string newExe)
     {
         var running = runningExe != null ? Authenticode.Inspect(runningExe) : new SignatureInfo(false, "", "", "không rõ file đang chạy");
         var fresh = Authenticode.Inspect(newExe);
-        if (!running.Valid)
+        if (!running.HasSignature)
         {
             Log.Info("Bản đang chạy chưa ký số — chỉ kiểm SHA-256.");
             return (fresh.Valid, fresh.Valid ? $"bản mới có chữ ký số ({ShortName(fresh.Subject)}); bản đang chạy chưa ký số — chỉ kiểm SHA-256" : "chưa ký số — chỉ kiểm SHA-256");
         }
         if (!fresh.Valid)
             throw new InvalidOperationException($"Bản đang chạy có chữ ký số nhưng file tải về {fresh.Error} — đã hủy cập nhật.");
-        if (!fresh.Thumbprint.Equals(running.Thumbprint, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException($"File tải về được ký bởi chứng chỉ khác ({ShortName(fresh.Subject)}) với bản đang chạy ({ShortName(running.Subject)}) — đã hủy cập nhật.");
-        return (true, $"hợp lệ, cùng chứng chỉ với bản đang chạy ({ShortName(fresh.Subject)})");
+        if (running.Subject.Length == 0 || !fresh.Subject.Equals(running.Subject, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"File tải về được ký bởi người khác ({ShortName(fresh.Subject)}) với bản đang chạy ({ShortName(running.Subject)}) — đã hủy cập nhật.");
+        return (true, $"hợp lệ, cùng người ký với bản đang chạy ({ShortName(fresh.Subject)})");
     }
 
     /// <summary>"CN=Tên, O=…" → "Tên".</summary>
@@ -338,10 +342,37 @@ public static class UpdateService
         var script = Path.Combine(download.Directory, "update.cmd");
         var marker = Path.Combine(download.Directory, "started.ok");
         File.WriteAllText(script, BuildUpdateScript(download.File, Environment.ProcessPath!, Environment.ProcessId, restart: true,
-            markerPath: marker, cleanupDir: download.Directory, newVersion: download.Version.ToString()), new UTF8Encoding(false));
+            markerPath: marker, cleanupDir: download.Directory, newVersion: download.Version.ToString(),
+            restoreOnRollback: BackupData(Path.Combine(download.Directory, "du-lieu-truoc-cap-nhat"))), new UTF8Encoding(false));
         // Đường dẫn đầy đủ tới cmd của Windows (không phụ thuộc PATH / thư mục hiện tại); /d: bỏ qua AutoRun trong registry.
         Process.Start(new ProcessStartInfo(SystemCmd, $"/d /c \"{script}\"") { CreateNoWindow = true, UseShellExecute = false, WorkingDirectory = Path.GetTempPath() });
         Log.Info($"Đang cập nhật lên bản {download.Version} (SHA-256 {download.Sha256[..12]}…, chữ ký số: {download.Signature}) — ScheduleApp sẽ tự mở lại.");
+    }
+
+    /// <summary>
+    /// Chép công việc / cài đặt / bí mật sang <paramref name="backupDir"/> trước khi thay file: bản mới có thể đổi định dạng dữ liệu
+    /// (vd mã hóa thêm trường) ngay lúc mở rồi mới hỏng — quay về bản cũ thì script chép trả lại để bản cũ đọc được.
+    /// </summary>
+    internal static List<(string Backup, string Original)> BackupData(string backupDir)
+    {
+        var pairs = new List<(string, string)>();
+        foreach (var name in new[] { "jobs.json", "settings.json", "secrets.json" })
+        {
+            var original = Path.Combine(JobStore.DataDir, name);
+            try
+            {
+                if (!File.Exists(original)) continue;
+                Directory.CreateDirectory(backupDir);
+                var backup = Path.Combine(backupDir, name);
+                File.Copy(original, backup, overwrite: true);
+                pairs.Add((backup, original));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Log.Warn($"Không sao lưu được {name} trước khi cập nhật: {ex.Message}");
+            }
+        }
+        return pairs;
     }
 
     /// <summary>%SystemRoot%\System32\cmd.exe.</summary>
@@ -354,7 +385,8 @@ public static class UpdateService
     /// file ghi chú <see cref="RollbackNoteSuffix"/> cho bản cũ báo. <paramref name="launchArgs"/>: tham số cho bản mới (chỉ dùng khi kiểm thử).
     /// </summary>
     internal static string BuildUpdateScript(string newExe, string targetExe, int waitPid, bool restart, string? markerPath = null,
-        int healthSeconds = HealthWaitSeconds, string? cleanupDir = null, string newVersion = "", string launchArgs = "")
+        int healthSeconds = HealthWaitSeconds, string? cleanupDir = null, string newVersion = "", string launchArgs = "",
+        IReadOnlyList<(string Backup, string Original)>? restoreOnRollback = null)
     {
         // Trong file .cmd "%" phải viết "%%" — đường dẫn có ký tự % vẫn đúng.
         static string Q(string path) => "\"" + path.Replace("%", "%%") + "\"";
@@ -373,14 +405,16 @@ public static class UpdateService
         sb.AppendLine($"move /y {Q(newExe)} {target} >nul || (move /y {old} {target} >nul & goto keep)");
         if (restart && markerPath != null)
         {
-            string marker = Q(markerPath), pid = Q(markerPath + ".pid");
+            string marker = Q(markerPath), pid = Q(markerPath + ".pid"), second = Q(markerPath + SecondInstanceSuffix);
             sb.AppendLine($"set \"{MarkerVariable}={markerPath.Replace("%", "%%")}\"");
-            sb.AppendLine($"del /f /q {marker} {pid} 2>nul");
+            sb.AppendLine($"del /f /q {marker} {pid} {second} 2>nul");
             sb.AppendLine($"start \"\" /b {target}{(launchArgs.Length > 0 ? " " + launchArgs : "")}");
             sb.AppendLine($"set \"{MarkerVariable}=\"");
             sb.AppendLine("set /a N=0");
             sb.AppendLine(":health");
             sb.AppendLine($"if exist {marker} goto healthy");
+            // Một ScheduleApp khác (người dùng vừa mở) đã giữ khóa chạy một phiên bản: bản mới tới được Main rồi nhường → không phải lỗi.
+            sb.AppendLine($"if exist {second} goto healthy");
             // File exe đang chạy thì không mở để ghi được: mở được = bản mới đã thoát (xem lại file đánh dấu phòng khi vừa ghi rồi mới thoát).
             sb.AppendLine($"2>nul (>>{target} (call )) && (if exist {marker} (goto healthy) else (set REASON=exited& goto rollback))");
             sb.AppendLine("set /a N+=1");
@@ -389,8 +423,14 @@ public static class UpdateService
             sb.AppendLine("goto health");
             sb.AppendLine(":rollback");
             sb.AppendLine($"if exist {marker} goto healthy");
+            sb.AppendLine($"if exist {second} goto healthy");
             // Bản mới còn chạy nhưng không báo khởi động xong (treo) → dừng theo PID nó tự ghi lúc mở.
             sb.AppendLine($"if \"%REASON%\"==\"timeout\" if exist {pid} for /f \"usebackq delims=\" %%p in ({pid}) do \"%SYS%\\taskkill.exe\" /PID %%p /F >nul 2>nul");
+            // Treo trước khi tới Main (chưa ghi PID — vd hộp thoại "cần cài .NET") → dừng theo đúng đường dẫn file (không đụng bản cài ở chỗ khác).
+            string psPath = targetExe.Replace("'", "''").Replace("%", "%%");
+            string psName = Path.GetFileNameWithoutExtension(targetExe).Replace("'", "''").Replace("%", "%%");
+            sb.AppendLine($"if \"%REASON%\"==\"timeout\" if not exist {pid} \"%SYS%\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -NonInteractive -Command " +
+                          $"\"Get-Process -Name '{psName}' -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -eq '{psPath}' }} | Stop-Process -Force\" >nul 2>nul");
             sb.AppendLine($"if not exist {old} (start \"\" /b {target} & goto end)");
             // Đổi tên được cả khi file còn bị khóa; chờ bản mới thoát hẳn (tối đa ~10 giây) để bản cũ mở lên không gặp khóa chạy một phiên bản.
             sb.AppendLine($"move /y {target} {failed} >nul");
@@ -402,6 +442,8 @@ public static class UpdateService
             sb.AppendLine("if %K% LSS 10 (\"%SYS%\\PING.EXE\" -n 2 127.0.0.1 >nul & goto stopped)");
             sb.AppendLine(":unlocked");
             sb.AppendLine($"del /f /q {failed} 2>nul");
+            foreach (var (backup, original) in restoreOnRollback ?? [])
+                sb.AppendLine($"copy /y {Q(backup)} {Q(original)} >nul 2>nul");
             sb.AppendLine($">{Q(targetExe + RollbackNoteSuffix)} echo {newVersion.Replace("%", "%%")} %REASON%");
             sb.AppendLine($"start \"\" /b {target}");
             sb.AppendLine("goto end");
@@ -415,9 +457,11 @@ public static class UpdateService
             sb.AppendLine("goto end");
         }
         sb.AppendLine(":keep");
+        // Không thay được file (vd phần mềm diệt virus đang giữ) → vẫn mở bản cũ, để lại ghi chú để bản cũ báo cho người dùng.
+        if (restart && markerPath != null) sb.AppendLine($">{Q(targetExe + RollbackNoteSuffix)} echo {newVersion.Replace("%", "%%")} locked");
         if (restart) sb.AppendLine($"start \"\" {target}");
         sb.AppendLine(":end");
-        if (markerPath != null) sb.AppendLine($"del /f /q {Q(markerPath)} {Q(markerPath + ".pid")} 2>nul");
+        if (markerPath != null) sb.AppendLine($"del /f /q {Q(markerPath)} {Q(markerPath + ".pid")} {Q(markerPath + SecondInstanceSuffix)} 2>nul");
         if (cleanupDir != null) sb.AppendLine($"cd /d \"%TEMP%\" & rd /s /q {Q(cleanupDir)} 2>nul");
         sb.AppendLine("del \"%~f0\"");
         return sb.ToString();
@@ -434,6 +478,18 @@ public static class UpdateService
         Environment.SetEnvironmentVariable(MarkerVariable, null);
         _healthMarker = marker;
         try { File.WriteAllText(marker + ".pid", Environment.ProcessId.ToString()); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
+
+    /// <summary>
+    /// Gọi khi không phải phiên bản đầu tiên (đã có ScheduleApp khác đang chạy): nếu do script cập nhật mở thì báo cho script biết
+    /// bản mới đã chạy được tới đây nhưng nhường cho phiên bản đang mở — không quay về bản cũ.
+    /// </summary>
+    public static void NoteSecondInstance()
+    {
+        var marker = Environment.GetEnvironmentVariable(MarkerVariable);
+        if (string.IsNullOrWhiteSpace(marker)) return;
+        try { File.WriteAllText(marker + SecondInstanceSuffix, Environment.ProcessId.ToString()); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
@@ -459,11 +515,27 @@ public static class UpdateService
         CleanupOldVersion();
     }
 
-    /// <summary>Lần cập nhật trước phải quay về bản cũ → câu thông báo (một lần, xóa file ghi chú); không có thì null.</summary>
-    public static string? TakeRollbackNote() => Environment.ProcessPath is { } exe ? TakeRollbackNote(exe) : null;
-
-    internal static string? TakeRollbackNote(string exe)
+    /// <summary>
+    /// Lần cập nhật trước không thành công → câu thông báo (một lần, xóa file ghi chú); không có thì null.
+    /// Bản mới không khởi động được thì bỏ qua bản đó (không mời cập nhật lại đúng bản vừa hỏng).
+    /// </summary>
+    public static string? TakeRollbackNote()
     {
+        if (Environment.ProcessPath is not { } exe || TakeRollbackNote(exe, out var failed) is not { } note) return null;
+        if (failed != null)
+        {
+            SettingsStore.Current.Update.SkippedVersion = failed;
+            SettingsStore.Save();
+        }
+        return note;
+    }
+
+    internal static string? TakeRollbackNote(string exe) => TakeRollbackNote(exe, out _);
+
+    /// <param name="failedVersion">Bản mới không khởi động được (null nếu chỉ là không thay được file).</param>
+    internal static string? TakeRollbackNote(string exe, out string? failedVersion)
+    {
+        failedVersion = null;
         var path = exe + RollbackNoteSuffix;
         try
         {
@@ -471,10 +543,15 @@ public static class UpdateService
             var parts = File.ReadAllText(path).Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
             File.Delete(path);
             string version = parts.Length > 1 ? parts[0] + " " : "";
-            string reason = parts.LastOrDefault() == "timeout"
+            string kind = parts.LastOrDefault() ?? "";
+            if (kind == "locked")
+                return $"Không thay được file ScheduleApp.exe để cập nhật lên bản {version}(file đang bị chương trình khác giữ, vd phần mềm diệt virus) — " +
+                       $"vẫn dùng bản {Current}. Hãy thử cập nhật lại sau.";
+            if (parts.Length > 1) failedVersion = parts[0];
+            string reason = kind == "timeout"
                 ? $"không báo khởi động xong sau {HealthWaitSeconds} giây"
                 : "đã thoát ngay khi mở";
-            return $"Bản mới {version}không khởi động được ({reason}) — đã quay về bản cũ {Current}. Chi tiết lỗi (nếu có) nằm trong thư mục log.";
+            return $"Bản mới {version}không khởi động được ({reason}) — đã quay về bản cũ {Current} và bỏ qua bản này. Chi tiết lỗi (nếu có) nằm trong thư mục log.";
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
