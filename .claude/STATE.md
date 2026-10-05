@@ -3,13 +3,16 @@
 > Cập nhật mỗi khi bắt đầu / xong một việc. Trưởng nhóm (phiên chính) giữ các mục chung; mỗi agent chỉ sửa đúng dòng của mình trong bảng "Agent".
 > Trạng thái: ⏳ đang làm · ✅ xong · ⛔ bị chặn · 💤 chờ người dùng
 
-**Cập nhật lần cuối:** 2026-10-04 · phiên chính (chọn màn hình phát video)
+**Cập nhật lần cuối:** 2026-10-05 · phiên `scheduleapp-0d` (dừng nâng cấp, commit + push nhánh `nang-cap-ra-soat`)
 
 ## Đang làm
-- ⏳ **Kiểm tra bảo mật** (2026-10-05): 5 agent đọc code song song — điều khiển từ xa (Telegram / lệnh / email), bí mật & dữ liệu lưu trên máy, chạy lệnh & chèn mã, mạng & cập nhật, file & hệ điều hành. Sau đó phiên chính xác minh lỗi nặng.
+- ✅ **Kiểm tra bảo mật** (2026-10-05): 5 agent đọc code + phiên chính xác minh trong code. **7 nặng**: chèn lệnh qua "Chạy lệnh (cmd)" (mẫu A4/A6 dính), Telegram nhóm ai cũng điều khiển, Telegram tạo + chạy công việc không cần xác nhận, cập nhật không kiểm tra chữ ký, nhập file công việc là chạy ngay, mật khẩu kẹt trong clipboard, email giả người gửi. ~15 vừa, ~12 nhẹ. Không có thư viện NuGet lỗi. Danh sách đã gửi phiên `scheduleapp-0d` (đang sửa trên nhánh `nang-cap-ra-soat`); phiên này chỉ đọc.
 - ✅ **Chọn màn hình phát video** (máy nhiều màn hình): bước "Phát video / nhạc" có ô *Màn hình phát* — màn hình chính / màn hình đang có chuột / màn hình số N; nút "Hiện số màn hình"; màn hình chưa cắm → phát ở màn hình chính + cảnh báo nhật ký. Test **263 đạt, 0 lỗi, 16 bỏ qua**.
 - ⚠ Máy người dùng chỉ có 1 màn hình: chưa thử phát thật ở màn hình thứ 2 (đã test đặt cửa sổ đúng khung pixel, ngoài màn hình).
 - 💤 Chờ người dùng: commit + push? tùy chọn "Esc = dừng bình thường" cho bước phát video?
+- ⛔ **Nâng cấp theo rà soát — người dùng bảo dừng, commit + push** (2026-10-05): nhánh `nang-cap-ra-soat` đã push. Gồm: nhóm A (`badb3bd`, `d2fec14`, `95c0a5d`) + sửa review nhóm A (`e3c85c3`) + nhóm B: `b98e1e7` chèn lệnh cmd + clipboard · `962819d` nhật ký / giờ / DST / pipe · `7d661ae` trình duyệt + ghi macro · `9f7d619` Telegram + duyệt công việc từ xa / nhập file · `5adf95c` cập nhật an toàn · `baed237` bí mật lưu trên máy + D365 · `64fe6d1` che bí mật + mạng · `bcdd7e6` email + đính kèm + dữ liệu. Test sau gộp **497 đạt, 0 lỗi, 17 bỏ qua** (Release).
+  - Đã review + sửa theo review: nhóm A, B1, B5a, B6. **Chưa sửa xong theo review** (phần dở chưa commit, còn nằm trong worktree, không đưa vào nhánh): B2 (`agent-a401dc1c4e5da5c41`), B3 (`agent-a39453d0c54f759a1`), B4a (`agent-abec1afd8c9b98d62`), B4b (`agent-a210ebffcda97ce51`), B5b (`agent-af1352b19534a1244`) trong `.claude/worktrees/`.
+  - Chưa làm: tài liệu README / F1 cho nhóm A + B (bản nháp nhóm A ở scratchpad phiên trước), nhóm C (CI + ký số, chia file lớn, GDI, test Scheduler/Trigger/Notification/CommandServer, chế độ tối, giao diện tiếng Anh, webhook + cron). Bộ cài chưa biên dịch thử (máy không có Inno Setup; CI job `installer` sẽ kiểm). Chưa merge vào `main`.
 - ✅ **Rà soát "cần nâng cấp gì"** (2026-10-05, phiên khác với kiểm tra bảo mật): build Release 0 cảnh báo, test **263 đạt, 0 lỗi, 16 bỏ qua**, NuGet không lỗ hổng. Lỗi nặng đã tự xác minh trong code: settings.json hỏng bị ghi đè mặc định sau ~1 phút (SettingsStore.cs:22-34 + Scheduler.cs:90-95) · không có bắt lỗi toàn cục (Program.cs) · bộ cài không kiểm .NET 10 Desktop Runtime · cập nhật bỏ qua SHA-256 khi thiếu, nhận http:// · bước nhắc việc chờ người dùng chặn cả hàng đợi (FlowRunner.cs:16,100) · trình phát toàn màn hình giành phím khi phát ở màn hình khác (MediaPlayback.cs:191-196). Danh sách ưu tiên ở "Tiếp theo" mục 3. 💤 Chờ người dùng chọn sửa.
 
 ## Agent

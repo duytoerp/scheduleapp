@@ -4,3 +4,4 @@ publish/
 .vs/
 *.user
 __pycache__/
+.claude/worktrees/
