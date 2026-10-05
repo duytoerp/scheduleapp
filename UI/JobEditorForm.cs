@@ -464,7 +464,8 @@ internal sealed class JobEditorForm : BaseForm
         grid.SetColumnSpan(stopRow, 2);
         _tips.SetToolTip(_numMaxRun,
             "Lần chạy nào quá số phút này thì bị dừng và ghi là lỗi: chạy công việc xử lý lỗi, gửi thông báo như khi lỗi.\n" +
-            "Tính cả lúc chờ bạn bấm OK ở bước Nhắc nhở; không tính lúc chờ trong hàng đợi. Tránh một công việc bị treo " +
+            "Tính cả lúc chờ bạn bấm OK ở bước Nhắc nhở; không tính lúc chờ trong hàng đợi (kể cả chờ lấy lại lượt chạy sau khi " +
+            "bấm OK) và lúc tạm dừng gỡ lỗi. Tránh một công việc bị treo " +
             "(cửa sổ không hiện, lệnh không chạy xong…) chặn mọi công việc khác.");
 
         _cboFailureJob.Items.Add("(không)");

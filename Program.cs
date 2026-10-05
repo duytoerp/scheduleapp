@@ -15,8 +15,8 @@ internal static class Program
 {
     private const string MutexName = "ScheduleApp_SingleInstance_7F3A1C";
 
-    /// <summary>Hộp thoại báo lỗi ngoài dự kiến: không chồng nhau, lỗi lặp lại ngay sau đó chỉ ghi nhật ký.</summary>
-    private static readonly ErrorDialogGate ErrorDialogs = new();
+    /// <summary>Lỗi trên luồng giao diện: ghi file crash ngay; hộp thoại không chồng nhau, lỗi lặp lại ngay sau đó chỉ ghi nhật ký.</summary>
+    private static readonly UiErrorReporter UiErrors = new(new ErrorDialogGate(), ShowErrorDialog);
 
     [STAThread]
     private static void Main(string[] args)
@@ -71,7 +71,7 @@ internal static class Program
     private static void InstallErrorHandlers(bool interactive)
     {
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
-        Application.ThreadException += (_, e) => OnUiThreadError(e.Exception, interactive);
+        Application.ThreadException += (_, e) => UiErrors.Handle(e.Exception, interactive);
         // Lỗi ở luồng nền: tiến trình đóng ngay sau sự kiện này → ghi file crash xong mới trả về.
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
             CrashLog.Write(e.ExceptionObject as Exception ?? new InvalidOperationException(Convert.ToString(e.ExceptionObject)),
@@ -84,10 +84,8 @@ internal static class Program
         };
     }
 
-    private static void OnUiThreadError(Exception ex, bool interactive)
+    private static void ShowErrorDialog(Exception ex, string? file)
     {
-        var file = CrashLog.Write(ex, "luồng giao diện — Application.ThreadException");
-        if (!interactive || !ErrorDialogs.TryOpen(DateTime.Now)) return;
         try
         {
             MessageBox.Show(
@@ -100,10 +98,6 @@ internal static class Program
         catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
             // Không hiện được hộp thoại (phiên không tương tác…) — đã có nhật ký và file crash.
-        }
-        finally
-        {
-            ErrorDialogs.Close(DateTime.Now);
         }
     }
 

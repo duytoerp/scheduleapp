@@ -33,6 +33,8 @@ public static class SettingsStore
     {
         lock (Sync)
         {
+            // Lúc mở chưa đọc được settings.json (đang bị giữ): đã báo người dùng, không ghi nhật ký lỗi mỗi phút.
+            if (SafeFile.IsReadOnly(FilePath)) return;
             try
             {
                 SafeFile.WriteAllText(FilePath, JsonSerializer.Serialize(Current, JsonDefaults.Options));

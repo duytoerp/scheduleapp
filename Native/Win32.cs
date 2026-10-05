@@ -54,6 +54,16 @@ internal static class Win32
     [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hWnd, uint cmd);
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int index);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder name, int maxCount);
+    /// <summary>Cửa sổ màn hình nền (Progman).</summary>
+    [DllImport("user32.dll")] public static extern IntPtr GetShellWindow();
+    [DllImport("user32.dll")] private static extern bool GetCurrentInputMessageSource(out INPUT_MESSAGE_SOURCE source);
+
+    /// <summary>INPUT_MESSAGE_SOURCE (8 byte).</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct INPUT_MESSAGE_SOURCE { public int deviceType, originType; }
+
+    /// <summary>Thông điệp chuột/phím luồng này đang xử lý do phần mềm giả lập (SendInput… — IMO_INJECTED), không phải người bấm. Windows 8 trở lên.</summary>
+    public static bool IsInjectedInput() => GetCurrentInputMessageSource(out var source) && source.originType == 3 /*IMO_INJECTED*/;
 
     // Hook chuột/bàn phím toàn hệ thống (ghi macro)
     public delegate IntPtr LowLevelProc(int nCode, IntPtr wParam, IntPtr lParam);
@@ -130,7 +140,8 @@ internal static class Win32
 
     // Cấu hình hiển thị (CCD): màn hình thật nào đang nối với \\.\DISPLAYn (mã EDID, cổng trên card đồ họa)
     public const uint QDC_ONLY_ACTIVE_PATHS = 0x2;
-    public const int DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME = 1, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME = 2;
+    public const int DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME = 1, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME = 2,
+        DISPLAYCONFIG_DEVICE_INFO_GET_ADAPTER_NAME = 4;
     public const uint DISPLAYCONFIG_TARGET_EDID_IDS_VALID = 0x4;
     public const int ERROR_INSUFFICIENT_BUFFER = 122;
 
@@ -140,6 +151,7 @@ internal static class Win32
         [Out] DISPLAYCONFIG_MODE_INFO[] modes, IntPtr topologyId);
     [DllImport("user32.dll")] public static extern int DisplayConfigGetDeviceInfo(ref DISPLAYCONFIG_SOURCE_DEVICE_NAME request);
     [DllImport("user32.dll")] public static extern int DisplayConfigGetDeviceInfo(ref DISPLAYCONFIG_TARGET_DEVICE_NAME request);
+    [DllImport("user32.dll")] public static extern int DisplayConfigGetDeviceInfo(ref DISPLAYCONFIG_ADAPTER_NAME request);
 
     [StructLayout(LayoutKind.Sequential)]
     public struct LUID { public uint LowPart; public int HighPart; }
@@ -189,5 +201,13 @@ internal static class Win32
         public uint connectorInstance;
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string monitorFriendlyDeviceName;
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string monitorDevicePath;
+    }
+
+    /// <summary>DISPLAYCONFIG_ADAPTER_NAME (276 byte): đường dẫn thiết bị của card đồ họa — cố định qua các lần khởi động, khác LUID.</summary>
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct DISPLAYCONFIG_ADAPTER_NAME
+    {
+        public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string adapterDevicePath;
     }
 }

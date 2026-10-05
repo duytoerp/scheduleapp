@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.Drawing;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using ScheduleApp.Models;
+using ScheduleApp.Native;
 using ScheduleApp.Services;
 using ScheduleApp.Services.Engine;
 using ScheduleApp.UI;
@@ -11,8 +13,8 @@ using static ScheduleApp.Tests.TestSupport;
 namespace ScheduleApp.Tests;
 
 /// <summary>
-/// Một công việc không chặn được mọi công việc khác mãi mãi: thời gian chạy tối đa, nhắc nhở chờ bấm OK nhường lượt chạy,
-/// nhật ký "đang chờ công việc nào", JSON của file cũ không đổi.
+/// Một công việc không chặn được mọi công việc khác mãi mãi: thời gian chạy tối đa, nhắc nhở chờ bấm OK nhường lượt chạy (khi
+/// người dùng không còn làm việc tay), nhắc nhở được che chắn khỏi flow khác, nhật ký "đang chờ công việc nào", JSON của file cũ không đổi.
 /// </summary>
 public class QueueAndTimeoutTests
 {
@@ -38,6 +40,20 @@ public class QueueAndTimeoutTests
     private static ActionStep Reminder(string text, bool wait = true) => S(StepType.Reminder, s => { s.WaitForUser = wait; s.Text = text; });
 
     private static ActionStep Note(string text) => S(StepType.LogMessage, s => s.Text = text);
+
+    /// <summary>
+    /// Hàng đợi cho kiểm thử: nhắc nhở chờ bấm OK nhường lượt ngay (máy "không có ai dùng"); không đọc / đổi cửa sổ thật đang được chọn.
+    /// </summary>
+    private static FlowRunner Runner(IUserNotifier ui, Func<Guid, Job?>? find = null, TimeSpan? minute = null, TimeSpan? notice = null) =>
+        new(ui, find ?? (_ => null))
+        {
+            ReminderGrace = TimeSpan.Zero,
+            UserIdle = () => TimeSpan.FromHours(1),
+            ForegroundWindow = () => IntPtr.Zero,
+            BringToFront = _ => false,
+            MaxRunMinute = minute ?? TimeSpan.FromMinutes(1),
+            QueueNoticeAfter = notice ?? TimeSpan.FromSeconds(3)
+        };
 
     /// <summary>Ghi lại "giữ / nhả lượt chạy" (RunningChanged) theo thứ tự.</summary>
     private static Func<List<bool>> TrackTurns(FlowRunner runner)
@@ -114,7 +130,7 @@ public class QueueAndTimeoutTests
     public async Task ReminderWaitingForOkLetsOtherJobsRun()
     {
         var ui = new WaitingUi();
-        var runner = new FlowRunner(ui, _ => null);
+        var runner = Runner(ui);
         var turns = TrackTurns(runner);
         using var log = new LogCapture();
         var a = new Job { Name = "Chờ cắm USB", Steps = [.. NeedsScreenButNeverUsesIt(), Reminder("Cắm USB rồi bấm OK"), Note("A chạy tiếp")] };
@@ -147,7 +163,7 @@ public class QueueAndTimeoutTests
     public async Task StopWhileWaitingReleasesEverything()
     {
         var ui = new WaitingUi();
-        var runner = new FlowRunner(ui, _ => null) { QueueNoticeAfter = TimeSpan.FromMilliseconds(200) };
+        var runner = Runner(ui, notice: TimeSpan.FromMilliseconds(200));
         var turns = TrackTurns(runner);
         using var log = new LogCapture();
         Job Waiting(string name) => new() { Name = name, Steps = [Reminder("Bấm OK để chạy tiếp"), Note(name + " xong")] };
@@ -198,7 +214,7 @@ public class QueueAndTimeoutTests
             OnFailureJobId = onFailure.Id,
             Steps = [Note("bắt đầu"), Reminder("Duyệt rồi bấm OK"), Note("đã duyệt")]
         };
-        var runner = new FlowRunner(ui, id => id == onFailure.Id ? onFailure : null) { MaxRunMinute = TimeSpan.FromMilliseconds(400) };
+        var runner = Runner(ui, id => id == onFailure.Id ? onFailure : null, minute: TimeSpan.FromMilliseconds(400));
         var turns = TrackTurns(runner);
         using var log = new LogCapture();
 
@@ -214,38 +230,339 @@ public class QueueAndTimeoutTests
     }
 
     [Fact]
-    public async Task TimeoutWhileWaitingToTakeTheTurnBackDoesNotWaitForTheOtherJob()
+    public async Task WaitingToTakeTheTurnBackAfterOkDoesNotCountTowardsTheLimit()
     {
+        // Một "phút" = 1 giây: giới hạn 3 giây, công việc kia giữ lượt 4 giây sau khi bấm OK.
         var ui = new WaitingUi();
-        var runner = new FlowRunner(ui, _ => null) { MaxRunMinute = TimeSpan.FromSeconds(1), QueueNoticeAfter = TimeSpan.FromMilliseconds(100) };
+        var runner = Runner(ui, minute: TimeSpan.FromSeconds(1), notice: TimeSpan.FromMilliseconds(100));
         var turns = TrackTurns(runner);
         using var log = new LogCapture();
         var events = new List<RunProgress>();
         runner.Progress += p => { lock (events) events.Add(p); };
-        var a = new Job { Name = "Chờ duyệt", MaxRunMinutes = 3, Steps = [Reminder("Duyệt rồi bấm OK"), Note("đã duyệt")] };
-        var slow = new Job { Name = "Chậm", Steps = [S(StepType.Wait, s => s.DelayMs = 120_000)] };
+        var a = new Job { Name = "Chờ duyệt", MaxRunMinutes = 3, Steps = [Reminder("Duyệt rồi bấm OK"), Note("đã duyệt"), S(StepType.Wait, s => s.DelayMs = 60_000)] };
+        var other = new Job { Name = "Đang chạy", Steps = [Note("giữ lượt")] };
+        var hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        runner.BeforeStep = ctx => ctx.RootJob.Id == other.Id ? hold.Task : Task.CompletedTask;
 
         var runA = runner.EnqueueAsync(a, "theo lịch");
         await WaitUntil(() => ui.OpenReminders == 1 && turns().Count == 2, "A nhường lượt chạy");
-        var runSlow = runner.EnqueueAsync(slow, "theo lịch");
-        await WaitUntil(() => { lock (events) return events.Any(e => e.JobId == slow.Id && e.Step == 0); }, "công việc chậm chạy");
-        ui.ClickOk();                                                     // A chờ lấy lại lượt — "Chậm" còn chạy rất lâu
-        await WaitUntil(() => log.IndexOf("[Chờ duyệt] Đang chờ công việc \"Chậm\" chạy xong…") >= 0, "A chờ lấy lại lượt");
+        var runOther = runner.EnqueueAsync(other, "theo lịch");
+        await WaitUntil(() => { lock (events) return events.Any(e => e.JobId == other.Id && e.Step == 0); }, "công việc kia chạy");
+        ui.ClickOk();                                                     // A chờ lấy lại lượt
+        await WaitUntil(() => log.IndexOf("[Chờ duyệt] Đang chờ công việc \"Đang chạy\" chạy xong…") >= 0, "A chờ lấy lại lượt");
+        await Task.Delay(4000);
+        Assert.False(runA.IsCompleted);                                   // quá 3 giây mà chưa bị coi là quá giờ
+        Assert.Equal(-1, log.IndexOf("Quá thời gian chạy tối đa"));
 
-        // Hết 3 "phút" trong lúc chờ lượt: A dừng ngay và ghi là quá giờ, không phải chờ "Chậm" chạy xong.
+        var released = System.Diagnostics.Stopwatch.StartNew();
+        hold.SetResult();
+        Assert.True((await runOther.WaitAsync(Long))!.Ok);
+        // Lấy lại lượt rồi tính tiếp phần còn lại (gần 3 giây) — bước chờ 60 giây bị dừng vì quá giờ.
         var ra = await runA.WaitAsync(Long);
-        Assert.Equal((false, "Quá thời gian chạy tối đa 3 phút — đã dừng", 1), (ra!.Ok, ra.Message, ra.FailedStep));
-        Assert.False(runSlow.IsCompleted);
-        Assert.Equal(-1, log.IndexOf("đã duyệt"));
-
-        runner.StopAll();
-        var rs = await runSlow.WaitAsync(Long);
-        Assert.Equal((false, "Đã dừng"), (rs!.Ok, rs.Message));
-        // Lượt chờ bị hủy không để lại lượt "treo": công việc mới chạy được ngay, "giữ / nhả" cân bằng.
-        var rq = await runner.EnqueueAsync(new Job { Name = "Sau đó", Steps = [Note("chạy được")] }, "thử").WaitAsync(Long);
-        Assert.True(rq!.Ok, rq.Message);
+        released.Stop();
+        Assert.Equal((false, "Quá thời gian chạy tối đa 3 phút — đã dừng", 3), (ra!.Ok, ra.Message, ra.FailedStep));
+        Assert.True(log.IndexOf("📝 đã duyệt") >= 0);
+        Assert.InRange(released.Elapsed, TimeSpan.FromSeconds(1.5), TimeSpan.FromSeconds(15));
         var all = turns();
         Assert.Equal(all.Count(t => t), all.Count(t => !t));
+        Assert.False(runner.IsBusy);
+    }
+
+    [Fact]
+    public async Task ReminderKeepsTheTurnWhileTheUserIsStillWorking()
+    {
+        var ui = new WaitingUi();
+        long idleMs = 0;                                                  // người dùng đang làm việc tay (cắm USB, duyệt…)
+        var runner = new FlowRunner(ui, _ => null)
+        {
+            ReminderGrace = TimeSpan.FromMilliseconds(300),
+            HandOverIdle = TimeSpan.FromSeconds(60),
+            HandOverCheck = TimeSpan.FromMilliseconds(50),
+            UserIdle = () => TimeSpan.FromMilliseconds(Interlocked.Read(ref idleMs)),
+            ForegroundWindow = () => IntPtr.Zero,
+            BringToFront = _ => false
+        };
+        var turns = TrackTurns(runner);
+        using var log = new LogCapture();
+        var a = new Job { Name = "Chờ cắm USB", Steps = [Reminder("Cắm USB rồi bấm OK"), Note("A chạy tiếp")] };
+        var b = new Job { Name = "Sao lưu", Steps = [Note("B chạy")] };
+
+        var runA = runner.EnqueueAsync(a, "theo lịch");
+        // Báo "hết thao tác" trước khi hiện nhắc (chế độ an toàn không theo dõi lúc người dùng làm việc tay) nhưng vẫn giữ lượt.
+        await WaitUntil(() => ui.OpenReminders == 1 && turns().SequenceEqual([true, false]), "A hiện nhắc nhở");
+        var runB = runner.EnqueueAsync(b, "theo lịch");
+        await Task.Delay(900);                                            // quá thời gian ân hạn nhưng người dùng vẫn đang dùng máy
+        Assert.False(runB.IsCompleted);
+        Assert.Equal([true, false], turns());
+        Assert.Equal(-1, log.IndexOf("tạm nhường lượt chạy"));
+
+        Interlocked.Exchange(ref idleMs, 120_000);                        // người dùng rời máy → nhường lượt, B chạy
+        var rb = await runB.WaitAsync(Long);
+        Assert.True(rb!.Ok, rb.Message);
+        Assert.True(log.IndexOf("máy không có ai dùng 2 phút — tạm nhường lượt chạy") >= 0, string.Join("\n", log.Lines));
+        ui.ClickOk();
+        Assert.True((await runA.WaitAsync(Long))!.Ok);
+        Assert.Equal([true, false, true, false, true, false], turns());
+
+        // Bấm OK trong thời gian ân hạn: không nhường lượt — công việc khác chờ A chạy xong.
+        var quick = new FlowRunner(ui, _ => null)
+        {
+            ReminderGrace = TimeSpan.FromSeconds(30), UserIdle = () => TimeSpan.FromHours(1), ForegroundWindow = () => IntPtr.Zero, BringToFront = _ => false
+        };
+        var started = new List<string>();
+        quick.Progress += p => { if (p is { Step: -1, Ok: null }) lock (started) started.Add(p.JobName); };
+        var quickTurns = TrackTurns(quick);
+        var runA2 = quick.EnqueueAsync(a, "thử");
+        await WaitUntil(() => ui.OpenReminders == 1, "A hiện nhắc nhở");
+        var runB2 = quick.EnqueueAsync(b, "thử");
+        await Task.Delay(300);
+        Assert.False(runB2.IsCompleted);
+        ui.ClickOk();
+        await Task.WhenAll(runA2, runB2).WaitAsync(Long);
+        lock (started) Assert.Equal(["Chờ cắm USB", "Sao lưu"], started);
+        Assert.Equal([true, false, true, false, true, false], quickTurns());   // A, chờ OK, A chạy tiếp, A xong, B, B xong
+    }
+
+    [Fact]
+    public async Task TakingTheTurnBackRefocusesTheWindowThatWasInFront()
+    {
+        var ui = new WaitingUi();
+        var focused = new List<IntPtr>();
+        var calls = 0;
+        var later = (IntPtr)333;
+        var answers = new IntPtr[2];
+        var runner = new FlowRunner(ui, _ => null)
+        {
+            ReminderGrace = TimeSpan.Zero,
+            UserIdle = () => TimeSpan.FromHours(1),
+            // Lần 1: lúc hiện nhắc; lần 2: lúc nhường lượt; sau đó: cửa sổ công việc kia để lại phía trước.
+            ForegroundWindow = () => { int n = Interlocked.Increment(ref calls); return n <= 2 ? answers[n - 1] : later; },
+            BringToFront = h => { lock (focused) focused.Add(h); return true; }
+        };
+        using var log = new LogCapture();
+        var a = new Job { Name = "Nhập liệu", Steps = [.. NeedsScreenButNeverUsesIt(), Reminder("Mở file rồi bấm OK"), Note("gõ tiếp")] };
+        var b = new Job { Name = "Khác", Steps = [.. NeedsScreenButNeverUsesIt(), Note("B chạy")] };
+
+        async Task RunOnce()
+        {
+            Interlocked.Exchange(ref calls, 0);
+            var runA = runner.EnqueueAsync(a, "thử");
+            await WaitUntil(() => ui.OpenReminders == 1 && log.IndexOf("tạm nhường lượt chạy") >= 0, "A nhường lượt chạy");
+            Assert.True((await runner.EnqueueAsync(b, "thử").WaitAsync(Long))!.Ok);
+            ui.ClickOk();
+            Assert.True((await runA.WaitAsync(Long))!.Ok);
+            log.Clear();
+        }
+
+        // Cửa sổ đang dùng lúc nhường lượt (222) được đưa lại lên trước khi A lấy lại lượt.
+        answers[0] = (IntPtr)111;
+        answers[1] = (IntPtr)222;
+        await RunOnce();
+        lock (focused) Assert.Equal([(IntPtr)222], focused);
+
+        // Lúc nhường lượt cửa sổ phía trước là của ScheduleApp (nhắc nhở) → cửa sổ trước khi nhắc nhở hiện.
+        // Cửa sổ ẩn thật của tiến trình kiểm thử, tạo / hủy trên cùng một luồng.
+        using var created = new ManualResetEventSlim();
+        using var done = new ManualResetEventSlim();
+        var own = IntPtr.Zero;
+        var owner = new Thread(() =>
+        {
+            var window = new NativeWindow();
+            window.CreateHandle(new CreateParams());
+            own = window.Handle;
+            created.Set();
+            done.Wait();
+            window.DestroyHandle();
+        });
+        owner.Start();
+        try
+        {
+            Assert.True(created.Wait(5000));
+            Assert.True(WindowHelper.BelongsToThisApp(own));
+            answers[1] = own;
+            await RunOnce();
+            lock (focused) Assert.Equal([(IntPtr)222, (IntPtr)111], focused);
+        }
+        finally
+        {
+            done.Set();
+            owner.Join();
+        }
+
+        // Công việc kia không đổi cửa sổ phía trước → không làm gì.
+        answers[1] = later;
+        await RunOnce();
+        lock (focused) Assert.Equal(2, focused.Count);
+    }
+
+    [Fact]
+    public async Task TimeoutAfterHandingOverIsRecordedBeforeWaitingForTheTurn()
+    {
+        var ui = new WaitingUi();
+        var onFailure = new Job { Name = "Báo lỗi", Steps = [Reminder("xử lý lỗi: {{failed.message}}", wait: false)] };
+        // Một "phút" = 1 giây: hết giờ sau 2 giây chờ bấm OK, lúc công việc kia đang giữ lượt.
+        var runner = Runner(ui, id => id == onFailure.Id ? onFailure : null, minute: TimeSpan.FromSeconds(1));
+        var turns = TrackTurns(runner);
+        var a = new Job { Name = "Chờ duyệt", MaxRunMinutes = 2, OnFailureJobId = onFailure.Id, Steps = [Reminder("Duyệt rồi bấm OK"), Note("đã duyệt")] };
+        var other = new Job { Name = "Đang chạy", Steps = [Note("giữ lượt")] };
+        var hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        runner.BeforeStep = ctx => ctx.RootJob.Id == other.Id ? hold.Task : Task.CompletedTask;
+        var events = new List<RunProgress>();
+        runner.Progress += p => { lock (events) events.Add(p); };
+        var finished = new List<Guid>();
+        runner.JobFinished += (id, _, _, _) => { lock (finished) finished.Add(id); };
+        const string reason = "Quá thời gian chạy tối đa 2 phút — đã dừng";
+
+        var runA = runner.EnqueueAsync(a, "theo lịch");
+        await WaitUntil(() => ui.OpenReminders == 1 && turns().Count == 2, "A nhường lượt chạy");
+        var runOther = runner.EnqueueAsync(other, "theo lịch");
+        await WaitUntil(() => { lock (events) return events.Any(e => e.JobId == other.Id && e.Step == 0); }, "công việc kia chạy");
+
+        // Hết giờ: kết quả được ghi và báo ngay, không đợi công việc kia chạy xong.
+        await WaitUntil(() => { lock (finished) return finished.Contains(a.Id); }, "A ghi kết quả");
+        Assert.False(runA.IsCompleted);
+        Assert.Equal((false, reason), (RunHistory.All.Last(x => x.JobId == a.Id).Ok, RunHistory.All.Last(x => x.JobId == a.Id).Message));
+        Assert.Contains(ui.Notifications, n => n.Contains(reason));
+        Assert.Equal(["Duyệt rồi bấm OK"], ui.Reminders);                 // công việc xử lý lỗi (dùng chuột/phím) chờ lấy lại lượt
+        // Khung trạng thái đang là của công việc kia: không hiện kết quả của A đè lên.
+        lock (events) Assert.DoesNotContain(events, e => e.JobId == a.Id && e.Ok != null);
+
+        hold.SetResult();
+        Assert.True((await runOther.WaitAsync(Long))!.Ok);
+        var ra = await runA.WaitAsync(Long);
+        Assert.Equal((false, reason, 1), (ra!.Ok, ra.Message, ra.FailedStep));
+        Assert.Equal(["Duyệt rồi bấm OK", "xử lý lỗi: " + reason], ui.Reminders);
+        lock (events) Assert.Equal((false, reason), (events.Last(e => e.JobId == a.Id).Ok, events.Last(e => e.JobId == a.Id).Message));
+        lock (finished) Assert.Single(finished, id => id == a.Id);
+        var all = turns();
+        Assert.Equal(all.Count(t => t), all.Count(t => !t));
+        Assert.False(runner.IsBusy);
+
+        // Không có công việc xử lý lỗi: kết thúc ngay, khung trạng thái của công việc kia vẫn không bị đè.
+        var b = new Job { Name = "Chờ duyệt 2", MaxRunMinutes = 2, Steps = [Reminder("Duyệt rồi bấm OK")] };
+        hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var runB = runner.EnqueueAsync(b, "theo lịch");
+        await WaitUntil(() => ui.OpenReminders == 1, "B nhường lượt chạy");
+        runOther = runner.EnqueueAsync(other, "theo lịch");
+        var rb = await runB.WaitAsync(Long);
+        Assert.Equal((false, "Quá thời gian chạy tối đa 2 phút — đã dừng"), (rb!.Ok, rb.Message));
+        lock (events) Assert.DoesNotContain(events, e => e.JobId == b.Id && e.Ok != null);
+        hold.SetResult();
+        await runOther.WaitAsync(Long);
+    }
+
+    [Fact]
+    public async Task DebugPauseDoesNotCountTowardsTheLimit()
+    {
+        // Giới hạn 2 "phút" = 1 giây; dừng ở điểm dừng 2 giây rồi chạy tiếp.
+        var ui = new WaitingUi { DebugPause = TimeSpan.FromSeconds(2) };
+        var runner = Runner(ui, minute: TimeSpan.FromMilliseconds(500));
+        var job = new Job { Name = "Gỡ lỗi", MaxRunMinutes = 2, Steps = [Note("một"), S(StepType.LogMessage, s => { s.Text = "hai"; s.Breakpoint = true; })] };
+        var r = await runner.EnqueueAsync(job, "thử", new RunOptions { UseBreakpoints = true }).WaitAsync(Long);
+        Assert.True(r!.Ok, r.Message);
+        Assert.Equal(1, ui.DebugPauses);
+
+        // Sau khi chạy tiếp, giới hạn vẫn tính phần còn lại.
+        job.Steps.Add(S(StepType.Wait, s => s.DelayMs = 30_000));
+        r = await runner.EnqueueAsync(job, "thử", new RunOptions { UseBreakpoints = true }).WaitAsync(Long);
+        Assert.Equal((false, "Quá thời gian chạy tối đa 2 phút — đã dừng", 3), (r!.Ok, r.Message, r.FailedStep));
+    }
+
+    /// <summary>
+    /// Nhắc nhở của flow đã nhường lượt, trong lúc flow khác thao tác: chuột / phím giả lập không bấm được nút (kể cả Enter), tự dời khỏi
+    /// chỗ chuột sắp click, không lọt vào ảnh chụp màn hình, hiện mà không lấy focus. Cửa sổ thật ở ngoài màn hình; chuột / phím chỉ là
+    /// thông điệp gửi thẳng tới cửa sổ (không có chuột / phím thật nào).
+    /// </summary>
+    [Fact]
+    public void ReminderIsShieldedFromAnotherFlowsInput()
+    {
+        Assert.False(Win32.IsInjectedInput());                            // gọi được Windows; không có thông điệp chuột/phím nào đang xử lý
+        var (savedArea, savedInjected) = (ReminderForm.TestArea, ReminderForm.IsInjectedInput);
+        try
+        {
+            Sta(() =>
+            {
+                var area = new Rectangle(-20000, -20000, 1600, 900);
+                ReminderForm.TestArea = area;
+                bool injected = true;
+                ReminderForm.IsInjectedInput = () => injected;
+                ReminderForm.SetShield(true);                             // công việc khác đang giữ lượt chạy
+                using var f = new ReminderForm("Chờ cắm USB", "Cắm USB rồi bấm OK", requireConfirm: true);
+                bool closed = false;
+                f.FormClosed += (_, _) => closed = true;
+                f.Show();
+                Pump();
+                Assert.NotEqual(f.Handle, Win32.GetForegroundWindow());   // không giành bàn phím của flow đang chạy
+                Assert.True(Win32.GetWindowDisplayAffinity(f.Handle, out var affinity));
+                Assert.Equal(0x11u, affinity);                            // WDA_EXCLUDEFROMCAPTURE
+                Assert.Equal(new Point(area.Right - f.Width - 12, area.Bottom - f.Height - 12), f.Location);
+
+                var ok = (Button)f.AcceptButton!;
+                int downs = 0;
+                ok.MouseDown += (_, _) => downs++;
+                Post(ok.Handle, WM_LBUTTONDOWN, 1, 0x00050005);
+                Post(ok.Handle, WM_LBUTTONUP, 0, 0x00050005);
+                Post(ok.Handle, WM_KEYDOWN, VK_RETURN, 0);                // nút mặc định (AcceptButton)
+                Post(ok.Handle, WM_KEYUP, VK_RETURN, 0);
+                Post(f.Handle, WM_SYSKEYDOWN, 0x73 /*F4*/, 1 << 29);      // Alt+F4
+                Pump();
+                Assert.Equal(0, downs);
+                Assert.False(closed);
+
+                // Chuột giả lập sắp click vào chỗ nhắc nhở (gọi từ luồng của flow) → dời sang góc khác rồi mới click.
+                var target = new Point(f.Left + f.Width / 2, f.Top + f.Height / 2);
+                var avoid = Task.Run(() => ReminderForm.Avoid(target));
+                while (!avoid.IsCompleted) Pump();
+                Assert.False(f.Bounds.Contains(target));
+                Assert.Equal(new Point(area.Left + 12, area.Bottom - f.Height - 12), f.Location);
+
+                // Hết flow thao tác: thôi che chắn — ảnh chụp màn hình thấy lại, không dời, bấm được nút (kể cả công cụ điều khiển từ xa).
+                ReminderForm.SetShield(false);
+                Pump();
+                Assert.True(Win32.GetWindowDisplayAffinity(f.Handle, out affinity));
+                Assert.Equal(0u, affinity);
+                var at = f.Location;
+                ReminderForm.Avoid(new Point(f.Left + 5, f.Top + 5));
+                Assert.Equal(at, f.Location);
+                Post(ok.Handle, WM_LBUTTONDOWN, 1, 0x00050005);
+                Post(ok.Handle, WM_LBUTTONUP, 0, 0x00050005);
+                Pump();
+                Assert.Equal(1, downs);
+                Assert.True(closed);
+
+                // Đang che chắn nhưng là người bấm thật (không phải giả lập): Enter vẫn bấm "Đã hiểu — tiếp tục flow".
+                ReminderForm.SetShield(true);
+                injected = false;
+                using var f2 = new ReminderForm("Chờ duyệt", "", requireConfirm: true);
+                bool closed2 = false;
+                f2.FormClosed += (_, _) => closed2 = true;
+                f2.Show();
+                Pump();
+                Post(((Button)f2.AcceptButton!).Handle, WM_KEYDOWN, VK_RETURN, 0);
+                Pump();
+                Assert.True(closed2);
+            });
+        }
+        finally
+        {
+            ReminderForm.SetShield(false);
+            (ReminderForm.TestArea, ReminderForm.IsInjectedInput) = (savedArea, savedInjected);
+        }
+    }
+
+    private const int WM_KEYDOWN = 0x100, WM_KEYUP = 0x101, WM_SYSKEYDOWN = 0x104, WM_LBUTTONDOWN = 0x201, WM_LBUTTONUP = 0x202, VK_RETURN = 0x0D;
+
+    [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    private static void Post(IntPtr h, int msg, int wParam, int lParam) => PostMessage(h, msg, wParam, lParam);
+
+    private static void Pump()
+    {
+        for (int i = 0; i < 5; i++)
+        {
+            Application.DoEvents();
+            Thread.Sleep(20);
+        }
     }
 
     [Fact]
@@ -253,7 +570,7 @@ public class QueueAndTimeoutTests
     {
         // Cửa sổ nhắc lỗi bất thường, bước đặt "bỏ qua lỗi": flow chạy tiếp — phải lấy lại lượt chạy trước.
         var ui = new WaitingUi();
-        var runner = new FlowRunner(ui, _ => null);
+        var runner = Runner(ui);
         var turns = TrackTurns(runner);
         var reminder = Reminder("Bấm OK");
         reminder.OnError = ErrorAction.Continue;
@@ -467,6 +784,11 @@ public class QueueAndTimeoutTests
 
         public int IndexOf(string text) => Lines.FindIndex(l => l.Contains(text));
 
+        public void Clear()
+        {
+            lock (_lines) _lines.Clear();
+        }
+
         private void Add(string line)
         {
             lock (_lines) _lines.Add(line);
@@ -513,6 +835,11 @@ internal sealed class WaitingUi : IUserNotifier
         get { lock (_sync) return _maxCleared; }
     }
 
+    /// <summary>Thời gian "người dùng" dừng ở điểm dừng / chạy từng bước trước khi bấm Chạy tiếp.</summary>
+    public TimeSpan DebugPause { get; init; }
+
+    public int DebugPauses { get; private set; }
+
     public Task ShowReminderAsync(string title, string message, bool waitForUser, CancellationToken ct)
     {
         lock (_sync) _reminders.Add(message);
@@ -556,8 +883,13 @@ internal sealed class WaitingUi : IUserNotifier
     public Task<string?> PromptAsync(string title, string message, string defaultValue, bool password, CancellationToken ct) =>
         Task.FromResult<string?>(defaultValue);
 
-    public Task<DebugCommand> DebugPauseAsync(string jobName, int stepIndex, string stepText, string reason,
-        IReadOnlyDictionary<string, string> variables, CancellationToken ct) => Task.FromResult(DebugCommand.Continue);
+    public async Task<DebugCommand> DebugPauseAsync(string jobName, int stepIndex, string stepText, string reason,
+        IReadOnlyDictionary<string, string> variables, CancellationToken ct)
+    {
+        DebugPauses++;
+        if (DebugPause > TimeSpan.Zero) await Task.Delay(DebugPause, ct);
+        return DebugCommand.Continue;
+    }
 
     public Task<bool> AskContinueAsync(string title, string message, CancellationToken ct) => Task.FromResult(true);
 

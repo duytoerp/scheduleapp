@@ -1,6 +1,8 @@
 using System.Drawing;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using ScheduleApp.Models;
 using ScheduleApp.Native;
 using ScheduleApp.Services;
@@ -74,9 +76,100 @@ public class MonitorTests
         Assert.Equal("Virtual Display#UID7", Displays.MonitorKey(0, 0, edidValid: false, " Virtual Display ", 7));
         Assert.Equal("UID7", Displays.MonitorKey(0, 0, edidValid: false, "", 7));
 
+        // Hai màn hình giống hệt nhau cắm cùng số cổng ở hai card đồ họa: phần card làm mã khác nhau; cùng card thì luôn ra cùng mã.
+        const string nvidia = @"\\?\PCI#VEN_10DE&DEV_1C82&SUBSYS_00000000&REV_A1#4&2f1a7d2&0&0008#{5b45201d-f2f2-4f3b-85bb-30ff1f953599}";
+        const string intel = @"\\?\PCI#VEN_8086&DEV_3E92&SUBSYS_00000000&REV_00#3&11583659&0&10#{5b45201d-f2f2-4f3b-85bb-30ff1f953599}";
+        var onNvidia = Displays.MonitorKey(0x6D1E, 0x5BB2, edidValid: true, null, 4353, nvidia);
+        var onIntel = Displays.MonitorKey(0x6D1E, 0x5BB2, edidValid: true, null, 4353, intel);
+        Assert.Matches(@"^GSM5BB2#UID4353@[0-9A-F]{8}$", onNvidia);
+        Assert.NotEqual(onNvidia, onIntel);
+        Assert.Equal(onNvidia, Displays.MonitorKey(0x6D1E, 0x5BB2, edidValid: true, "LG", 4353, nvidia.ToLowerInvariant()));
+        Assert.Equal("GSM5BB2#UID4353", Displays.MonitorKey(0x6D1E, 0x5BB2, edidValid: true, null, 4353, ""));   // không đọc được card
+
+        // Cấu trúc truyền cho Windows đúng kích thước của Windows SDK (sai → DisplayConfigGetDeviceInfo từ chối, mất mã màn hình).
+        Assert.Equal(72, Marshal.SizeOf<Win32.DISPLAYCONFIG_PATH_INFO>());
+        Assert.Equal(64, Marshal.SizeOf<Win32.DISPLAYCONFIG_MODE_INFO>());
+        Assert.Equal(20, Marshal.SizeOf<Win32.DISPLAYCONFIG_DEVICE_INFO_HEADER>());
+        Assert.Equal(84, Marshal.SizeOf<Win32.DISPLAYCONFIG_SOURCE_DEVICE_NAME>());
+        Assert.Equal(420, Marshal.SizeOf<Win32.DISPLAYCONFIG_TARGET_DEVICE_NAME>());
+        Assert.Equal(276, Marshal.SizeOf<Win32.DISPLAYCONFIG_ADAPTER_NAME>());
+        Assert.Equal(8, Marshal.SizeOf<Win32.INPUT_MESSAGE_SOURCE>());
+
         // Máy thật: mã (nếu đọc được) không trùng giữa các màn hình.
         var ids = Displays.All().Select(d => d.Id).OfType<string>().ToList();
         Assert.Equal(ids.Count, ids.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+    }
+
+    /// <summary>Máy thật: màn hình chính đọc được mã, có phần card đồ họa (bỏ qua nếu máy chạy kiểm thử không đọc được mã màn hình — vd phiên RDP).</summary>
+    [PrimaryScreenIdFact]
+    public void PrimaryScreenOfThisMachineHasAStableId()
+    {
+        var primary = Displays.All().Single(d => d.Primary);
+        Assert.Matches(@"^.+#UID\d+@[0-9A-F]{8}$|^UID\d+@[0-9A-F]{8}$", primary.Id!);
+        Assert.Equal(primary.Id, Displays.All().Single(d => d.Primary).Id);                         // đọc lại vẫn vậy
+        Assert.True(Displays.FindById(primary.Id, Displays.All())?.Primary);
+    }
+
+    private sealed class PrimaryScreenIdFactAttribute : FactAttribute
+    {
+        public PrimaryScreenIdFactAttribute()
+        {
+            if (Displays.All().FirstOrDefault(d => d.Primary)?.Id == null)
+                Skip = "Máy chạy kiểm thử không đọc được mã màn hình chính (QueryDisplayConfig) — không kiểm tra được trên máy thật.";
+        }
+    }
+
+    [Fact]
+    public void IdenticalScreensAreNeverConfusedForEachOther()
+    {
+        // Mã trùng (không đọc được card đồ họa của hai màn hình giống hệt nhau) → bỏ mã cả hai, chọn theo số; mã khác giữ nguyên.
+        Display[] read = [One with { Id = "GSM5BB2#UID4353" }, Two with { Id = "gsm5bb2#uid4353" }, Three with { Id = "SAM7094#UID4355" }];
+        var unique = Displays.WithUniqueIds([.. read]);
+        Assert.Equal(new string?[] { null, null, "SAM7094#UID4355" }, unique.Select(d => d.Id));
+        Assert.Same(read[2], unique[2]);
+        var none = Displays.WithUniqueIds([One, Two]);
+        Assert.Equal([One, Two], none);
+
+        // Mã kiểu cũ (chưa có phần card): nhận khi chỉ một màn hình khớp; hai màn hình giống hệt nhau ở hai card → không đoán, theo số.
+        Display one = One with { Id = "GSM5BB2#UID4353@AAAAAAAA" }, two = Two with { Id = "GSM5BB2#UID4353@BBBBBBBB" },
+            three = Three with { Id = "SAM7094#UID4355@AAAAAAAA" };
+        Display[] all = [one, two, three];
+        Assert.Equal(three, Displays.FindById("SAM7094#UID4355", all));
+        Assert.Null(Displays.FindById("GSM5BB2#UID4353", all));
+        Assert.True(Displays.IsAmbiguous("GSM5BB2#UID4353", all));
+        Assert.False(Displays.IsAmbiguous("SAM7094#UID4355", all));
+        Assert.False(Displays.IsAmbiguous("GSM5BB2#UID4353@BBBBBBBB", all));
+        Assert.Equal(two, Displays.FindById("gsm5bb2#uid4353@bbbbbbbb", all));
+        Assert.Null(Displays.FindById("GSM5BB2#UID4353@CCCCCCCC", all));                          // mã mới không khớp → không đoán theo phần đầu
+
+        var (display, warning, note) = Displays.Pick(2, "GSM5BB2#UID4353", all, Point.Empty);
+        Assert.Equal(two, display);
+        Assert.Equal("có nhiều màn hình giống hệt nhau khớp màn hình đã chọn — phát ở màn hình 2 hiện có (mở bước và chọn lại màn hình để nhớ đúng màn hình)", warning);
+        Assert.Null(note);
+        Assert.Equal((three, (string?)null, "màn hình đã chọn nay là màn hình 3 (lúc chọn là màn hình 1)"),
+            Displays.Pick(1, "SAM7094#UID4355", all, Point.Empty));                                  // mã cũ khớp đúng một → vẫn theo mã
+    }
+
+    [Fact]
+    public void EditorDoesNotRebindAnOldIdToTheFirstIdenticalScreen()
+    {
+        var saved = Displays.TestDisplays;
+        // Màn hình 1 và 2 giống hệt nhau, cùng số cổng, khác card; bước cũ lưu mã chưa có phần card, đã chọn màn hình 2.
+        Displays.TestDisplays = [One with { Id = "GSM5BB2#UID4353@AAAAAAAA" }, Two with { Id = "GSM5BB2#UID4353@BBBBBBBB" }, Three with { Id = "C" }];
+        try
+        {
+            OnSta(() =>
+            {
+                using var f = Editor(new ActionStep { Type = StepType.PlayMedia, Monitor = 2, MonitorId = "GSM5BB2#UID4353" });
+                Assert.Equal("Màn hình 2 — 2560×1440, bên phải", MonitorCombo(f).Text);              // không nhảy sang màn hình 1
+                Assert.Equal((2, "GSM5BB2#UID4353@BBBBBBBB"), Choice(f));
+                f.Close();
+            });
+        }
+        finally
+        {
+            Displays.TestDisplays = saved;
+        }
     }
 
     [Fact]

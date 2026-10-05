@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using ScheduleApp.Models;
 
 namespace ScheduleApp.Services;
@@ -14,6 +15,14 @@ public static class JobStore
 
     private static string FilePath => Path.Combine(DataDir, "jobs.json");
 
+    private static readonly object KeptSync = new();
+
+    /// <summary>
+    /// Công việc không đọc được của file vừa mở (nguyên văn JSON): ghi lại y nguyên mỗi lần lưu file đó — mở bằng phiên bản ScheduleApp
+    /// đọc được chúng (thường là bản mới hơn) vẫn còn đủ.
+    /// </summary>
+    private static (string Path, List<JsonElement> Items)? _kept;
+
     public static List<Job> Load() => Load(FilePath);
 
     /// <summary>
@@ -24,12 +33,19 @@ public static class JobStore
     {
         if (!File.Exists(path) && !File.Exists(SafeFile.BackupPath(path))) return SampleJobs(); // lần đầu dùng
         var loaded = SafeFile.Load(path, "danh sách công việc", "đang mở với danh sách công việc trống", ParseEach);
+        lock (KeptSync) _kept = null;
         if (loaded.Value is not { } parsed) return [];
         if (parsed.Skipped.Count > 0)
         {
+            lock (KeptSync) _kept = (Path.GetFullPath(path), parsed.Raw);
             var copy = SafeFile.PreserveBroken(loaded.Source!);
-            DataIssues.Report($"{Path.GetFileName(path)}: {parsed.Skipped.Count} công việc không đọc được nên không có trong danh sách — {string.Join("; ", parsed.Skipped)}. " +
-                "Thường do công việc được tạo bằng phiên bản ScheduleApp mới hơn. Các công việc khác vẫn dùng bình thường. " +
+            // Hộp thoại chỉ nêu vài công việc, lý do rút gọn; nhật ký có đủ chi tiết.
+            Log.Warn($"{Path.GetFileName(path)}: công việc không đọc được — {string.Join("; ", parsed.Skipped)}");
+            var names = parsed.Skipped.Take(MaxListed).Select(s => s.Length > 120 ? s[..120].TrimEnd() + "…" : s);
+            DataIssues.Report($"{Path.GetFileName(path)}: {parsed.Skipped.Count} công việc không đọc được nên không có trong danh sách — {string.Join("; ", names)}" +
+                (parsed.Skipped.Count > MaxListed ? $"; … và {parsed.Skipped.Count - MaxListed} công việc khác (xem nhật ký)" : "") + ". " +
+                "Thường do công việc được tạo bằng phiên bản ScheduleApp mới hơn. Các công việc khác vẫn dùng bình thường; khi lưu, " +
+                "ScheduleApp giữ nguyên các công việc này trong file. " +
                 (copy != null ? $"Công việc lỗi vẫn còn nguyên trong bản sao file gốc: {copy}"
                               : "Chưa chép được file gốc (file đang bị chương trình khác giữ?) — ScheduleApp sẽ không ghi đè lên nó."));
         }
@@ -37,11 +53,30 @@ public static class JobStore
         return parsed.Jobs;
     }
 
+    /// <summary>Số công việc không đọc được nêu tên trong thông báo (còn lại ghi trong nhật ký).</summary>
+    private const int MaxListed = 5;
+
     public static void Save(IEnumerable<Job> jobs)
     {
         var list = jobs.ToList();
-        SafeFile.WriteAllText(FilePath, JsonSerializer.Serialize(list, JsonDefaults.Options));
+        Save(FilePath, list);
         JobVersions.Track(list);
+    }
+
+    /// <summary>Lưu danh sách công việc, kèm nguyên văn các công việc không đọc được lúc mở file đó (ở cuối danh sách).</summary>
+    internal static void Save(string path, List<Job> jobs)
+    {
+        List<JsonElement> kept;
+        lock (KeptSync)
+            kept = _kept is { } k && string.Equals(k.Path, Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase) ? k.Items : [];
+        if (kept.Count == 0)
+        {
+            SafeFile.WriteAllText(path, JsonSerializer.Serialize(jobs, JsonDefaults.Options));
+            return;
+        }
+        var array = JsonSerializer.SerializeToNode(jobs, JsonDefaults.Options)!.AsArray();
+        foreach (var item in kept) array.Add(JsonNode.Parse(item.GetRawText()));
+        SafeFile.WriteAllText(path, array.ToJsonString(JsonDefaults.Options));
     }
 
     public static void Export(string path, IEnumerable<Job> jobs) =>
@@ -81,8 +116,8 @@ public static class JobStore
     private static List<Job> ReadFile(string path) =>
         JsonSerializer.Deserialize<List<Job>>(File.ReadAllText(path), JsonDefaults.Options) ?? [];
 
-    /// <summary>Công việc đọc được + mô tả các công việc hỏng đã bỏ qua.</summary>
-    private sealed record Parsed(List<Job> Jobs, List<string> Skipped);
+    /// <summary>Công việc đọc được + mô tả các công việc hỏng đã bỏ qua + nguyên văn JSON của chúng.</summary>
+    private sealed record Parsed(List<Job> Jobs, List<string> Skipped, List<JsonElement> Raw);
 
     private static Parsed ParseEach(string json)
     {
@@ -90,6 +125,7 @@ public static class JobStore
         if (doc.RootElement.ValueKind != JsonValueKind.Array) throw new JsonException("Nội dung không phải danh sách công việc.");
         var jobs = new List<Job>();
         var skipped = new List<string>();
+        var raw = new List<JsonElement>();
         foreach (var item in doc.RootElement.EnumerateArray())
         {
             try
@@ -101,9 +137,10 @@ public static class JobStore
                 var name = item.ValueKind == JsonValueKind.Object && item.TryGetProperty(nameof(Job.Name), out var n) && n.ValueKind == JsonValueKind.String
                     ? $"\"{n.GetString()}\"" : $"công việc thứ {jobs.Count + skipped.Count + 1}";
                 skipped.Add($"{name} ({ex.Message.TrimEnd('.')})");
+                raw.Add(item.Clone());
             }
         }
-        return new(jobs, skipped);
+        return new(jobs, skipped, raw);
     }
 
     private static List<Job> SampleJobs() =>

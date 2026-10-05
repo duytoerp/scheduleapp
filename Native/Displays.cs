@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace ScheduleApp.Native;
@@ -27,6 +29,13 @@ internal static partial class Displays
     [GeneratedRegex(@"(\d+)\s*$")]
     private static partial Regex TrailingNumber();
 
+    /// <summary>Phần card đồ họa ở cuối mã màn hình ("…@1A2B3C4D"); mã kiểu cũ (trước khi có phần này) không có.</summary>
+    [GeneratedRegex(@"@[0-9A-F]{8}$", RegexOptions.IgnoreCase)]
+    private static partial Regex AdapterSuffix();
+
+    /// <summary>Mã trùng đã ghi nhật ký (không ghi lại mỗi lần đọc danh sách màn hình).</summary>
+    private static readonly HashSet<string> LoggedDuplicates = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Các màn hình đang cắm, theo số của Windows.</summary>
     public static List<Display> All()
     {
@@ -43,14 +52,32 @@ internal static partial class Displays
             while (list.Any(d => d.Number == number)) number++;
             list.Add(new Display(number, s.Bounds, s.WorkingArea, s.Primary, ids.GetValueOrDefault(s.DeviceName)));
         }
-        return [.. list.OrderBy(d => d.Number)];
+        return [.. WithUniqueIds(list).OrderBy(d => d.Number)];
     }
 
     /// <summary>
-    /// Mã cố định của màn hình thật: hãng + mẫu trong EDID và cổng trên card đồ họa, vd "GSM5BB2#UID4353" (giống mã thiết bị
-    /// DISPLAY\GSM5BB2\…&amp;UID4353 trong Device Manager). Không đổi khi Windows đánh lại số \\.\DISPLAYn; đổi khi cắm sang cổng khác.
+    /// Mã chỉ dùng được khi không trùng: hai màn hình cùng mã (vd hai màn hình giống hệt nhau mà không đọc được card đồ họa) → bỏ mã
+    /// của cả hai — bước đã chọn chúng chạy theo số màn hình, kèm cảnh báo — và ghi nhật ký một lần.
     /// </summary>
-    internal static string MonitorKey(ushort edidManufacturer, ushort edidProduct, bool edidValid, string? friendlyName, uint targetId)
+    internal static List<Display> WithUniqueIds(List<Display> displays)
+    {
+        var duplicates = displays.Where(d => d.Id != null).GroupBy(d => d.Id!, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (duplicates.Count == 0) return displays;
+        lock (LoggedDuplicates)
+            foreach (var id in duplicates.Where(LoggedDuplicates.Add))
+                Services.Log.Warn($"Nhiều màn hình cùng mã \"{id}\" — không phân biệt được, bước phát video chọn các màn hình này sẽ theo số màn hình.");
+        return [.. displays.Select(d => d.Id != null && duplicates.Contains(d.Id) ? d with { Id = null } : d)];
+    }
+
+    /// <summary>
+    /// Mã cố định của màn hình thật: hãng + mẫu trong EDID, cổng trên card đồ họa và card đồ họa, vd "GSM5BB2#UID4353@1A2B3C4D" (phần đầu
+    /// giống mã thiết bị DISPLAY\GSM5BB2\…&amp;UID4353 trong Device Manager). Hai card có thể dùng cùng số cổng → thêm phần card
+    /// (<see cref="AdapterKey"/>), không dùng LUID vì LUID đổi sau mỗi lần khởi động. Không đổi khi Windows đánh lại số \\.\DISPLAYn;
+    /// đổi khi cắm sang cổng / card khác.
+    /// </summary>
+    internal static string MonitorKey(ushort edidManufacturer, ushort edidProduct, bool edidValid, string? friendlyName, uint targetId,
+        string? adapterPath = null)
     {
         var monitor = "";
         if (edidValid)
@@ -62,8 +89,13 @@ internal static partial class Displays
                       + edidProduct.ToString("X4", CultureInfo.InvariantCulture);
         }
         else if (!string.IsNullOrWhiteSpace(friendlyName)) monitor = friendlyName.Trim();
-        return (monitor.Length > 0 ? monitor + "#" : "") + "UID" + targetId.ToString(CultureInfo.InvariantCulture);
+        return (monitor.Length > 0 ? monitor + "#" : "") + "UID" + targetId.ToString(CultureInfo.InvariantCulture)
+               + (string.IsNullOrWhiteSpace(adapterPath) ? "" : "@" + AdapterKey(adapterPath));
     }
+
+    /// <summary>8 ký tự hex từ đường dẫn thiết bị của card đồ họa (vd "\\?\PCI#VEN_10DE&amp;DEV_1C82…") — cố định qua các lần khởi động.</summary>
+    internal static string AdapterKey(string adapterPath) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(adapterPath.Trim().ToUpperInvariant())))[..8];
 
     /// <summary>
     /// Mã màn hình thật (<see cref="MonitorKey"/>) của từng \\.\DISPLAYn đang dùng, đọc từ cấu hình hiển thị của Windows (QueryDisplayConfig).
@@ -73,6 +105,17 @@ internal static partial class Displays
     private static Dictionary<string, string> MonitorIds()
     {
         var ids = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var adapters = new Dictionary<(uint, int), string?>();
+        string? AdapterPath(Win32.LUID adapter)
+        {
+            if (adapters.TryGetValue((adapter.LowPart, adapter.HighPart), out var known)) return known;
+            var name = new Win32.DISPLAYCONFIG_ADAPTER_NAME
+            {
+                header = Header(Win32.DISPLAYCONFIG_DEVICE_INFO_GET_ADAPTER_NAME, Marshal.SizeOf<Win32.DISPLAYCONFIG_ADAPTER_NAME>(), adapter, 0)
+            };
+            var path = Win32.DisplayConfigGetDeviceInfo(ref name) == 0 && !string.IsNullOrEmpty(name.adapterDevicePath) ? name.adapterDevicePath : null;
+            return adapters[(adapter.LowPart, adapter.HighPart)] = path;
+        }
         // Vừa cắm / rút màn hình giữa hai lần gọi → thiếu chỗ, đọc lại.
         for (int attempt = 0; attempt < 3; attempt++)
         {
@@ -95,7 +138,8 @@ internal static partial class Displays
                 if (Win32.DisplayConfigGetDeviceInfo(ref source) != 0 || Win32.DisplayConfigGetDeviceInfo(ref target) != 0
                     || string.IsNullOrEmpty(source.viewGdiDeviceName)) continue;
                 var key = MonitorKey(target.edidManufactureId, target.edidProductCodeId,
-                    (target.flags & Win32.DISPLAYCONFIG_TARGET_EDID_IDS_VALID) != 0, target.monitorFriendlyDeviceName, p.targetId);
+                    (target.flags & Win32.DISPLAYCONFIG_TARGET_EDID_IDS_VALID) != 0, target.monitorFriendlyDeviceName, p.targetId,
+                    AdapterPath(p.targetAdapterId));
                 // Chế độ nhân bản (một màn hình Windows hiện trên nhiều màn hình thật): lấy mã nhỏ nhất cho ổn định.
                 if (!ids.TryGetValue(source.viewGdiDeviceName, out var other) || string.CompareOrdinal(key, other) < 0)
                     ids[source.viewGdiDeviceName] = key;
@@ -140,14 +184,33 @@ internal static partial class Displays
         if (FindById(id, displays) is { } same)
             return (same, null, same.Number == choice ? null : $"màn hình đã chọn nay là màn hình {same.Number} (lúc chọn là màn hình {choice})");
         var (byNumber, missing) = Pick(choice, displays, mouse);
-        return (byNumber, missing ?? $"không thấy màn hình đã chọn (đã rút hoặc cắm sang cổng khác?) — phát ở màn hình {choice} hiện có", null);
+        return (byNumber, missing ?? (IsAmbiguous(id, displays)
+            ? $"có nhiều màn hình giống hệt nhau khớp màn hình đã chọn — phát ở màn hình {choice} hiện có (mở bước và chọn lại màn hình để nhớ đúng màn hình)"
+            : $"không thấy màn hình đã chọn (đã rút hoặc cắm sang cổng khác?) — phát ở màn hình {choice} hiện có"), null);
     }
 
     public static (Display Display, string? Warning, string? Note) Pick(int choice, string? id) => Pick(choice, id, All(), Cursor.Position);
 
-    /// <summary>Màn hình đang cắm có mã <paramref name="id"/> (không phân biệt hoa thường); null khi không có.</summary>
-    public static Display? FindById(string? id, IReadOnlyList<Display> displays) =>
-        string.IsNullOrEmpty(id) ? null : displays.FirstOrDefault(d => string.Equals(d.Id, id, StringComparison.OrdinalIgnoreCase));
+    /// <summary>
+    /// Màn hình đang cắm có mã <paramref name="id"/> (không phân biệt hoa thường); null khi không có. Mã kiểu cũ chưa có phần card đồ họa
+    /// ("GSM5BB2#UID4353") chỉ nhận khi đúng một màn hình khớp — hai màn hình giống hệt nhau ở hai card thì không đoán.
+    /// </summary>
+    public static Display? FindById(string? id, IReadOnlyList<Display> displays)
+    {
+        if (string.IsNullOrEmpty(id)) return null;
+        var exact = displays.FirstOrDefault(d => string.Equals(d.Id, id, StringComparison.OrdinalIgnoreCase));
+        if (exact != null || AdapterSuffix().IsMatch(id)) return exact;
+        var legacy = LegacyMatches(id, displays);
+        return legacy.Count == 1 ? legacy[0] : null;
+    }
+
+    /// <summary>Mã kiểu cũ khớp nhiều màn hình đang cắm (giống hệt nhau, khác card đồ họa) — không biết là màn hình nào.</summary>
+    public static bool IsAmbiguous(string? id, IReadOnlyList<Display> displays) =>
+        !string.IsNullOrEmpty(id) && !AdapterSuffix().IsMatch(id)
+        && !displays.Any(d => string.Equals(d.Id, id, StringComparison.OrdinalIgnoreCase)) && LegacyMatches(id, displays).Count > 1;
+
+    private static List<Display> LegacyMatches(string id, IReadOnlyList<Display> displays) =>
+        [.. displays.Where(d => d.Id != null && string.Equals(AdapterSuffix().Replace(d.Id, ""), id, StringComparison.OrdinalIgnoreCase))];
 
     /// <summary>
     /// Trình phát có giành bàn phím (Esc / Space / →) không: chỉ khi máy có một màn hình, hoặc màn hình phát đang có chuột hay cửa sổ

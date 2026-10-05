@@ -3,6 +3,9 @@
 ;   ISCC.exe /DAppVersion=2.1.0 installer\ScheduleApp.iss
 ; Cài vào %LocalAppData%\Programs\ScheduleApp → ScheduleApp tự cập nhật được (thư mục ghi được).
 ; ScheduleApp.exe cần .NET 10 Desktop Runtime (x64): máy chưa có thì bộ cài hỏi rồi tải và cài từ Microsoft (xem [Code]).
+; Cài ngầm (/SILENT, /VERYSILENT): cài cho người dùng hiện tại thì mặc định KHÔNG cài .NET (cần quyền quản trị — sẽ hiện hộp thoại UAC
+; chặn cài tự động); thêm /INSTALLDOTNET để vẫn cài. Cài cho mọi người dùng (/ALLUSERS, đã có quyền quản trị) thì cài .NET như thường.
+; Cài ngầm không bao giờ tự khởi động lại máy, kể cả khi bộ cài .NET cần (nên dùng kèm /NORESTART).
 
 #ifndef AppVersion
   #define AppVersion GetVersionNumbersString(AddBackslash(SourcePath) + "..\publish\ScheduleApp.exe")
@@ -53,6 +56,7 @@ english.RuntimeInstallCancelled=Đã hủy cài .NET 10 Desktop Runtime (x64) (c
 english.RuntimeInstallFailed=Cài .NET 10 Desktop Runtime (x64) chưa xong (mã lỗi %1).
 english.RuntimeStartFailed=Không chạy được bộ cài .NET 10 Desktop Runtime (x64): %1
 english.RuntimeManual=ScheduleApp vẫn được cài nhưng chỉ mở được khi máy có .NET 10 Desktop Runtime (x64). Mở trang tải của Microsoft ngay bây giờ? Ở đó chọn ".NET Desktop Runtime 10" → Windows x64.
+english.RuntimeSilentSkipped=Cài ngầm cho người dùng hiện tại: không cài .NET 10 Desktop Runtime (x64) — cần quyền quản trị. Thêm /INSTALLDOTNET để cài.
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:DesktopIcon}"; GroupDescription: "{cm:Extra}"
@@ -113,16 +117,30 @@ begin
   end;
 end;
 
-// Đúng các chỗ ScheduleApp.exe (apphost .NET) tìm runtime: thư mục mặc định (máy ARM64: bản x64 nằm trong dotnet\x64) và thư mục
-// .NET đã đăng ký (registry 32-bit). Không dựa vào danh sách phiên bản trong registry: bản đã gỡ / đã thay bằng bản vá mới vẫn còn ở đó.
+// Đúng các chỗ ScheduleApp.exe (apphost .NET x64) tìm runtime: thư mục mặc định — máy ARM64: chỉ dotnet\x64 (dotnet\ là bản .NET
+// ARM64, ScheduleApp x64 không dùng được) — rồi thư mục .NET x64 đã đăng ký (registry 32-bit). Không dựa vào danh sách phiên bản
+// trong registry: bản đã gỡ / đã thay bằng bản vá mới vẫn còn ở đó.
 function DesktopRuntimeInstalled(): Boolean;
 var
   Location: String;
 begin
-  Result := HasDesktopRuntime10(ExpandConstant('{commonpf64}\dotnet'))
-    or HasDesktopRuntime10(ExpandConstant('{commonpf64}\dotnet\x64'));
+  if IsARM64 then
+    Result := HasDesktopRuntime10(ExpandConstant('{commonpf64}\dotnet\x64'))
+  else
+    Result := HasDesktopRuntime10(ExpandConstant('{commonpf64}\dotnet'));
   if (not Result) and RegQueryStringValue(HKLM32, 'SOFTWARE\dotnet\Setup\InstalledVersions\x64', 'InstallLocation', Location) then
     Result := HasDesktopRuntime10(Location);
+end;
+
+// Dòng lệnh có /INSTALLDOTNET (hoặc /INSTALLDOTNET=1): cài ngầm cho người dùng hiện tại vẫn cài .NET.
+function InstallDotnetSwitch(): Boolean;
+var
+  I: Integer;
+begin
+  Result := ExpandConstant('{param:INSTALLDOTNET|0}') <> '0';
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), '/INSTALLDOTNET') = 0 then
+      Result := True;
 end;
 
 // Giải thích lý do, nói rõ ScheduleApp cần .NET 10 Desktop Runtime và đề nghị mở trang tải của Microsoft.
@@ -165,6 +183,8 @@ begin
     begin
       DownloadPage.SetText(CustomMessage('RuntimeInstalling'), CustomMessage('RuntimeInstallingHint'));
       DownloadPage.ProgressBar.Style := npbstMarquee;
+      // Bộ cài .NET đang chạy thì không hủy được — ẩn nút Hủy của trang tải.
+      DownloadPage.AbortButton.Hide;
       Started := ShellExec('', ExpandConstant('{tmp}\') + RuntimeFile, '/install /quiet /norestart', '',
         SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode);
       Log('Bộ cài .NET 10 Desktop Runtime: mã ' + IntToStr(ResultCode));
@@ -192,10 +212,19 @@ begin
   else
   begin
     Log('.NET 10 Desktop Runtime (x64): chưa có.');
-    RuntimeWanted := SuppressibleMsgBox(CustomMessage('RuntimeMissing') + #13#10#13#10 + CustomMessage('RuntimeAsk'),
-      mbConfirmation, MB_YESNO, IDYES) = IDYES;
-    if not RuntimeWanted then
-      OfferRuntimePage(CustomMessage('RuntimeDeclined'));
+    if WizardSilent and not IsAdminInstallMode and not InstallDotnetSwitch() then
+    begin
+      // Cài ngầm cho người dùng hiện tại: bộ cài .NET cần quyền quản trị → hộp thoại UAC sẽ chặn cài tự động.
+      RuntimeWanted := False;
+      Log(CustomMessage('RuntimeSilentSkipped'));
+    end
+    else
+    begin
+      RuntimeWanted := SuppressibleMsgBox(CustomMessage('RuntimeMissing') + #13#10#13#10 + CustomMessage('RuntimeAsk'),
+        mbConfirmation, MB_YESNO, IDYES) = IDYES;
+      if not RuntimeWanted then
+        OfferRuntimePage(CustomMessage('RuntimeDeclined'));
+    end;
   end;
 end;
 
@@ -215,8 +244,11 @@ begin
   end;
 end;
 
-// Bộ cài .NET báo cần khởi động lại (3010) → Inno hỏi khởi động lại khi cài xong.
+// Bộ cài .NET báo cần khởi động lại (3010) → Inno hỏi khởi động lại khi cài xong. Cài ngầm thì không: Inno sẽ tự khởi động lại
+// máy mà không hỏi (trừ khi có /NORESTART) — chỉ ghi vào nhật ký cài đặt.
 function NeedRestart(): Boolean;
 begin
-  Result := RuntimeRestart;
+  Result := RuntimeRestart and not WizardSilent;
+  if RuntimeRestart and WizardSilent then
+    Log('.NET 10 Desktop Runtime cần khởi động lại máy — cài ngầm nên không tự khởi động lại.');
 end;

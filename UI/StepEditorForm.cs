@@ -648,8 +648,10 @@ internal sealed class StepEditorForm : BaseForm
         int index = selected == Native.Displays.UnderMouse ? 1 : 0;
         if (selected > 0)
         {
+            // Mã kiểu cũ khớp nhiều màn hình giống hệt nhau → theo số như lúc chạy (không tự chọn màn hình đầu tiên khớp mã).
             var match = Native.Displays.FindById(selectedId, displays)
-                        ?? (string.IsNullOrEmpty(selectedId) ? displays.FirstOrDefault(d => d.Number == selected) : null);
+                        ?? (string.IsNullOrEmpty(selectedId) || Native.Displays.IsAmbiguous(selectedId, displays)
+                            ? displays.FirstOrDefault(d => d.Number == selected) : null);
             if (match != null) index = 2 + displays.IndexOf(match);
             else
             {

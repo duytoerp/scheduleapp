@@ -72,6 +72,32 @@ internal static partial class CrashLog
 }
 
 /// <summary>
+/// Lỗi chưa xử lý trên luồng giao diện (Application.ThreadException): ghi file crash ngay, hộp thoại báo lỗi hiện SAU khi trình xử lý
+/// trả về (<see cref="SynchronizationContext.Post"/>). WinForms bỏ qua mọi lỗi xảy ra trong lúc trình xử lý còn chạy — hộp thoại modal
+/// mở ngay trong trình xử lý sẽ làm các lỗi tiếp theo (trong lúc hộp thoại mở) mất dấu, không có cả nhật ký lẫn file crash.
+/// </summary>
+internal sealed class UiErrorReporter(ErrorDialogGate gate, Action<Exception, string?> showDialog)
+{
+    /// <param name="interactive">False ở chế độ dòng lệnh: chỉ ghi nhật ký + file crash.</param>
+    public void Handle(Exception ex, bool interactive)
+    {
+        var file = CrashLog.Write(ex, "luồng giao diện — Application.ThreadException");
+        if (!interactive || SynchronizationContext.Current is not { } ui || !gate.TryOpen(DateTime.Now)) return;
+        ui.Post(_ =>
+        {
+            try
+            {
+                showDialog(ex, file);
+            }
+            finally
+            {
+                gate.Close(DateTime.Now);
+            }
+        }, null);
+    }
+}
+
+/// <summary>
 /// Có hiện hộp thoại báo lỗi không: không bao giờ chồng hai hộp thoại; lỗi đến trong vòng <see cref="CrashLog.Burst"/> sau lỗi trước
 /// hoặc sau lúc đóng hộp thoại trước thì chỉ ghi nhật ký.
 /// </summary>

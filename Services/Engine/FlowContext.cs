@@ -127,6 +127,9 @@ public sealed class FlowContext
     /// </summary>
     internal Func<FlowContext, Func<Task>, Task>? GateRelease { get; init; }
 
+    /// <summary>Do <see cref="FlowRunner"/> gắn: tạm ngừng tính thời gian chạy tối đa tới khi Dispose (vd lúc tạm dừng gỡ lỗi).</summary>
+    internal Func<IDisposable>? PauseTimeLimit { get; init; }
+
     /// <summary>
     /// Chờ một việc không cần chuột/bàn phím — vd người dùng bấm OK trên cửa sổ nhắc nhở — mà không giữ lượt chạy:
     /// trong lúc chờ, công việc khác trong hàng đợi được chạy; chờ xong thì lấy lại lượt rồi mới chạy tiếp flow.

@@ -513,7 +513,12 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         _overlay.StepClicked += () => _debugBar?.Finish(DebugCommand.Step);
         _overlay.ContinueClicked += () => _debugBar?.Finish(DebugCommand.Continue);
         _overlay.StopClicked += _runner.StopAll;
-        InputSimulator.BeforePointer = _overlay.Avoid;
+        // Chuột giả lập không bấm nhầm vào khung trạng thái / nhắc nhở của flow đang chờ bấm OK — chúng dời đi trước.
+        InputSimulator.BeforePointer = p =>
+        {
+            _overlay.Avoid(p);
+            ReminderForm.Avoid(p);
+        };
 
         _runner.StatusChanged += text =>
         {
@@ -544,6 +549,8 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         // Chế độ an toàn: theo dõi chuột/phím thật trong lúc flow chạy.
         _runner.RunningChanged += running =>
         {
+            // Có flow đang thao tác chuột/phím → che chắn nhắc nhở đang mở (của flow đã nhường lượt chờ bấm OK). Gọi ngay trên luồng của flow.
+            ReminderForm.SetShield(running);
             if (IsDisposed) return;
             BeginInvoke(new MethodInvoker(() =>
             {
@@ -1203,7 +1210,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         {
             MessageBox.Show(this,
                 "ScheduleApp phát hiện file dữ liệu bị hỏng hoặc không đọc được khi mở (thường do tắt máy đột ngột, mất điện hay ổ đĩa lỗi):\n\n" +
-                string.Join("\n\n", DataIssues.Take().Select(i => "• " + i)) +
+                DataIssues.Summarize(DataIssues.Take()) +
                 $"\n\nThư mục dữ liệu: {JobStore.DataDir}\nChi tiết cũng có trong nhật ký (Thêm → Mở thư mục log).",
                 "ScheduleApp — file dữ liệu bị hỏng", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
