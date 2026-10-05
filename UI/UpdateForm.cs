@@ -6,6 +6,7 @@ namespace ScheduleApp.UI;
 internal sealed class UpdateForm : BaseForm
 {
     private readonly UpdateInfo _info;
+    private readonly Label _hint;
     private readonly ProgressBar _progress = new() { Dock = DockStyle.Fill, Visible = false };
     private readonly Button _btnUpdate = new() { Text = "Cập nhật ngay", AutoSize = true, MinimumSize = new Size(120, 0) };
     private readonly Button _btnSkip = new() { Text = "Bỏ qua bản này", AutoSize = true };
@@ -44,10 +45,11 @@ internal sealed class UpdateForm : BaseForm
             Text = string.IsNullOrWhiteSpace(info.Notes) ? "(Không có ghi chú thay đổi.)" : info.Notes.Replace("\r\n", "\n").Replace("\n", Environment.NewLine)
         };
         bool canUpdate = UpdateService.CanSelfUpdate(out var reason);
-        var hint = new Label
+        var hint = _hint = new Label
         {
             Text = canUpdate
-                ? "Bấm \"Cập nhật ngay\": tải bản mới, đóng ScheduleApp, thay file rồi tự mở lại (lịch và dữ liệu giữ nguyên)."
+                ? "Bấm \"Cập nhật ngay\": tải bản mới, kiểm tra mã SHA-256" + (info.HashSource.Length > 0 ? $" ({info.HashSource})" : "") +
+                  " và chữ ký số, đóng ScheduleApp, thay file rồi tự mở lại (lịch và dữ liệu giữ nguyên). Bản mới không mở được thì tự quay về bản đang dùng."
                 : "⚠ " + reason,
             Dock = DockStyle.Bottom,
             AutoSize = true,
@@ -87,15 +89,23 @@ internal sealed class UpdateForm : BaseForm
         try
         {
             var progress = new Progress<int>(p => _progress.Value = Math.Clamp(p, 0, 100));
-            var file = await UpdateService.DownloadAsync(_info, progress, CancellationToken.None);
-            UpdateService.ApplyAndRestart(file);
+            var download = await UpdateService.DownloadAsync(_info, progress, CancellationToken.None);
+            // Cho người dùng thấy kết quả kiểm tra trước khi ScheduleApp đóng để thay file.
+            _hint.ForeColor = Color.FromArgb(0, 110, 40);
+            _hint.Text = $"✓ Mã SHA-256 khớp ({download.Sha256[..12]}…)" + Environment.NewLine +
+                         $"✓ Đúng bản {download.Version}, mới hơn bản đang dùng" + Environment.NewLine +
+                         (download.Signed ? "✓ Chữ ký số: " : "• Chữ ký số: ") + download.Signature + Environment.NewLine +
+                         "Đang đóng ScheduleApp để thay file…";
+            await Task.Delay(1500);
+            UpdateService.ApplyAndRestart(download);
             ExitRequested = true;
             DialogResult = DialogResult.OK;
             Close();
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, "Cập nhật không thành công:\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            Log.Warn("Cập nhật không thành công: " + UpdateService.Explain(ex));
+            MessageBox.Show(this, "Cập nhật không thành công:\n" + UpdateService.Explain(ex), Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
             _btnUpdate.Enabled = _btnSkip.Enabled = _btnLater.Enabled = true;
             _progress.Visible = false;
         }

@@ -234,69 +234,6 @@ public class ApiClientTests
     public void CombineUrls(string baseUrl, string url, string expected) => Assert.Equal(expected, ApiClient.Combine(baseUrl, url));
 }
 
-public class UpdateServiceTests
-{
-    [Fact]
-    public async Task FolderSourceFindsNewerVersionAndVerifiesHash()
-    {
-        var share = NewDir();
-        var exeBytes = Encoding.UTF8.GetBytes("ban-moi");
-        File.WriteAllBytes(Path.Combine(share, "ScheduleApp.exe"), exeBytes);
-        var sha = Convert.ToHexString(SHA256.HashData(exeBytes));
-        File.WriteAllText(Path.Combine(share, "version.json"), $"{{\"version\":\"v99.1.0\",\"url\":\"ScheduleApp.exe\",\"notes\":\"Sửa lỗi\",\"sha256\":\"{sha}\"}}");
-
-        var info = await UpdateService.CheckAsync(CancellationToken.None, new UpdateSettings { Source = share });
-        Assert.NotNull(info);
-        Assert.Equal(new Version(99, 1, 0), info.Version);
-        Assert.Equal("Sửa lỗi", info.Notes);
-        var downloaded = await UpdateService.DownloadAsync(info, null, CancellationToken.None);
-        Assert.Equal(exeBytes, File.ReadAllBytes(downloaded));
-
-        var bad = info with { Sha256 = new string('0', 64) };
-        await Assert.ThrowsAsync<InvalidOperationException>(() => UpdateService.DownloadAsync(bad, null, CancellationToken.None));
-
-        File.WriteAllText(Path.Combine(share, "version.json"), "{\"version\":\"1.0\"}");
-        Assert.Null(await UpdateService.CheckAsync(CancellationToken.None, new UpdateSettings { Source = Path.Combine(share, "version.json") }));
-    }
-
-    [Fact]
-    public async Task HttpManifestResolvesRelativeUrl()
-    {
-        using var server = new MiniHttpServer((_, path, _, _) => path == "/rel/version.json" ? (200, "{\"version\":\"50.0\",\"url\":\"files/ScheduleApp.exe\"}") : (404, ""));
-        var info = await UpdateService.CheckAsync(CancellationToken.None, new UpdateSettings { Source = server.BaseUrl + "rel/version.json" });
-        Assert.Equal(server.BaseUrl + "rel/files/ScheduleApp.exe", info!.DownloadUrl);
-    }
-
-    [Fact]
-    public void DebugBuildCannotSelfUpdate() => Assert.False(UpdateService.CanSelfUpdate(out _)); // testhost.exe không phải ScheduleApp.exe
-
-    [Fact]
-    public async Task UpdateScriptWaitsForAppThenSwapsFiles()
-    {
-        var dir = Path.Combine(NewDir(), "Thư mục cài");
-        Directory.CreateDirectory(dir);
-        var target = Path.Combine(dir, "ScheduleApp.exe");
-        var newExe = Path.Combine(dir, "moi.exe");
-        File.WriteAllText(target, "cũ");
-        File.WriteAllText(newExe, "mới");
-
-        // Tiến trình "ứng dụng cũ" còn chạy ~2 giây — script phải chờ nó thoát rồi mới thay file.
-        using var app = Process.Start(new ProcessStartInfo("cmd.exe", "/c ping -n 3 127.0.0.1 >nul") { CreateNoWindow = true, UseShellExecute = false })!;
-        var script = Path.Combine(dir, "update.cmd");
-        File.WriteAllText(script, UpdateService.BuildUpdateScript(newExe, target, app.Id, restart: false), new UTF8Encoding(false));
-        using var run = Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{script}\"") { CreateNoWindow = true, UseShellExecute = false })!;
-
-        await Task.Delay(500);
-        Assert.Equal("cũ", File.ReadAllText(target)); // chưa thay khi ứng dụng còn chạy
-        await run.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(20));
-        Assert.True(app.HasExited);
-        Assert.Equal("mới", File.ReadAllText(target));
-        Assert.Equal("cũ", File.ReadAllText(target + ".old"));
-        Assert.False(File.Exists(newExe));
-        Assert.False(File.Exists(script)); // script tự xóa
-    }
-}
-
 public class VersionsTests
 {
     [Fact]

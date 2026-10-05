@@ -47,6 +47,7 @@ internal static class Program
             return;
         }
         if (stop) return; // không có flow nào đang chạy
+        UpdateService.BeginStartupCheck(); // mở bởi script cập nhật → ghi PID, nhớ file đánh dấu khởi động xong
 
         ApplicationConfiguration.Initialize();
         Theme.Install();

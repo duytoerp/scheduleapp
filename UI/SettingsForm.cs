@@ -165,7 +165,7 @@ internal sealed class SettingsForm : BaseForm
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, "Không kiểm tra được bản mới:\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, "Không kiểm tra được bản mới:\n" + UpdateService.Explain(ex), Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         finally
         {

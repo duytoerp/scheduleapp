@@ -116,7 +116,15 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         RefreshTests();
         Log.Info($"ScheduleApp {UpdateService.Current} khởi động — {_jobs.Count} công việc. Dữ liệu: {JobStore.DataDir}");
         _ = Task.Run(ErrorScreenshots.Cleanup);
-        _ = Task.Run(UpdateService.CleanupOldVersion);
+        // Đã nạp dữ liệu và vòng lặp giao diện đã chạy: báo script cập nhật bản mới mở được (script mới xóa bản cũ .old);
+        // lần trước phải quay về bản cũ thì nhắc ở khay — không chặn lịch chạy.
+        BeginInvoke(new MethodInvoker(() =>
+        {
+            _ = Task.Run(UpdateService.ConfirmStarted);
+            if (UpdateService.TakeRollbackNote() is not { } note) return;
+            Log.Warn(note);
+            _tray.ShowBalloonTip(15000, "ScheduleApp: cập nhật không thành công", note, ToolTipIcon.Warning);
+        }));
 
         // Kiểm tra bản mới sau khi khởi động một lúc (không làm chậm lúc đăng nhập Windows).
         var updateTimer = new System.Windows.Forms.Timer { Interval = 45_000 };
@@ -1056,7 +1064,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         }
         catch (Exception ex)
         {
-            Log.Warn("Không kiểm tra được bản mới: " + ex.Message);
+            Log.Warn("Không kiểm tra được bản mới: " + UpdateService.Explain(ex));
         }
     }
 
@@ -1076,7 +1084,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         }
         catch (Exception ex)
         {
-            ShowError("Không kiểm tra được bản mới:\n" + ex.Message + "\n\nNhập nguồn cập nhật trong ⚙ Cài đặt → Chung.");
+            ShowError("Không kiểm tra được bản mới:\n" + UpdateService.Explain(ex) + "\n\nNhập nguồn cập nhật trong ⚙ Cài đặt → Chung.");
         }
     }
 
