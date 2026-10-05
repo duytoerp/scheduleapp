@@ -109,6 +109,20 @@ public sealed class Job
     /// <summary>Sheet của <see cref="DataFile"/> (trống = sheet đầu).</summary>
     public string DataSheet { get; set; } = "";
 
+    /// <summary>
+    /// Chờ duyệt trên máy: công việc tạo / sửa qua Telegram hoặc nhập từ file không chạy (lịch, kích hoạt, /run, dòng lệnh,
+    /// được công việc khác gọi) cho tới khi người dùng xem từng bước và bấm Duyệt. Không ghi vào JSON khi false (file cũ giữ nguyên).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool NeedsApproval { get; set; }
+
+    /// <summary>Vì sao cần duyệt, vd "Tạo qua Telegram 05/10 14:32", "Nhập từ file cong-viec.json 05/10 14:32".</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ApprovalReason { get; set; }
+
+    /// <summary>Được tự chạy theo lịch / trình kích hoạt: đang bật và không chờ duyệt.</summary>
+    [JsonIgnore] public bool Armed => Enabled && !NeedsApproval;
+
     /// <summary>Danh sách tag đã tách và bỏ khoảng trắng.</summary>
     [JsonIgnore]
     public IReadOnlyList<string> TagList =>

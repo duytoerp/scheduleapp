@@ -36,6 +36,11 @@ internal sealed class SettingsForm : BaseForm
     private readonly CheckBox _chkWebhook = new() { Text = "Gửi tới webhook (Teams / Slack / Discord / Google Chat)", AutoSize = true };
     private readonly TextBox _txtWebhook = new() { Width = 520 };
     private readonly CheckBox _chkTgCommands = new() { Text = "Nhận lệnh điều khiển từ chat này (/run, /stop, /status, /screenshot, /new tạo công việc bằng AI…)", AutoSize = true, Margin = new Padding(22, 3, 3, 3) };
+    private readonly CheckBox _chkTgUnsafe = new()
+    {
+        Text = "Cho phép công việc tạo qua Telegram chạy ngay, không cần duyệt (không an toàn)", AutoSize = true, Margin = new Padding(40, 0, 3, 3)
+    };
+    private readonly Label _lblTgWarning = new() { AutoSize = true, MaximumSize = new Size(680, 0), ForeColor = Theme.Danger, Margin = new Padding(40, 0, 3, 4), Visible = false };
 
     // Cập nhật
     private readonly TextBox _txtUpdateSource = new() { Width = 420, PlaceholderText = "github:chủ/repo · https://…/version.json · \\\\máy\\thư mục" };
@@ -335,8 +340,13 @@ internal sealed class SettingsForm : BaseForm
         col.Controls.Add(Line(Caption("   Bot token:"), _txtTgToken));
         col.Controls.Add(Line(Caption("   Chat id:"), _txtTgChat, _chkTgPhoto, testTg));
         col.Controls.Add(_chkTgCommands);
+        col.Controls.Add(_lblTgWarning);
+        col.Controls.Add(_chkTgUnsafe);
         col.Controls.Add(Hint("Tạo bot với @BotFather để lấy token; nhắn cho bot một tin rồi mở https://api.telegram.org/bot<token>/getUpdates để lấy chat id. " +
-                              "Bật nhận lệnh để chạy / dừng công việc, xem trạng thái và chụp màn hình từ điện thoại — chỉ chat id trên mới điều khiển được."));
+                              "Bật nhận lệnh để chạy / dừng công việc, xem trạng thái và chụp màn hình từ điện thoại — chỉ chat riêng của chat id trên mới điều khiển được. " +
+                              "Công việc tạo qua Telegram chờ bạn duyệt trên máy (xem từng bước) rồi mới chạy."));
+        _txtTgChat.TextChanged += (_, _) => UpdateTelegramWarning();
+        _chkTgCommands.CheckedChanged += (_, _) => UpdateTelegramWarning();
 
         var testMail = new Button { Text = "Gửi thử", AutoSize = true };
         testMail.Click += async (_, _) => await TestAsync("Email", () => NotificationService.SendEmailAsync(ReadEmail(), "Thư thử", "Thư thử từ ScheduleApp trên " + Environment.MachineName, null));
@@ -383,6 +393,8 @@ internal sealed class SettingsForm : BaseForm
         _chkWebhook.Checked = _s.Webhook.Enabled;
         _txtWebhook.Text = _s.Webhook.Url;
         _chkTgCommands.Checked = _s.Telegram.AllowCommands;
+        _chkTgUnsafe.Checked = _s.Telegram.RunWithoutApproval;
+        UpdateTelegramWarning();
 
         _txtUpdateSource.Text = _s.Update.Source;
         _txtUpdateToken.Text = _s.Update.Token.Length > 0 ? Unchanged : "";
@@ -410,8 +422,17 @@ internal sealed class SettingsForm : BaseForm
         BotToken = _txtTgToken.Text == Unchanged ? _s.Telegram.BotToken : Protector.Protect(_txtTgToken.Text.Trim()),
         ChatId = _txtTgChat.Text.Trim(),
         SendScreenshot = _chkTgPhoto.Checked,
-        AllowCommands = _chkTgCommands.Checked
+        AllowCommands = _chkTgCommands.Checked,
+        RunWithoutApproval = _chkTgUnsafe.Checked
     };
+
+    /// <summary>Cảnh báo ngay dưới ô nhận lệnh: chat id nhóm / kênh (âm) thì bot không nhận lệnh.</summary>
+    private void UpdateTelegramWarning()
+    {
+        bool group = _chkTgCommands.Checked && long.TryParse(_txtTgChat.Text.Trim(), out long id) && id < 0;
+        _lblTgWarning.Text = group ? "⚠ " + TelegramBot.GroupChatWarning : "";
+        _lblTgWarning.Visible = group;
+    }
 
     private EmailSettings ReadEmail() => new()
     {

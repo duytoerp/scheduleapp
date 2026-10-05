@@ -98,9 +98,20 @@ public sealed class FlowRunner
     /// <summary>Đưa cửa sổ lên trước; false nếu cửa sổ không còn.</summary>
     internal Func<IntPtr, bool> BringToFront { get; init; } = FocusIfAlive;
 
-    /// <summary>Đưa công việc vào hàng đợi; task hoàn thành khi flow chạy xong. Null nếu bị bỏ qua / hủy trong hàng đợi.</summary>
+    /// <summary>
+    /// Đưa công việc vào hàng đợi; task hoàn thành khi flow chạy xong. Null nếu bị bỏ qua / hủy trong hàng đợi.
+    /// Công việc chờ duyệt (<see cref="Job.NeedsApproval"/>) không chạy, từ bất kỳ nguồn nào — trả về kết quả lỗi kèm lý do.
+    /// </summary>
     public async Task<FlowResult?> EnqueueAsync(Job job, string trigger, RunOptions? options = null)
     {
+        if (job.NeedsApproval)
+        {
+            var refused = JobApproval.RefusalMessage(job);
+            Log.Warn($"[{job.Name}] Không chạy ({trigger}): {refused}");
+            return new FlowResult(false, refused);
+        }
+        // Flow chạy thật được mở đường dẫn mạng kể cả khi đang xem trước một công việc chờ duyệt khác.
+        RemotePathGate.EnterRun();
         string? envName = null;
         if (job.IsTestCase && options?.Recorder == null)
         {
@@ -242,7 +253,7 @@ public sealed class FlowRunner
                 options.StepStarted?.Invoke(i);
             }
         };
-        var ctx = new FlowContext(job, _ui, wrapped, _findJob, ct)
+        var ctx = new FlowContext(job, _ui, wrapped, FindApproved, ct)
         {
             BeforeStep = BeforeStep,
             GateRelease = (c, wait) => WaitWithoutTurnAsync(run, c, wait),
@@ -325,6 +336,11 @@ public sealed class FlowRunner
     private async Task AfterFlowAsync(Job job, FlowContext ctx, RunState run, FlowResult result, RunProgress progress)
     {
         var cleanup = !result.Ok && job.OnFailureJobId is Guid cleanupId && _findJob(cleanupId) is { } j && j.Id != job.Id ? j : null;
+        if (cleanup is { NeedsApproval: true })
+        {
+            Log.Warn($"   ↪ Không chạy công việc xử lý lỗi: {JobApproval.RefusalMessage(cleanup)}");
+            cleanup = null;
+        }
         if (run.TimedOut)
         {
             // Quá giờ lúc đang nhường lượt (chờ bấm OK): công việc xử lý lỗi có thể dùng chuột/phím nên phải chờ lấy lại lượt — có thể rất
@@ -384,6 +400,14 @@ public sealed class FlowRunner
         ctx.Depth = 1;
         var r = await FlowEngine.RunAsync(cleanup, ctx, 0, isRoot: false);
         if (!r.Ok) Log.Error($"   Công việc xử lý lỗi cũng thất bại: {r.Message}");
+    }
+
+    /// <summary>Công việc được bước "Chạy công việc khác" gọi tới — công việc chờ duyệt thì bước đó lỗi kèm lý do.</summary>
+    private Job? FindApproved(Guid id)
+    {
+        var job = _findJob(id);
+        if (job is { NeedsApproval: true }) throw new InvalidOperationException(JobApproval.RefusalMessage(job));
+        return job;
     }
 
     /// <summary>Flow chính bị dừng vì quá thời gian chạy tối đa — ghi là lỗi (khác với người dùng bấm Dừng).</summary>

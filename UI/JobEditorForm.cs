@@ -109,6 +109,11 @@ internal sealed class JobEditorForm : BaseForm
     private readonly Button _btnUndo = new() { Text = "↶ Hoàn tác", AutoSize = true, Enabled = false };
     private readonly Button _btnRedo = new() { Text = "↷ Làm lại", AutoSize = true, Enabled = false };
 
+    // Công việc chờ duyệt (tạo qua Telegram / nhập từ file): dải cảnh báo + nút Duyệt…, không mở đường dẫn mạng khi xem trước.
+    private readonly Label _lblApproval = new() { AutoSize = true, ForeColor = Theme.Warning, Margin = new Padding(3, 7, 12, 3) };
+    private readonly Button _btnApprove = new() { Text = "✔ Duyệt…", AutoSize = true };
+    private IDisposable? _remoteBlock;
+
     public Job Job => _job;
 
     protected override string HelpTopicId => "flow";
@@ -121,6 +126,10 @@ internal sealed class JobEditorForm : BaseForm
         _notifier = notifier;
         _otherJobs = allJobs.Where(j => j.Id != job.Id).OrderBy(j => j.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
         _chkDays = WeekOrder.Select(d => new CheckBox { Text = ScheduleConfig.DayName(d), AutoSize = true, Tag = d }).ToArray();
+
+        // Chặn trước khi nạp công việc: ảnh thu nhỏ, thời lượng video, sheet Excel… không mở \\máy-lạ\… của công việc chưa duyệt.
+        if (job.NeedsApproval) _remoteBlock = RemotePathGate.Block();
+        Disposed += (_, _) => _remoteBlock?.Dispose();
 
         SuspendLayout();
         Text = isNew ? "Thêm công việc" : $"Sửa công việc — {job.Name}";
@@ -295,6 +304,19 @@ internal sealed class JobEditorForm : BaseForm
         CancelButton = btnCancel;
 
         Controls.Add(root);
+        if (_job.NeedsApproval)
+        {
+            _lblApproval.Text = "⚠ Chờ duyệt" + (string.IsNullOrWhiteSpace(_job.ApprovalReason) ? "" : $" ({_job.ApprovalReason})") +
+                                ": công việc chưa chạy theo lịch, kích hoạt hay lệnh nào cho tới khi bạn xem từng bước và duyệt.";
+            _lblApproval.Font = new Font(Font, FontStyle.Bold);
+            _btnApprove.Click += (_, _) => Approve(runAfter: false);
+            var banner = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top, AutoSize = true, WrapContents = false, BackColor = Color.FromArgb(255, 244, 206), Padding = new Padding(8, 4, 8, 4)
+            };
+            banner.Controls.AddRange([_lblApproval, _btnApprove]);
+            Controls.Add(banner); // thêm sau root (Dock = Fill) nên nằm trên cùng
+        }
 
         _chkEnabled.CheckedChanged += (_, _) => UpdateStartSubtitle();
         _designer.EditRequested += EditStep;
@@ -558,7 +580,7 @@ internal sealed class JobEditorForm : BaseForm
         if (!path.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase) && !path.EndsWith(".xlsm", StringComparison.OrdinalIgnoreCase)) return;
         try
         {
-            if (File.Exists(path)) _cboDataSheet.Items.AddRange([.. Services.Data.TabularReader.SheetNames(path)]);
+            if (RemotePathGate.Allows(path) && File.Exists(path)) _cboDataSheet.Items.AddRange([.. Services.Data.TabularReader.SheetNames(path)]);
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Xml.XmlException) { }
     }
@@ -1263,6 +1285,28 @@ internal sealed class JobEditorForm : BaseForm
         _lblStructure.Text = structure.IsValid ? "" : "⚠ " + structure.Errors[0] + (structure.Errors.Count > 1 ? $"  (+{structure.Errors.Count - 1} lỗi khác)" : "");
     }
 
+    /// <summary>
+    /// Màn hình duyệt theo nội dung đang soạn (mọi bước, lịch, kích hoạt, biến); duyệt thì bỏ dấu chờ duyệt của công việc —
+    /// bấm Lưu để giữ (Hủy thì công việc vẫn chờ duyệt).
+    /// </summary>
+    private bool Approve(bool runAfter)
+    {
+        var current = _job.Clone();
+        ApplyTo(current);
+        using var form = new ApprovalForm("Duyệt công việc",
+            $"\"{current.Name}\" được tạo / sửa từ xa hoặc nhập từ file nên chưa được chạy. Đọc kỹ từng bước — nhất là các dòng ⚠ " +
+            "(chạy lệnh, mở ứng dụng, gửi dữ liệu đi, ghi file, gõ phím) — chỉ duyệt khi bạn biết rõ công việc này làm gì.",
+            JobApproval.Summary(current, _allJobs), runAfter ? "✔ Duyệt và chạy" : "✔ Duyệt");
+        if (form.ShowDialog(this) != DialogResult.OK) return false;
+        JobApproval.Approve(_job);
+        _remoteBlock?.Dispose();
+        _lblApproval.Text = "✔ Đã duyệt — bấm Lưu để giữ (bấm Hủy thì công việc vẫn chờ duyệt).";
+        _lblApproval.ForeColor = Theme.Success;
+        _btnApprove.Visible = false;
+        Log.Info($"Đã duyệt công việc \"{current.Name}\" trong trình soạn (có hiệu lực khi Lưu).");
+        return true;
+    }
+
     private async Task RunFromAsync(int index)
     {
         if (index < 0)
@@ -1287,6 +1331,8 @@ internal sealed class JobEditorForm : BaseForm
             MessageBox.Show(this, "Flow có lỗi cấu trúc:\n\n" + string.Join("\n", structure.Errors.Take(8)), Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
+        // Công việc chờ duyệt: xem từng bước và duyệt trước ("Duyệt và chạy").
+        if (_job.NeedsApproval && !Approve(runAfter: true)) return;
         var test = _job.Clone();
         ApplyTo(test);
         test.Id = Guid.NewGuid();

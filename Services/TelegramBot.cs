@@ -23,7 +23,8 @@ public interface IRemoteHost
 /// <summary>
 /// Nhận lệnh điều khiển qua Telegram (long polling): /list, /run, /stop, /status, /history, /screenshot,
 /// và tạo công việc mới bằng AI (/new mô tả → xem trước → nhắn thêm để sửa → /ok).
-/// Chỉ chấp nhận tin nhắn từ đúng chat id trong Cài đặt — người khác nhắn cho bot sẽ bị bỏ qua.
+/// Chỉ chấp nhận tin nhắn trong chat riêng với bot, từ đúng người có chat id trong Cài đặt — tin trong nhóm / kênh và người khác
+/// nhắn cho bot bị bỏ qua. Công việc tạo qua Telegram chờ duyệt trên máy trước khi được chạy (<see cref="Job.NeedsApproval"/>).
 /// </summary>
 public sealed class TelegramBot : IDisposable
 {
@@ -48,9 +49,11 @@ public sealed class TelegramBot : IDisposable
     public void Restart()
     {
         Stop();
-        var s = SettingsStore.Current.Telegram;
-        var token = Protector.Unprotect(s.BotToken);
-        if (!s.AllowCommands || token.Length == 0 || !long.TryParse(s.ChatId.Trim(), out long chatId)) return;
+        if (!CanStart(SettingsStore.Current.Telegram, out var token, out long chatId, out var warning))
+        {
+            if (warning != null) Log.Warn("Telegram: " + warning);
+            return;
+        }
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
         _ = Task.Run(() => LoopAsync(token, chatId, ct));
@@ -64,6 +67,62 @@ public sealed class TelegramBot : IDisposable
     }
 
     public void Dispose() => Stop();
+
+    /// <summary>Cảnh báo khi chat id là nhóm / kênh (số âm): lệnh điều khiển chỉ nhận từ chat riêng với bot.</summary>
+    public const string GroupChatWarning =
+        "Chat id âm là nhóm / kênh — lệnh điều khiển chỉ nhận từ chat riêng với bot (chat id dương = id của bạn). Thông báo vẫn gửi vào nhóm được.";
+
+    /// <summary>Cảnh báo khi token đã lưu không giải mã được.</summary>
+    public const string TokenWarning =
+        "Không giải mã được token Telegram (dữ liệu chép từ máy / tài khoản Windows khác) — nhập lại trong ⚙ Cài đặt";
+
+    /// <summary>
+    /// Có bật nhận lệnh được không: đã bật, có token giải mã được, chat id là số dương (chat riêng). False kèm <paramref name="warning"/>
+    /// khi cài đặt có vấn đề cần báo (token không giải mã được, chat id nhóm / không hợp lệ); null khi chỉ là chưa bật / chưa nhập.
+    /// </summary>
+    internal static bool CanStart(TelegramSettings s, out string token, out long chatId, out string? warning)
+    {
+        token = "";
+        chatId = 0;
+        warning = null;
+        if (!s.AllowCommands) return false;
+        if (!Protector.TryUnprotect(s.BotToken, out token))
+        {
+            warning = TokenWarning;
+            return false;
+        }
+        if (token.Length == 0 || s.ChatId.Trim().Length == 0) return false;
+        if (!long.TryParse(s.ChatId.Trim(), out chatId))
+        {
+            warning = $"chat id \"{s.ChatId.Trim()}\" không phải số — không nhận lệnh điều khiển.";
+            return false;
+        }
+        if (chatId <= 0)
+        {
+            warning = GroupChatWarning;
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Tin nhắn có được xử lý không: chat riêng (type "private") với đúng chat id trong Cài đặt VÀ người gửi chính là chat id đó.
+    /// Tin trong nhóm (kể cả nhóm có bạn), kênh, tin chuyển tiếp từ bot khác… đều bị bỏ qua. <paramref name="who"/> = chat / người gửi để ghi nhật ký.
+    /// </summary>
+    internal static bool IsFromOwner(JsonElement message, long chatId, out string who)
+    {
+        long chat = 0, from = 0;
+        string type = "";
+        if (message.TryGetProperty("chat", out var c))
+        {
+            if (c.TryGetProperty("id", out var id) && id.TryGetInt64(out var v)) chat = v;
+            if (c.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String) type = t.GetString() ?? "";
+        }
+        if (message.TryGetProperty("from", out var f) && f.TryGetProperty("id", out var fid) && fid.TryGetInt64(out var fv)) from = fv;
+        who = from != 0 && from != chat ? $"{chat}, người gửi {from}" : chat.ToString();
+        if (type.Length > 0 && type != "private") who += $", {type}";
+        return type == "private" && chat == chatId && from == chatId;
+    }
 
     private async Task LoopAsync(string token, long chatId, CancellationToken ct)
     {
@@ -89,10 +148,9 @@ public sealed class TelegramBot : IDisposable
                 {
                     offset = update.GetProperty("update_id").GetInt64() + 1;
                     if (!update.TryGetProperty("message", out var msg) || !msg.TryGetProperty("text", out var textEl)) continue;
-                    long from = msg.GetProperty("chat").GetProperty("id").GetInt64();
-                    if (from != chatId)
+                    if (!IsFromOwner(msg, chatId, out var who))
                     {
-                        Log.Warn($"Telegram: bỏ qua lệnh từ chat lạ ({from}).");
+                        Log.Warn($"Telegram: bỏ qua lệnh từ chat lạ ({who}).");
                         continue;
                     }
                     var text = textEl.GetString() ?? "";
@@ -229,6 +287,7 @@ public sealed class TelegramBot : IDisposable
         "/new <mô tả> — tạo công việc mới bằng AI (nói giờ chạy thì đặt lịch luôn), vd:\n" +
         "   /new 8h sáng các ngày làm việc mở D:\\bao-cao.xlsx, làm mới dữ liệu, lưu rồi báo cho tôi\n" +
         "   → xem bản nháp, nhắn thêm để sửa · /ok lưu · /ok chay lưu và chạy ngay · /huy bỏ\n" +
+        "   (công việc mới chờ bạn duyệt trên máy tính rồi mới chạy)\n" +
         "/list — danh sách công việc (kèm số thứ tự)\n" +
         "/run <số hoặc tên> — chạy công việc\n" +
         "/stop — dừng flow đang chạy\n" +
@@ -236,12 +295,13 @@ public sealed class TelegramBot : IDisposable
         "/history [n] — n lần chạy gần nhất\n" +
         "/screenshot — chụp màn hình máy tính";
 
-    private static string History(int count)
+    /// <summary>N lần chạy gần nhất — qua bộ che bí mật của nhật ký (thông báo lỗi có thể chứa mật khẩu / token).</summary>
+    internal static string History(int count)
     {
         var records = RunHistory.All.AsEnumerable().Reverse().Take(count).ToList();
         if (records.Count == 0) return "Chưa có lần chạy nào.";
-        return string.Join("\n", records.Select(r =>
-            $"{(r.Ok ? "✅" : "❌")} {r.Start:HH:mm dd/MM} {r.JobName} — {r.Message}" + (r.Duration.TotalSeconds >= 1 ? $" ({r.Duration.TotalSeconds:0}s)" : "")));
+        return Log.Redact(string.Join("\n", records.Select(r =>
+            $"{(r.Ok ? "✅" : "❌")} {r.Start:HH:mm dd/MM} {r.JobName} — {r.Message}" + (r.Duration.TotalSeconds >= 1 ? $" ({r.Duration.TotalSeconds:0}s)" : ""))));
     }
 
     private static async Task SendAsync(string api, long chatId, string text, CancellationToken ct)

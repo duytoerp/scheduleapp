@@ -258,7 +258,7 @@ internal sealed class TemplateSetupForm : BaseForm
         var status = _status[item];
         var text = box.Text.Trim();
         var path = Environment.ExpandEnvironmentVariables(text.Trim('"'));
-        bool usable = !TemplateSetup.IsPlaceholder(text) && !text.Contains("{{");
+        bool usable = !TemplateSetup.IsPlaceholder(text) && !text.Contains("{{") && RemotePathGate.Allows(path);
         bool exists = usable && File.Exists(path);
         bool folder = usable && !exists && Directory.Exists(path);
         MediaThumbnails.Thumbnail? thumb = null;

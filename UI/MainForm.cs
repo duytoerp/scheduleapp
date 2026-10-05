@@ -85,6 +85,9 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
     private bool _dataNoticeOpen;
     private bool _dataTipShown;
 
+    /// <summary>Công việc vừa nhận qua Telegram đang chờ duyệt — bấm vào thông báo ở khay thì mở màn hình duyệt.</summary>
+    private Guid? _approvalBalloon;
+
     public MainForm(bool startHidden, string? startupCommand = null)
     {
         _hideOnFirstShow = startHidden;
@@ -207,6 +210,9 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         _list.Resize += (_, _) => FitColumns();
 
         var listMenu = new ContextMenuStrip();
+        var approve = new ToolStripMenuItem("✔ Duyệt… (xem từng bước rồi cho phép chạy)") { Font = new Font(listMenu.Font, FontStyle.Bold) };
+        approve.Click += (_, _) => { if (SelectedJob() is { } j) ApproveJob(j); };
+        listMenu.Items.Add(approve);
         listMenu.Items.Add("▶ Chạy ngay", null, (_, _) => RunSelected());
         listMenu.Items.Add("🧪 Chạy kiểm thử && xem báo cáo", null, async (_, _) =>
         {
@@ -220,6 +226,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         listMenu.Items.Add(runGroup);
         listMenu.Opening += (_, _) =>
         {
+            approve.Visible = SelectedJob()?.NeedsApproval == true;
             var g = SelectedJob()?.Group ?? "";
             runGroup.Text = g.Length > 0 ? $"🧪 Chạy nhóm \"{g}\" như bộ kiểm thử" : "🧪 Chạy cả nhóm như bộ kiểm thử";
             runGroup.Enabled = g.Length > 0;
@@ -368,7 +375,8 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
             foreach (var j in _jobs.OrderBy(j => j.Group).ThenBy(j => j.Name))
             {
                 var job = j;
-                trayRun.DropDownItems.Add((job.Group.Length > 0 ? job.Group + " › " : "") + job.Name, null, (_, _) => RunJob(job, "chạy từ khay"));
+                trayRun.DropDownItems.Add((job.Group.Length > 0 ? job.Group + " › " : "") + job.Name + (job.NeedsApproval ? "  (chờ duyệt)" : ""), null,
+                    (_, _) => RunJob(job, "chạy từ khay", interactive: true));
             }
         };
         trayRun.DropDownItems.Add("(trống)");
@@ -392,8 +400,16 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         _tray.ContextMenuStrip = trayMenu;
         _tray.Visible = true;
         _tray.DoubleClick += (_, _) => ShowMain();
+        _tray.BalloonTipClosed += (_, _) => _approvalBalloon = null;
         _tray.BalloonTipClicked += async (_, _) =>
         {
+            if (_approvalBalloon is Guid pending)
+            {
+                _approvalBalloon = null;
+                ShowMain();
+                if (_jobs.Find(j => j.Id == pending) is { NeedsApproval: true } job) ApproveJob(job);
+                return;
+            }
             if (DataIssues.HasPending)
             {
                 ShowMain(); // mở cửa sổ → hiện chi tiết file dữ liệu hỏng
@@ -694,6 +710,13 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         for (int i = 0; i < item.SubItems.Count; i++) item.SubItems[i].ForeColor = color;
         if (job.Enabled && job.LastResult is { Length: > 0 } r) item.SubItems[5].ForeColor = r.StartsWith('✔') ? Theme.Success : Theme.Danger;
         if (job.IsTestCase) item.SubItems[1].Text = "Kịch bản kiểm thử · " + item.SubItems[1].Text;
+        if (job.NeedsApproval)
+        {
+            // Tạo qua Telegram / nhập từ file: không chạy theo cách nào cho tới khi duyệt (chuột phải → Duyệt…).
+            item.SubItems[2].Text = "⚠ Chờ duyệt";
+            item.SubItems[0].ForeColor = item.SubItems[2].ForeColor = Theme.Warning;
+            item.ToolTipText = JobApproval.RefusalMessage(job);
+        }
     }
 
     /// <summary>Thời điểm dễ đọc: "Hôm nay 08:30", "Ngày mai 08:30", "T2 05/10 08:30", năm khác thì kèm năm.</summary>
@@ -789,6 +812,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
             : jobs.Count == 1
                 ? $"Thiết lập cho \"{first.Name}\"."
                 : $"Thiết lập cho {jobs.Count} công việc — mỗi giá trị được áp cho mọi công việc đang dùng nó (vd đổi tenant một lần cho tất cả).";
+        using var gate = jobs.Any(j => j.NeedsApproval) ? RemotePathGate.Block() : null;
         using var form = new TemplateSetupForm(items, intro, ShowSettings);
         if (form.ShowDialog(this) != DialogResult.OK || form.Changes == 0) return false;
         Log.Info($"Thiết lập mẫu: cập nhật {form.Changes} giá trị cho {jobs.Count} công việc.");
@@ -886,11 +910,26 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
             MessageBox.Show(this, "Hãy chọn một công việc để chạy.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
-        RunJob(job, "chạy thủ công");
+        RunJob(job, "chạy thủ công", interactive: true);
     }
 
-    private void RunJob(Job job, string trigger)
+    /// <summary>
+    /// Chạy công việc. Công việc chờ duyệt: người dùng đang ở máy (<paramref name="interactive"/>) thì mở màn hình "Duyệt và chạy";
+    /// lệnh từ dòng lệnh / Telegram thì không chạy và báo lý do.
+    /// </summary>
+    private void RunJob(Job job, string trigger, bool interactive = false)
     {
+        if (job.NeedsApproval)
+        {
+            if (interactive)
+            {
+                ApproveJob(job, runTrigger: trigger);
+                return;
+            }
+            Log.Warn($"[{job.Name}] Không chạy ({trigger}): {JobApproval.RefusalMessage(job)}");
+            Notify("Chưa chạy — công việc chờ duyệt", JobApproval.RefusalMessage(job), true);
+            return;
+        }
         if (job.Steps.Count(s => s.Enabled) == 0)
         {
             Notify("Không chạy được", $"\"{job.Name}\" chưa có bước nào được bật.", true);
@@ -915,8 +954,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         else if (cmd.StartsWith("run ", StringComparison.OrdinalIgnoreCase))
         {
             var name = cmd[4..].Trim().Trim('"');
-            var job = _jobs.FirstOrDefault(j => j.Name.Equals(name, StringComparison.CurrentCultureIgnoreCase))
-                      ?? (_jobs.Where(j => j.Name.Contains(name, StringComparison.CurrentCultureIgnoreCase)).ToList() is { Count: 1 } one ? one[0] : null);
+            var job = FindForCommand(_jobs, name);
             if (job == null)
             {
                 Log.Warn($"Dòng lệnh: không tìm thấy công việc \"{name}\".");
@@ -925,6 +963,59 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
             }
             RunJob(job, "dòng lệnh");
         }
+    }
+
+    /// <summary>Công việc cho lệnh "run": theo Id (shortcut trên Desktop), đúng tên, hoặc tên chứa chuỗi nếu chỉ một công việc khớp.</summary>
+    internal static Job? FindForCommand(IReadOnlyList<Job> jobs, string nameOrId)
+    {
+        var name = nameOrId.Trim().Trim('"').Trim();
+        if (Guid.TryParse(name, out var id)) return jobs.FirstOrDefault(j => j.Id == id);
+        return jobs.FirstOrDefault(j => j.Name.Equals(name, StringComparison.CurrentCultureIgnoreCase))
+               ?? (jobs.Where(j => j.Name.Contains(name, StringComparison.CurrentCultureIgnoreCase)).ToList() is { Count: 1 } one ? one[0] : null);
+    }
+
+    /// <summary>
+    /// Tham số dòng lệnh của shortcut chạy công việc: theo Id (không phụ thuộc tên — tên có dấu ngoặc kép / ký tự lạ không làm hỏng
+    /// dòng lệnh, đổi tên công việc shortcut vẫn chạy đúng).
+    /// </summary>
+    internal static string ShortcutArguments(Job job) => $"--run {job.Id:D}";
+
+    // ───────────────────────────── Duyệt công việc từ xa / nhập từ file ─────────────────────────────
+
+    /// <summary>
+    /// Màn hình duyệt: tóm tắt từng bước (bước chạy lệnh, mở ứng dụng, gửi dữ liệu… hiện đầy đủ), lịch và kích hoạt; bấm Duyệt thì
+    /// công việc được chạy theo lịch / kích hoạt / lệnh. <paramref name="runTrigger"/> khác null = duyệt xong chạy luôn.
+    /// </summary>
+    private bool ApproveJob(Job job, string? runTrigger = null)
+    {
+        if (!job.NeedsApproval) return true;
+        using var form = new ApprovalForm("Duyệt công việc",
+            $"\"{job.Name}\" được tạo / sửa từ xa hoặc nhập từ file" + (string.IsNullOrWhiteSpace(job.ApprovalReason) ? "" : $" ({job.ApprovalReason})") +
+            " nên chưa được chạy. Đọc kỹ từng bước — nhất là các dòng ⚠ (chạy lệnh, mở ứng dụng, gửi dữ liệu đi, ghi file, gõ phím) — " +
+            "chỉ duyệt khi bạn biết rõ công việc này làm gì.",
+            JobApproval.Summary(job, _jobs), runTrigger != null ? "✔ Duyệt và chạy" : "✔ Duyệt");
+        if (form.ShowDialog(this) != DialogResult.OK) return false;
+        JobApproval.Approve(job);
+        JobsChanged(job);
+        Log.Info($"Đã duyệt công việc \"{job.Name}\" — từ giờ được chạy theo lịch, kích hoạt và lệnh.");
+        if (runTrigger != null) RunJob(job, runTrigger);
+        return true;
+    }
+
+    /// <summary>Sau khi nhập: tóm tắt bước cần xem kỹ của các công việc vừa nhập, cho duyệt tất cả một lần hoặc để sau.</summary>
+    private void ReviewImported(IReadOnlyList<Job> jobs, string source)
+    {
+        if (jobs.Count == 0) return;
+        using var form = new ApprovalForm("Công việc vừa nhập",
+            $"Đã nhập {jobs.Count} công việc từ {source}. Chúng chờ duyệt — chưa chạy theo lịch, kích hoạt hay lệnh nào. " +
+            "Dưới đây là lịch, kích hoạt, biến và mọi bước chạy lệnh / mở ứng dụng / gửi dữ liệu / ghi file / gõ phím (đầy đủ). " +
+            "Chỉ duyệt khi bạn tin nguồn của file; hoặc để sau rồi duyệt từng công việc (chuột phải → Duyệt…).",
+            JobApproval.ImportSummary(jobs), jobs.Count == 1 ? "✔ Duyệt" : $"✔ Duyệt cả {jobs.Count} công việc", "Để sau");
+        if (form.ShowDialog(this) != DialogResult.OK) return;
+        foreach (var j in jobs) JobApproval.Approve(j);
+        _scheduler.RecalculateAll();
+        JobsChanged();
+        Log.Info($"Đã duyệt {jobs.Count} công việc vừa nhập từ {source}.");
     }
 
     private void ShowHistory(Guid? jobId)
@@ -1009,7 +1100,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         var jobs = OrderedJobs();
         if (jobs.Count == 0) return "Chưa có công việc nào.";
         return string.Join("\n", jobs.Select((j, i) =>
-            $"{i + 1}. {(j.Enabled ? "" : "(tắt) ")}{j.Name}" + (j.NextRun is DateTime n ? $" — lần tới {n:HH:mm dd/MM}" : "")));
+            $"{i + 1}. {(j.NeedsApproval ? "(chờ duyệt) " : j.Enabled ? "" : "(tắt) ")}{j.Name}" + (j.NextRun is DateTime n ? $" — lần tới {n:HH:mm dd/MM}" : "")));
     });
 
     string IRemoteHost.Run(string nameOrNumber) => OnUi(() =>
@@ -1019,6 +1110,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
             : jobs.FirstOrDefault(j => j.Name.Equals(nameOrNumber, StringComparison.CurrentCultureIgnoreCase))
               ?? (jobs.Where(j => j.Name.Contains(nameOrNumber, StringComparison.CurrentCultureIgnoreCase)).ToList() is { Count: 1 } one ? one[0] : null);
         if (job == null) return $"Không tìm thấy công việc \"{nameOrNumber}\" (hoặc có nhiều công việc trùng tên) — xem /list.";
+        if (job.NeedsApproval) return "🔒 " + JobApproval.RefusalMessage(job);
         if (job.Steps.Count(s => s.Enabled) == 0) return $"\"{job.Name}\" chưa có bước nào được bật.";
         RunJob(job, "Telegram");
         return $"▶ Đã đưa \"{job.Name}\" vào hàng đợi. Kết quả sẽ có trong /history" +
@@ -1054,10 +1146,20 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         var lines = new List<string>
         {
             $"✅ Đã lưu \"{job.Name}\" — số {number} trong /list, nhóm \"{job.Group}\".",
-            job.NextRun is DateTime next ? $"⏰ Lần chạy tới: {next:HH:mm dd/MM/yyyy}" : $"⏰ Không có lịch — chạy bằng /run {number}"
+            job.NeedsApproval
+                ? job.Schedule.Type != ScheduleType.Manual ? $"⏰ Lịch: {job.Schedule.Describe()} — bắt đầu sau khi duyệt trên máy" : $"⏰ Không có lịch — sau khi duyệt, chạy bằng /run {number}"
+                : job.NextRun is DateTime next ? $"⏰ Lần chạy tới: {next:HH:mm dd/MM/yyyy}" : $"⏰ Không có lịch — chạy bằng /run {number}"
         };
         if (job.Triggers.Count > 0) lines.Add("⚡ " + string.Join("; ", job.Triggers.Select(t => t.Describe())));
-        if (run)
+        if (job.NeedsApproval)
+        {
+            // Báo ngay trên máy: bấm vào thông báo để xem từng bước và duyệt.
+            _approvalBalloon = job.Id;
+            _tray.ShowBalloonTip(15000, "Công việc mới từ Telegram chờ duyệt",
+                $"\"{job.Name}\" — nhấp vào đây để xem từng bước và duyệt. Chưa duyệt thì công việc không chạy.", ToolTipIcon.Warning);
+            Log.Warn($"Telegram: \"{job.Name}\" chờ duyệt trên máy — chuột phải công việc → Duyệt… để xem từng bước.");
+        }
+        else if (run)
         {
             RunJob(job, "Telegram");
             lines.Add("▶ Đã đưa vào hàng đợi chạy — kết quả trong /history.");
@@ -1074,7 +1176,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         return string.Join("\n", lines);
     });
 
-    /// <summary>Tạo shortcut .lnk trên Desktop chạy công việc đang chọn (ScheduleApp.exe --run "Tên").</summary>
+    /// <summary>Tạo shortcut .lnk trên Desktop chạy công việc đang chọn (ScheduleApp.exe --run &lt;Id công việc&gt;).</summary>
     private void CreateShortcut()
     {
         var job = SelectedJob();
@@ -1087,7 +1189,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
             dynamic shell = Activator.CreateInstance(shellType)!;
             dynamic link = shell.CreateShortcut(path);
             link.TargetPath = exe;
-            link.Arguments = $"--run \"{job.Name}\"";
+            link.Arguments = ShortcutArguments(job);
             link.WorkingDirectory = Path.GetDirectoryName(exe);
             link.IconLocation = exe + ",0";
             link.Description = $"Chạy \"{job.Name}\" bằng ScheduleApp";
@@ -1102,13 +1204,19 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         }
     }
 
-    /// <summary>Nhập công việc từ thư mục kịch bản: cùng Id thì thay, chưa có thì thêm.</summary>
+    /// <summary>
+    /// Nhập công việc từ thư mục kịch bản: cùng Id với kịch bản kiểm thử thì thay, chưa có thì thêm (không ghi đè công việc thường);
+    /// công việc mới / thay đổi chờ duyệt.
+    /// </summary>
     TestFolder.MergeResult ITestHost.ImportTests(IReadOnlyList<Job> jobs)
     {
-        var r = TestFolder.Merge(_jobs, jobs);
+        var r = TestFolder.Merge(_jobs, jobs, JobApproval.ImportReason("thư mục kịch bản"));
         _scheduler.RecalculateAll();
         JobsChanged();
         Log.Info($"Đã nhập từ thư mục kịch bản: {r.Updated} công việc cập nhật, {r.Added} công việc thêm mới.");
+        if (r.Skipped > 0)
+            Log.Warn($"Bỏ qua {r.Skipped} công việc trong thư mục trùng Id với công việc thường (không phải kịch bản kiểm thử) đang có — giữ nguyên công việc đang có.");
+        ReviewImported([.. jobs.Where(j => j.NeedsApproval && _jobs.Contains(j))], "thư mục kịch bản");
         return r;
     }
 
@@ -1119,10 +1227,15 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         try
         {
             var imported = JobStore.Import(dlg.FileName);
+            // File từ nơi khác có thể chứa lệnh / lịch tự chạy → chờ duyệt, không chạy ngay.
+            var source = "file " + Path.GetFileName(dlg.FileName);
+            var reason = JobApproval.ImportReason(source);
+            foreach (var j in imported) JobApproval.Require(j, reason);
             _jobs.AddRange(imported);
             foreach (var j in imported) _scheduler.Recalculate(j);
             JobsChanged();
-            Log.Info($"Đã nhập {imported.Count} công việc từ {dlg.FileName}.");
+            Log.Info($"Đã nhập {imported.Count} công việc từ {dlg.FileName} — chờ duyệt trước khi chạy.");
+            ReviewImported(imported, source);
         }
         catch (Exception ex) { ShowError("Không nhập được file: " + ex.Message); }
     }
@@ -1149,6 +1262,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
             return;
         }
         _btnStop.Enabled = true;
+        RemotePathGate.EnterRun();
         try
         {
             var env = TestEnvironments.Current();
@@ -1302,8 +1416,28 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         base.OnHandleDestroyed(e);
     }
 
+    private const int WM_QUERYENDSESSION = 0x0011;
+
+    /// <summary>
+    /// WM_QUERYENDSESSION: từ chối khi Restart Manager (bộ cài đặt / cập nhật — lParam có ENDSESSION_CLOSEAPP) muốn đóng ScheduleApp
+    /// trong lúc flow đang chạy. Không bao giờ chặn tắt máy / đăng xuất thật (không có ENDSESSION_CLOSEAPP, hoặc có ENDSESSION_CRITICAL /
+    /// ENDSESSION_LOGOFF).
+    /// </summary>
+    internal static bool RefuseEndSession(long lParam, bool flowRunning)
+    {
+        const long closeApp = 0x1, critical = 0x40000000, logoff = 0x80000000;
+        return flowRunning && (lParam & closeApp) != 0 && (lParam & (critical | logoff)) == 0;
+    }
+
     protected override void WndProc(ref Message m)
     {
+        if (m.Msg == WM_QUERYENDSESSION && RefuseEndSession((long)m.LParam, _runner.IsBusy))
+        {
+            Log.Warn("Bộ cài đặt muốn đóng ScheduleApp nhưng đang có flow chạy — từ chối để flow không bị cắt ngang. " +
+                     "Chạy lại bộ cài khi flow xong (hoặc bấm ■ Dừng).");
+            m.Result = IntPtr.Zero;
+            return;
+        }
         if (m.Msg == Win32.WM_HOTKEY)
         {
             int id = (int)m.WParam;

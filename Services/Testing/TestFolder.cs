@@ -15,8 +15,11 @@ public static class TestFolder
     /// <summary>Kết quả xuất: file đã ghi và file cũ đã xóa (công việc được đổi tên / đổi nhóm).</summary>
     public sealed record ExportResult(IReadOnlyList<string> Written, IReadOnlyList<string> Removed);
 
-    /// <summary>Kết quả nhập: số công việc cập nhật (cùng Id) và thêm mới.</summary>
-    public sealed record MergeResult(int Updated, int Added);
+    /// <summary>
+    /// Kết quả nhập: số công việc cập nhật (cùng Id) và thêm mới; <paramref name="Skipped"/> = công việc trong thư mục trùng Id với
+    /// công việc thường (không phải kịch bản kiểm thử) đang có — giữ nguyên công việc đang có.
+    /// </summary>
+    public sealed record MergeResult(int Updated, int Added, int Skipped = 0);
 
     /// <summary>Các công việc cần mang theo: công việc được chọn và mọi công việc chúng gọi tới (Chạy công việc khác, công việc xử lý lỗi).</summary>
     public static List<Job> WithDependencies(IEnumerable<Job> selected, IReadOnlyList<Job> all)
@@ -71,6 +74,7 @@ public static class TestFolder
             var copy = job.Clone();
             copy.LastRun = null;
             copy.LastResult = null;
+            JobApproval.Approve(copy); // duyệt là việc của từng máy — máy nhập về tự đánh dấu chờ duyệt
             File.WriteAllText(path, JsonSerializer.Serialize(copy, JsonDefaults.Options) + Environment.NewLine);
             written.Add(path);
             if (existing.TryGetValue(job.Id, out var old) && !old.Equals(Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase))
@@ -117,27 +121,52 @@ public static class TestFolder
         return File.Exists(path) ? JsonSerializer.Deserialize<List<TestEnvironment>>(File.ReadAllText(path), JsonDefaults.Options) ?? [] : [];
     }
 
-    /// <summary>Nhập công việc từ thư mục vào danh sách hiện có: cùng Id thì thay, chưa có thì thêm (giữ lần chạy cuối của công việc cũ).</summary>
-    public static MergeResult Merge(List<Job> current, IEnumerable<Job> incoming)
+    /// <summary>
+    /// Nhập công việc từ thư mục vào danh sách hiện có: cùng Id với một kịch bản kiểm thử thì thay (giữ lần chạy cuối), chưa có thì thêm.
+    /// Không bao giờ thay công việc thường (không phải kịch bản) — thư mục lạ không ghi đè được công việc theo lịch của bạn.
+    /// Công việc thêm / thay đổi được đánh dấu chờ duyệt (<paramref name="reason"/>); kịch bản không đổi gì giữ nguyên trạng thái duyệt.
+    /// </summary>
+    public static MergeResult Merge(List<Job> current, IEnumerable<Job> incoming, string? reason = null)
     {
-        int updated = 0, added = 0;
+        reason ??= JobApproval.ImportReason("thư mục kịch bản");
+        int updated = 0, added = 0, skipped = 0;
         foreach (var job in incoming)
         {
             int i = current.FindIndex(j => j.Id == job.Id);
             if (i >= 0)
             {
-                job.LastRun = current[i].LastRun;
-                job.LastResult = current[i].LastResult;
+                var old = current[i];
+                if (!old.IsTestCase || !job.IsTestCase)
+                {
+                    skipped++;
+                    continue;
+                }
+                bool same = !old.NeedsApproval && Content(old) == Content(job);
+                job.LastRun = old.LastRun;
+                job.LastResult = old.LastResult;
+                if (same) JobApproval.Approve(job);
+                else JobApproval.Require(job, reason);
                 current[i] = job;
                 updated++;
             }
             else
             {
+                JobApproval.Require(job, reason);
                 current.Add(job);
                 added++;
             }
         }
-        return new MergeResult(updated, added);
+        return new MergeResult(updated, added, skipped);
+    }
+
+    /// <summary>Nội dung công việc để so sánh (bỏ lần chạy cuối và trạng thái duyệt).</summary>
+    private static string Content(Job job)
+    {
+        var copy = job.Clone();
+        copy.LastRun = null;
+        copy.LastResult = null;
+        JobApproval.Approve(copy);
+        return JsonSerializer.Serialize(copy, JsonDefaults.Options);
     }
 
     private static IEnumerable<string> JobFiles(string folder) =>

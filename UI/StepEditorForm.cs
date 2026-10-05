@@ -1723,7 +1723,7 @@ internal sealed class StepEditorForm : BaseForm
     private void LoadSheetNames()
     {
         var path = _cboTarget.Text.Trim().Trim('"');
-        if (path.Contains("{{") || !File.Exists(path)) return;
+        if (path.Contains("{{") || !RemotePathGate.Allows(path) || !File.Exists(path)) return;
         try
         {
             var text = _cboArgs.Text;

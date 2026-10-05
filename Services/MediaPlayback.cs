@@ -43,7 +43,9 @@ internal static class MediaPlayback
         {
             var path = Environment.ExpandEnvironmentVariables(line.Trim().Trim('"', '\'').Trim());
             if (path.Length == 0) continue;
-            if (File.Exists(path)) files.Add(Path.GetFullPath(path));
+            // Xem trước công việc chờ duyệt: không mở \\máy-khác\… (RemotePathGate) — coi như chưa thấy.
+            if (!RemotePathGate.Allows(path)) missing.Add(path);
+            else if (File.Exists(path)) files.Add(Path.GetFullPath(path));
             else if (Directory.Exists(path))
                 files.AddRange(Directory.GetFiles(path).Where(f => Extensions.Contains(Path.GetExtension(f)))
                     .Order(NameOrder));

@@ -82,6 +82,12 @@ public sealed class TelegramSettings
 
     /// <summary>Nhận lệnh điều khiển từ Telegram (/run, /stop, /status…) — chỉ từ đúng chat id ở trên.</summary>
     public bool AllowCommands { get; set; }
+
+    /// <summary>
+    /// Không an toàn: công việc tạo qua Telegram chạy ngay, không cần duyệt trên máy. Mặc định tắt — công việc từ Telegram
+    /// chờ duyệt (<see cref="Job.NeedsApproval"/>).
+    /// </summary>
+    public bool RunWithoutApproval { get; set; }
 }
 
 public enum ApiAuthType

@@ -26,9 +26,10 @@ internal static partial class MediaInfo
     private static readonly ConcurrentDictionary<string, (long Size, DateTime Modified, TimeSpan? Duration)> Cache =
         new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Thời lượng của file; null = không có file / không đọc được.</summary>
+    /// <summary>Thời lượng của file; null = không có file / không đọc được / đường dẫn mạng đang bị chặn (<see cref="RemotePathGate"/>).</summary>
     public static async Task<TimeSpan?> GetDurationAsync(string path, CancellationToken ct = default)
     {
+        if (!RemotePathGate.Allows(path)) return null;
         FileInfo info;
         try
         {
@@ -159,6 +160,13 @@ internal static partial class MediaInfo
                     }
                     // Biến đổi theo từng lần chạy ({{today}}, {{now:…}}, {{random}}…): file lúc chạy có thể khác → tổng chưa chắc.
                     if (VariableExpander.Names(raw).Any(n => PerRunVariable().IsMatch(n))) complete = false;
+                }
+                if (!RemotePathGate.Allows(line))
+                {
+                    // Xem trước công việc chờ duyệt: không mở thư mục / file trên máy khác.
+                    entries.Add(new Entry(raw, null, null, RemotePathGate.BlockedMessage) { Item = item });
+                    complete = false;
+                    continue;
                 }
                 (files, missing) = MediaPlayback.Resolve([line]);
             }

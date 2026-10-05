@@ -48,8 +48,9 @@ public sealed class TriggerManager : IDisposable
         SystemEvents.SessionSwitch += OnSessionSwitch;
     }
 
+    /// <summary>Trình kích hoạt đang bật của các công việc bật và đã duyệt (công việc chờ duyệt không được kích hoạt).</summary>
     private IEnumerable<(Job Job, JobTrigger Trigger)> Active(TriggerType type) =>
-        _jobs.Where(j => j.Enabled).SelectMany(j => j.Triggers.Where(t => t.Enabled && t.Type == type).Select(t => (j, t)));
+        _jobs.Where(j => j.Armed).SelectMany(j => j.Triggers.Where(t => t.Enabled && t.Type == type).Select(t => (j, t)));
 
     /// <summary>Đăng ký lại toàn bộ trình kích hoạt sau khi danh sách công việc thay đổi.</summary>
     public void Reload()

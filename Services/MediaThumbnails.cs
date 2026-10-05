@@ -21,9 +21,13 @@ internal static class MediaThumbnails
     /// <summary>Đọc tối đa vài file cùng lúc — thư mục nhiều video không làm nghẽn máy.</summary>
     private static readonly SemaphoreSlim Gate = new(3);
 
-    /// <summary>Ảnh thu nhỏ có cạnh dài khoảng <paramref name="size"/> px, giữ tỉ lệ khung hình; null nếu không có file / không đọc được.</summary>
+    /// <summary>
+    /// Ảnh thu nhỏ có cạnh dài khoảng <paramref name="size"/> px, giữ tỉ lệ khung hình; null nếu không có file / không đọc được,
+    /// hoặc là đường dẫn mạng trong lúc xem công việc chờ duyệt (<see cref="RemotePathGate"/>).
+    /// </summary>
     public static async Task<Thumbnail?> GetAsync(string path, int size, CancellationToken ct = default)
     {
+        if (!RemotePathGate.Allows(path)) return null;
         await Gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {

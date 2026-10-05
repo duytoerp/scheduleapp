@@ -21,6 +21,7 @@ public static class TabularReader
 {
     public static DataTableResult Read(string path, string? sheet = null)
     {
+        Gate(path);
         if (!File.Exists(path)) throw new FileNotFoundException($"Không tìm thấy file \"{path}\".");
         var ext = Path.GetExtension(path).ToLowerInvariant();
         var raw = ext switch
@@ -137,9 +138,16 @@ public static class TabularReader
     /// <summary>Tên các sheet trong file Excel (để chọn trong trình soạn).</summary>
     public static List<string> SheetNames(string path)
     {
+        Gate(path);
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
         return Load(zip, "xl/workbook.xml")?.Descendants(Main + "sheet").Select(s => (string?)s.Attribute("name") ?? "").ToList() ?? [];
+    }
+
+    /// <summary>Xem trước công việc chờ duyệt: không mở file trên máy khác (<see cref="RemotePathGate"/>).</summary>
+    private static void Gate(string path)
+    {
+        if (!RemotePathGate.Allows(path)) throw new IOException($"Chưa mở \"{path}\": {RemotePathGate.BlockedMessage}.");
     }
 
     private static List<string[]> ReadXlsx(string path, string? sheetName)

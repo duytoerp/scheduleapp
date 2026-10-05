@@ -149,9 +149,15 @@ public class TelegramJobTests
             Assert.Equal(3, follow.Count);
             Assert.Contains("Yêu cầu sửa tiếp: chỉ chạy thứ 2 và thứ 6", (string)follow[2]!["content"]![1]!["text"]!);
 
-            Assert.Contains("✅ Đã lưu \"Báo cáo doanh thu sáng\"", builder.Save(run: true));
+            // Mặc định công việc từ Telegram chờ duyệt trên máy: "/ok chay" lưu nhưng không chạy ngay.
+            var saved = builder.Save(run: true);
+            Assert.Contains("✅ Đã lưu \"Báo cáo doanh thu sáng\"", saved);
+            Assert.Contains("🔒 Chờ duyệt trên máy tính", saved);
+            Assert.Contains("Vì vậy chưa chạy ngay", saved);
             var (job, run) = Assert.Single(host.Added);
-            Assert.True(run);
+            Assert.False(run);
+            Assert.True(job.NeedsApproval);
+            Assert.StartsWith("Tạo qua Telegram ", job.ApprovalReason);
             Assert.Equal("Telegram", job.Group);
             Assert.Equal(ScheduleType.Weekly, job.Schedule.Type);
             Assert.Equal([DayOfWeek.Monday, DayOfWeek.Friday], job.Schedule.Days);
@@ -219,7 +225,10 @@ public class TelegramJobTests
                 var result = new JsonArray([.. pending.Select(u => (JsonNode)new JsonObject
                 {
                     ["update_id"] = u.Id,
-                    ["message"] = new JsonObject { ["chat"] = new JsonObject { ["id"] = u.Chat }, ["text"] = u.Text }
+                    ["message"] = new JsonObject
+                    {
+                        ["chat"] = new JsonObject { ["id"] = u.Chat, ["type"] = "private" }, ["from"] = new JsonObject { ["id"] = u.Chat }, ["text"] = u.Text
+                    }
                 })]);
                 return (200, new JsonObject { ["ok"] = true, ["result"] = result }.ToJsonString());
             });

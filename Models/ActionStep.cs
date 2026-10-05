@@ -764,6 +764,61 @@ public sealed class ActionStep
         _ => Type.ToString()
     };
 
+    /// <summary>
+    /// Bước cần xem kỹ khi công việc đến từ nguồn khác (Telegram, file nhập): chạy lệnh, mở ứng dụng, gửi HTTP, ghi file, mở trang web /
+    /// chạy JavaScript, gõ chữ / nhấn phím, đóng ứng dụng — bản xem trước và màn hình duyệt luôn hiện đầy đủ nội dung của chúng.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsRisky => Type is StepType.RunCommand or StepType.LaunchApp or StepType.HttpRequest or StepType.WriteData or StepType.TypeText
+                               or StepType.KeyPress or StepType.SetElementText or StepType.CloseApp
+        || (Type == StepType.SetVariable && VarSource == VarSource.Command)
+        || (Type == StepType.Browser && BrowserAction is BrowserAction.Launch or BrowserAction.Navigate or BrowserAction.SetValue or BrowserAction.RunScript)
+        || (Type == StepType.Dynamics && D365Action is D365Action.RunScript or D365Action.WebApi);
+
+    /// <summary>
+    /// Như <see cref="Describe"/> nhưng KHÔNG cắt ngắn với bước <see cref="IsRisky"/>: lệnh, đường dẫn + tham số, phương thức + URL + nội dung,
+    /// file ghi, chữ gõ… (xuống dòng thành " ⏎ "). Không che bí mật — người gọi dùng <c>Log.Redact</c>.
+    /// </summary>
+    public string FullDescribe()
+    {
+        if (!IsRisky) return Describe();
+        static string One(string s) => s.Replace("\r", "").Replace("\n", " ⏎ ");
+        var window = string.IsNullOrWhiteSpace(Target) ? " (vào cửa sổ đang dùng)" : $" vào \"{Target}\"";
+        return Type switch
+        {
+            StepType.RunCommand => $"Chạy lệnh: {One(Target)}" + IntoVar(),
+            StepType.SetVariable => $"{{{{{Variable}}}}} ← output lệnh: {One(Target)}",
+            StepType.LaunchApp => $"Mở \"{Target}\"" + (string.IsNullOrWhiteSpace(Arguments) ? "" : $" với tham số: {One(Arguments)}"),
+            StepType.HttpRequest => $"{(string.IsNullOrWhiteSpace(Method) ? "GET" : Method.ToUpperInvariant())} " +
+                                    (string.IsNullOrWhiteSpace(Connection) ? "" : $"[kết nối {Connection}] ") + One(Target) +
+                                    (string.IsNullOrWhiteSpace(Headers) ? "" : $" · header: {One(Headers)}") +
+                                    (string.IsNullOrWhiteSpace(Text) ? "" : $" · nội dung gửi: {One(Text)}") + IntoVar(),
+            StepType.WriteData => (DataAction switch
+                                  {
+                                      DataAction.WriteText => "Ghi đè file",
+                                      DataAction.AppendText => "Thêm vào cuối file",
+                                      DataAction.AppendRow => "Thêm dòng vào file",
+                                      _ => $"Sửa dòng [{One(RowRef)}] của file"
+                                  }) + $" \"{Target}\"" + (string.IsNullOrWhiteSpace(Arguments) || IsTextWrite ? "" : $" [sheet {Arguments}]") + $": {One(Text)}",
+            StepType.TypeText => $"Gõ \"{One(Text)}\"" + window,
+            StepType.KeyPress => $"Nhấn {One(Text)}" + window,
+            StepType.SetElementText => $"Nhập \"{One(Arguments)}\" vào [{One(Text)}]" + SearchArea(),
+            StepType.Browser => BrowserAction switch
+            {
+                BrowserAction.Launch => $"Mở {(string.IsNullOrWhiteSpace(Target) ? "Chrome" : Target)} chế độ điều khiển{(Force ? " (ẩn)" : "")}" +
+                                        (string.IsNullOrWhiteSpace(Arguments) ? "" : $" · hồ sơ \"{One(Arguments)}\"") +
+                                        (string.IsNullOrWhiteSpace(Text) ? "" : $" → {One(Text)}"),
+                BrowserAction.Navigate => $"Mở trang {One(Text)}" + InTab(),
+                BrowserAction.SetValue => $"Nhập \"{One(Arguments)}\" vào \"{One(Text)}\"" + InTab(),
+                _ => $"Chạy JavaScript: {One(Text)}" + IntoVar() + InTab()
+            },
+            StepType.Dynamics when D365Action == D365Action.RunScript => $"D365: chạy JavaScript: {One(Text)}" + IntoVar() + InTab(),
+            StepType.Dynamics => $"D365: {(string.IsNullOrWhiteSpace(Method) ? "GET" : Method.ToUpperInvariant())} {One(Arguments)}" +
+                                 (string.IsNullOrWhiteSpace(Text) ? "" : $" · nội dung gửi: {One(Text)}") + IntoVar() + InTab(),
+            _ => Describe()
+        };
+    }
+
     /// <summary>Gán biến: ô "Tham số" là regex trích xuất (với các nguồn đọc dữ liệu thô).</summary>
     [JsonIgnore]
     public bool UsesRegex => VarSource is VarSource.Clipboard or VarSource.Command or VarSource.ScreenText or VarSource.Element or VarSource.File;

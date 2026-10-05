@@ -9,7 +9,7 @@ namespace ScheduleApp.Services;
 /// </summary>
 public sealed class ChatJobBuilder(IRemoteHost host)
 {
-    /// <summary>Số bước tối đa liệt kê trong tin nhắn xem trước.</summary>
+    /// <summary>Số bước tối đa liệt kê trong tin nhắn xem trước — bước cần xem kỹ (chạy lệnh, mở ứng dụng…) luôn được liệt kê đầy đủ.</summary>
     private const int PreviewSteps = 40;
 
     private FlowGenerator? _generator;
@@ -41,8 +41,12 @@ public sealed class ChatJobBuilder(IRemoteHost host)
                 _draft = null;
             }
             _draft = await _generator!.SendAsync(text, FlowGenerator.Mode.Replace, ct);
-            // Bước phát video / nhạc: tính luôn thời lượng (hiện trong bản nháp, lưu cùng công việc).
-            try { await MediaInfo.FillDurationsAsync(_draft.Steps, _draft.Variables, ct); }
+            // Bước phát video / nhạc: tính luôn thời lượng (hiện trong bản nháp, lưu cùng công việc). Không mở đường dẫn mạng
+            // trong bản nháp nhận từ xa (Windows sẽ tự đăng nhập tới máy chủ lạ).
+            try
+            {
+                using (RemotePathGate.Block()) await MediaInfo.FillDurationsAsync(_draft.Steps, _draft.Variables, ct);
+            }
             catch (Exception ex) when (ex is not OperationCanceledException) { Log.Warn("Telegram: không tính được thời lượng video — " + ex.Message); }
             return Preview(_draft);
         }
@@ -58,13 +62,21 @@ public sealed class ChatJobBuilder(IRemoteHost host)
         }
     }
 
-    /// <summary>Lưu bản nháp thành công việc mới; <paramref name="run"/> = chạy ngay.</summary>
+    /// <summary>
+    /// Lưu bản nháp thành công việc mới; <paramref name="run"/> = chạy ngay. Mặc định công việc chờ duyệt trên máy (không chạy theo lịch,
+    /// kích hoạt hay /run cho tới khi duyệt) — trừ khi Cài đặt cho phép chạy ngay không cần duyệt.
+    /// </summary>
     public string Save(bool run)
     {
         if (IsBusy) return "⏳ Đang dựng bản nháp, chờ xong rồi /ok.";
         if (_draft is not { } draft) return "Chưa có bản nháp nào — tạo bằng /new <mô tả>.";
         if (draft.Steps.Count == 0) return "Bản nháp chưa có bước nào — nhắn yêu cầu để sửa, hoặc /huy.";
-        var reply = host.AddJob(ToJob(draft), run);
+        var job = ToJob(draft);
+        if (!SettingsStore.Current.Telegram.RunWithoutApproval) JobApproval.Require(job, JobApproval.TelegramReason());
+        var reply = host.AddJob(job, run && !job.NeedsApproval);
+        if (job.NeedsApproval)
+            reply += "\n🔒 Chờ duyệt trên máy tính: công việc chưa chạy theo lịch, kích hoạt hay /run cho tới khi bạn mở ScheduleApp trên máy, " +
+                     "xem từng bước và bấm Duyệt (chuột phải công việc → Duyệt…)." + (run ? " Vì vậy chưa chạy ngay." : "");
         _draft = null;
         _generator = null;
         return reply;
@@ -104,11 +116,21 @@ public sealed class ChatJobBuilder(IRemoteHost host)
 
         sb.AppendLine().AppendLine($"🔧 {r.Steps.Count} bước:");
         var depth = FlowStructure.Build(r.Steps).Depth;
-        for (int i = 0; i < Math.Min(PreviewSteps, r.Steps.Count); i++)
-            sb.AppendLine(new string(' ', Math.Min(depth[i], 6) * 3) + $"{i + 1}. {r.Steps[i].Describe()}");
-        if (r.Steps.Count > PreviewSteps) sb.AppendLine($"… và {r.Steps.Count - PreviewSteps} bước nữa");
+        int omitted = 0;
+        for (int i = 0; i < r.Steps.Count; i++)
+        {
+            var step = r.Steps[i];
+            // Bước cần xem kỹ (chạy lệnh, mở ứng dụng, gửi HTTP, ghi file, gõ phím…) luôn hiện, đầy đủ — kể cả sau giới hạn số bước.
+            if (i >= PreviewSteps && !step.IsRisky)
+            {
+                omitted++;
+                continue;
+            }
+            sb.AppendLine(new string(' ', Math.Min(depth[i], 6) * 3) + $"{(step.IsRisky ? "⚠ " : "")}{i + 1}. {Log.Redact(step.FullDescribe())}");
+        }
+        if (omitted > 0) sb.AppendLine($"… và {omitted} bước khác không hiện (không có bước chạy lệnh / mở ứng dụng / gõ phím nào trong số đó)");
 
-        if (r.Variables.Count > 0) sb.AppendLine().AppendLine("🔣 Biến: " + string.Join(", ", r.Variables.Select(v => $"{v.Name} = \"{v.Value}\"")));
+        if (r.Variables.Count > 0) sb.AppendLine().AppendLine("🔣 Biến: " + Log.Redact(string.Join(", ", r.Variables.Select(v => $"{v.Name} = \"{v.Value}\""))));
         if (r.Notes.Count > 0)
         {
             sb.AppendLine().AppendLine("📌 Cần kiểm tra trước khi chạy:");
@@ -120,6 +142,8 @@ public sealed class ChatJobBuilder(IRemoteHost host)
             foreach (var p in r.Problems) sb.AppendLine("• " + p);
         }
         sb.AppendLine().Append("👉 /ok — lưu · /ok chay — lưu và chạy ngay · nhắn thêm để sửa (vd \"dùng Edge thay Chrome\", \"chạy lúc 9h\") · /huy — bỏ");
+        if (!SettingsStore.Current.Telegram.RunWithoutApproval)
+            sb.AppendLine().Append("🔒 Lưu xong, công việc chờ bạn duyệt trên máy tính (xem từng bước) rồi mới chạy.");
         return sb.ToString();
     }
 }

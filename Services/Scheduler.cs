@@ -82,6 +82,7 @@ public sealed class Scheduler : IDisposable
         _dueUtc.TryGetValue(job, out var u) ? u
         : job.NextRun is DateTime local ? ScheduleConfig.LocalToUtc(local, CurrentZone) : null;
 
+    /// <summary>Tính lần chạy tới; công việc tắt hoặc chờ duyệt (<see cref="Job.NeedsApproval"/>) không có lịch chạy.</summary>
     public void Recalculate(Job job)
     {
         Reschedule(job, UtcClock(), DueUtc(job));
@@ -100,7 +101,7 @@ public sealed class Scheduler : IDisposable
     /// <summary>Tính lại lần chạy tới; chỉ cho nhắc lại khi giờ chạy đổi (đã nhắc cho đúng lần chạy này thì không nhắc lần nữa).</summary>
     private void Reschedule(Job job, DateTime nowUtc, DateTime? oldUtc)
     {
-        var next = job.Enabled ? NextUtcFor(job, nowUtc) : null;
+        var next = job.Armed ? NextUtcFor(job, nowUtc) : null;
         SetNext(job, next);
         if (next != oldUtc) job.Reminded = false;
     }
@@ -136,7 +137,7 @@ public sealed class Scheduler : IDisposable
 
         foreach (var job in _jobs.ToList())
         {
-            if (!job.Enabled || DueUtc(job) is not DateTime next) continue;
+            if (!job.Armed || DueUtc(job) is not DateTime next) continue;
 
             if (job.RemindBeforeMinutes > 0 && !job.Reminded && nowUtc < next &&
                 nowUtc >= next.AddMinutes(-job.RemindBeforeMinutes))
@@ -218,7 +219,7 @@ public sealed class Scheduler : IDisposable
 
         foreach (var job in _jobs)
         {
-            if (!job.Enabled || job.MissedRunPolicy == MissedRunPolicy.Skip || job.Schedule.Type == ScheduleType.Manual) continue;
+            if (!job.Armed || job.MissedRunPolicy == MissedRunPolicy.Skip || job.Schedule.Type == ScheduleType.Manual) continue;
             if (NextUtcFor(job, fromUtc) is not DateTime missedUtc || missedUtc >= nowUtc) continue;
             var missed = ToLocal(missedUtc);
             if (job.LastRun is DateTime last && last >= missed) continue;
@@ -229,7 +230,7 @@ public sealed class Scheduler : IDisposable
     /// <summary>Hẹn giờ đánh thức máy 1 phút trước lần chạy sớm nhất của các công việc bật "Đánh thức máy".</summary>
     private void UpdateWakeTimer()
     {
-        var nextUtc = _jobs.Where(j => j.Enabled && j.WakeComputer).Select(DueUtc).Where(d => d != null).Min();
+        var nextUtc = _jobs.Where(j => j.Armed && j.WakeComputer).Select(DueUtc).Where(d => d != null).Min();
         // PowerHelper đổi giờ địa phương của Windows sang FILETIME — luôn dùng múi giờ thật ở đây.
         DateTime? at = nextUtc is DateTime u ? ScheduleConfig.UtcToLocal(u.AddMinutes(-1), TimeZoneInfo.Local) : null;
         if (at == _wakeAt) return;

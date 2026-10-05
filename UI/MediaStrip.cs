@@ -797,7 +797,7 @@ internal sealed class MediaStrip : Control
 
     private static bool IsFolderLine(string line)
     {
-        try { return Directory.Exists(ExpandLine(line)); }
+        try { return RemotePathGate.Allows(ExpandLine(line)) && Directory.Exists(ExpandLine(line)); }
         catch (ArgumentException) { return false; }
     }
 
