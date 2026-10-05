@@ -101,6 +101,19 @@ internal sealed class FakeUi : IUserNotifier
     private sealed class Noop : IDisposable { public void Dispose() { } }
 }
 
+/// <summary>
+/// Cần phát / đọc video thật (Media Foundation, ảnh thu nhỏ của Explorer) và màn hình cỡ thường: bỏ qua trên máy build của GitHub Actions
+/// (Windows Server không có thành phần media, màn hình ảo 1024 px). Đặt SCHEDULEAPP_MEDIA_TESTS=1 để vẫn chạy.
+/// </summary>
+public sealed class MediaFactAttribute : FactAttribute
+{
+    public MediaFactAttribute()
+    {
+        if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true" && Environment.GetEnvironmentVariable("SCHEDULEAPP_MEDIA_TESTS") != "1")
+            Skip = "Máy build không phát được video / không có màn hình thường — chạy trên máy Windows có giao diện.";
+    }
+}
+
 /// <summary>Chỉ chạy khi đặt biến môi trường SCHEDULEAPP_LIVE_TESTS=1 (cần màn hình / trình duyệt Edge).</summary>
 public sealed class LiveFactAttribute : FactAttribute
 {

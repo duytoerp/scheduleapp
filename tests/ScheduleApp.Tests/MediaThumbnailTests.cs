@@ -151,7 +151,7 @@ public class MediaThumbnailTests
             return files.Select(f => new MediaInfo.Entry(line, files.Length > 1 ? Path.Combine(line, f) : line, null, null) { Item = item });
         }).ToList(), TimeSpan.Zero, false);
 
-    [Fact]
+    [MediaFact]
     public async Task ThumbnailIsTheVideoFrameLikeExplorer()
     {
         var dir = NewDir();
@@ -200,7 +200,7 @@ public class MediaThumbnailTests
         Assert.Empty(PlaylistText.DroppedPaths(new DataObject(DataFormats.Text, "abc")));
     }
 
-    [Fact]
+    [MediaFact]
     public async Task StripShowsFramesOrderDurationsAndProblemsAndDragReorders()
     {
         var dir = NewDir();
@@ -271,7 +271,7 @@ public class MediaThumbnailTests
         });
     }
 
-    [Fact]
+    [MediaFact]
     public async Task StepEditorShowsThumbnailsAndEditsThePlaylistFromThem()
     {
         var dir = NewDir();
@@ -324,7 +324,7 @@ public class MediaThumbnailTests
         });
     }
 
-    [Fact]
+    [MediaFact]
     public async Task TemplateSetupChoosesVideoWithThumbnailAndDuration()
     {
         var dir = NewDir();
@@ -384,7 +384,7 @@ public class MediaThumbnailTests
         });
     }
 
-    [Fact]
+    [MediaFact]
     public async Task CanvasNodeShowsTheFirstVideoFrame()
     {
         var dir = NewDir();
@@ -519,7 +519,7 @@ public class MediaThumbnailTests
         });
     }
 
-    [Fact]
+    [MediaFact]
     public async Task StripCancelsThumbnailLoadsOfRemovedFiles()
     {
         var dir = NewDir();

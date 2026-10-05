@@ -294,7 +294,7 @@ public class MonitorTests
     /// Cửa sổ thường: đặt đúng giữa màn hình được chọn (màn hình giả ngoài màn hình thật, tắt tiếng — không hiện gì lên màn hình thật;
     /// máy "hai màn hình" giả nên trình phát cũng không lấy bàn phím của người đang chạy kiểm thử).
     /// </summary>
-    [Fact]
+    [MediaFact]
     public async Task PlayerOpensExactlyWhereTheScreenRectSays()
     {
         var clip = MediaDurationTests.Wav(Path.Combine(NewDir(), "a.wav"), 2.5);
@@ -321,7 +321,7 @@ public class MonitorTests
     /// Toàn màn hình ở màn hình khác (vd máy chiếu): phủ đúng cả màn hình đó (kể cả chỗ thanh tác vụ), không giành bàn phím của màn hình
     /// đang làm việc và ghi nhật ký cách điều khiển (màn hình giả ngoài màn hình thật — không hiện gì lên màn hình thật).
     /// </summary>
-    [Fact]
+    [MediaFact]
     public async Task FullscreenPlayerCoversTheChosenScreenWithoutTakingTheKeyboard()
     {
         var clip = MediaDurationTests.Wav(Path.Combine(NewDir(), "b.wav"), 2.5);
@@ -350,7 +350,7 @@ public class MonitorTests
     }
 
     /// <summary>Bước "Phát video / nhạc" đưa đúng màn hình đã chọn (theo mã, rồi theo số) cho trình phát — không mặc định màn hình chính.</summary>
-    [Fact]
+    [MediaFact]
     public async Task PlayStepSendsTheChosenScreenToThePlayer()
     {
         var clip = MediaDurationTests.Wav(Path.Combine(NewDir(), "c.wav"), 0.3);

@@ -36,7 +36,7 @@ public class MediaDurationTests
     [InlineData(3_723_400, "1:02:03")]
     public void FormatsDurations(int ms, string expected) => Assert.Equal(expected, ActionStep.FormatDuration(ms));
 
-    [Fact]
+    [MediaFact]
     public async Task ReadsDurationFromFile()
     {
         var (longWav, shortWav) = TwoWavs();

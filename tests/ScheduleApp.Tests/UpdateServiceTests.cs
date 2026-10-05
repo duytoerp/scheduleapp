@@ -539,7 +539,10 @@ public class UpdateServiceTests : IDisposable
         {
             using var run = RunScript(s);
             await run.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(90));
-            Assert.DoesNotContain(Process.GetProcessesByName(name), p => { using (p) return !p.HasExited; });
+            // Tiến trình bị dừng có thể còn trong danh sách thêm một lúc (máy chậm) — chờ tối đa 10 giây.
+            bool Alive() => Process.GetProcessesByName(name).Any(p => { using (p) return !p.HasExited; });
+            for (int i = 0; i < 100 && Alive(); i++) await Task.Delay(100);
+            Assert.False(Alive(), "script phải dừng bản mới bị treo dù chưa có file PID");
             Assert.Equal(File.ReadAllBytes(Hostname), File.ReadAllBytes(s.Target));
             Assert.Contains("không báo khởi động xong", UpdateService.TakeRollbackNote(s.Target));
         }
