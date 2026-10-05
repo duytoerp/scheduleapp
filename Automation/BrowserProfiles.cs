@@ -1,3 +1,5 @@
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text.Json.Nodes;
 using ScheduleApp.Services;
 
@@ -8,9 +10,29 @@ namespace ScheduleApp.Automation;
 /// vd "browser-chrome" (mặc định), "browser-chrome-Kế toán".
 /// Chrome/Edge chỉ cho điều khiển qua cổng remote debugging khi dùng thư mục dữ liệu khác thư mục mặc định, nên hồ sơ thật
 /// của người dùng (vd hồ sơ "Tai" của Chrome) được dùng bằng cách sao chép một lần sang hồ sơ của ScheduleApp.
+/// Hồ sơ chứa cookie và khóa giải mã đăng nhập ("Local State") nên nằm ở <see cref="Root"/> (máy này, chỉ tài khoản Windows hiện tại đọc được),
+/// không nằm trong %AppData% (Roaming) — thư mục có thể được đồng bộ lên máy chủ của công ty.
 /// </summary>
 internal static class BrowserProfiles
 {
+    /// <summary>
+    /// Thư mục gốc chứa các hồ sơ: %LocalAppData%\ScheduleApp\BrowserProfiles. Bản portable / kiểm thử (SCHEDULEAPP_DATA_DIR)
+    /// → "BrowserProfiles" trong thư mục dữ liệu đó.
+    /// </summary>
+    public static string Root { get; } = DefaultRoot();
+
+    /// <summary>Nơi các phiên bản trước lưu hồ sơ (thư mục dữ liệu, mặc định %AppData%\ScheduleApp — Roaming).</summary>
+    private static string LegacyRoot => JobStore.DataDir;
+
+    private static string DefaultRoot()
+    {
+        var roaming = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ScheduleApp");
+        var baseDir = string.Equals(Path.GetFullPath(JobStore.DataDir).TrimEnd('\\'), Path.GetFullPath(roaming).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ScheduleApp")
+            : JobStore.DataDir;
+        return Path.Combine(baseDir, "BrowserProfiles");
+    }
+
     /// <summary>Khóa trình duyệt dùng trong tên thư mục: "chrome", "edge" hoặc tên file exe khi nhập đường dẫn.</summary>
     public static string Key(string browser)
     {
@@ -26,12 +48,143 @@ internal static class BrowserProfiles
         var k => k
     };
 
-    /// <summary>Thư mục dữ liệu của hồ sơ (trống = hồ sơ mặc định của ScheduleApp).</summary>
-    public static string Dir(string browser, string profile)
+    /// <summary>Thư mục dữ liệu của hồ sơ (trống = hồ sơ mặc định của ScheduleApp). Có thể chuyển hồ sơ cũ (chép qua ổ mạng) — không gọi trên luồng giao diện.</summary>
+    public static string Dir(string browser, string profile) => Locate(DirName(browser, profile), Root, LegacyRoot);
+
+    /// <summary>Hồ sơ đã có (ở chỗ mới hoặc chỗ cũ chưa chuyển) — chỉ kiểm tra, không chuyển hồ sơ, gọi trên luồng giao diện được.</summary>
+    public static bool Exists(string browser, string profile) => Exists(DirName(browser, profile), Root, LegacyRoot);
+
+    internal static bool Exists(string name, string root, string legacyRoot) =>
+        System.IO.Directory.Exists(Path.Combine(root, name)) || System.IO.Directory.Exists(Path.Combine(legacyRoot, name));
+
+    private static string DirName(string browser, string profile)
     {
         var name = SafeName(profile);
-        var dir = "browser-" + Key(browser) + (name.Length == 0 ? "" : "-" + name);
-        return Path.Combine(JobStore.DataDir, dir);
+        return "browser-" + Key(browser) + (name.Length == 0 ? "" : "-" + name);
+    }
+
+    /// <summary>Hồ sơ cũ chuyển bị lỗi trong phiên này — không chép lại ở mỗi lần dùng (chép qua ổ mạng có thể mất vài phút); mở lại ứng dụng thì thử lại.</summary>
+    private static readonly HashSet<string> FailedMoves = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Thư mục hồ sơ <paramref name="name"/> trong <paramref name="root"/>; bản cũ còn ở <paramref name="legacyRoot"/> được chuyển sang ở lần dùng đầu tiên.
+    /// Trình duyệt đang mở hồ sơ đó → tạm dùng chỗ cũ, lần sau thử lại; lỗi ổ đĩa → dùng chỗ cũ tới hết phiên.
+    /// </summary>
+    internal static string Locate(string name, string root, string legacyRoot)
+    {
+        EnsureRoot(root);
+        var target = Path.Combine(root, name);
+        var legacy = Path.Combine(legacyRoot, name);
+        if (System.IO.Directory.Exists(target) || !System.IO.Directory.Exists(legacy)) return target;
+        lock (FailedMoves)
+        {
+            if (FailedMoves.Contains(legacy)) return legacy;
+        }
+        if (InUse(legacy)) return legacy;
+        try
+        {
+            MoveProfile(legacy, target);
+            Log.Info($"Đã chuyển hồ sơ trình duyệt \"{name}\" sang {root} (chỉ tài khoản Windows này đọc được).");
+            return target;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            lock (FailedMoves) FailedMoves.Add(legacy);
+            Log.Warn($"Chưa chuyển được hồ sơ trình duyệt \"{name}\" sang {root}: {ex.Message} — tạm dùng chỗ cũ, lần mở ScheduleApp sau thử lại.");
+            return System.IO.Directory.Exists(target) ? target : legacy;
+        }
+    }
+
+    /// <summary>Chuyển thư mục hồ sơ: cùng ổ đĩa → đổi chỗ; khác ổ (vd %AppData% chuyển hướng lên ổ mạng) → chép rồi xóa bản cũ.</summary>
+    internal static void MoveProfile(string source, string target)
+    {
+        if (string.Equals(Path.GetPathRoot(Path.GetFullPath(source)), Path.GetPathRoot(Path.GetFullPath(target)), StringComparison.OrdinalIgnoreCase))
+            System.IO.Directory.Move(source, target);
+        else
+            CopyThenDelete(source, target);
+        RestrictToCurrentUser(target);
+    }
+
+    internal static void CopyThenDelete(string source, string target)
+    {
+        var tmp = target + ".tmp-" + Guid.NewGuid().ToString("N")[..8];
+        try
+        {
+            CopyAll(source, tmp);
+            System.IO.Directory.Move(tmp, target);
+        }
+        catch
+        {
+            try { if (System.IO.Directory.Exists(tmp)) System.IO.Directory.Delete(tmp, recursive: true); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* để lại thư mục tạm, lần sau bỏ qua */ }
+            throw;
+        }
+        try { System.IO.Directory.Delete(source, recursive: true); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Log.Warn($"Đã chép hồ sơ trình duyệt sang {target} nhưng chưa xóa được bản cũ {source}: {ex.Message}");
+        }
+    }
+
+    private static void CopyAll(string src, string dst)
+    {
+        System.IO.Directory.CreateDirectory(dst);
+        foreach (var file in System.IO.Directory.GetFiles(src))
+            File.Copy(file, Path.Combine(dst, Path.GetFileName(file)));
+        foreach (var dir in System.IO.Directory.GetDirectories(src))
+        {
+            if ((File.GetAttributes(dir) & FileAttributes.ReparsePoint) != 0) continue;
+            CopyAll(dir, Path.Combine(dst, Path.GetFileName(dir)));
+        }
+    }
+
+    private static readonly HashSet<string> PreparedRoots = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Tạo thư mục gốc (một lần mỗi phiên) và giới hạn quyền chỉ cho tài khoản Windows hiện tại.</summary>
+    internal static void EnsureRoot(string root)
+    {
+        lock (PreparedRoots)
+        {
+            if (PreparedRoots.Contains(root) && System.IO.Directory.Exists(root)) return;
+            try
+            {
+                if (!System.IO.Directory.Exists(root))
+                {
+                    System.IO.Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(root))!);
+                    new DirectoryInfo(root).Create(CurrentUserOnly());
+                }
+                else if (!IsCurrentUserOnly(root)) RestrictToCurrentUser(root);
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or InvalidOperationException or PlatformNotSupportedException)
+            {
+                // Ổ đĩa không hỗ trợ phân quyền (vd FAT32, ổ mạng) → vẫn dùng được, chỉ báo lại.
+                System.IO.Directory.CreateDirectory(root);
+                Log.Warn($"Không giới hạn được quyền thư mục hồ sơ trình duyệt {root}: {ex.Message}");
+            }
+            PreparedRoots.Add(root);
+        }
+    }
+
+    /// <summary>Quyền chỉ cho tài khoản hiện tại, không kế thừa từ thư mục cha (vd nhóm Users / Administrators); thư mục con, file kế thừa quyền này.</summary>
+    private static DirectorySecurity CurrentUserOnly()
+    {
+        var security = new DirectorySecurity();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.AddAccessRule(new FileSystemAccessRule(WindowsIdentity.GetCurrent().User!, FileSystemRights.FullControl,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
+        return security;
+    }
+
+    internal static void RestrictToCurrentUser(string dir) => new DirectoryInfo(dir).SetAccessControl(CurrentUserOnly());
+
+    /// <summary>Thư mục không kế thừa quyền và chỉ tài khoản hiện tại được cấp quyền.</summary>
+    internal static bool IsCurrentUserOnly(string dir)
+    {
+        var security = new DirectoryInfo(dir).GetAccessControl();
+        var user = WindowsIdentity.GetCurrent().User!;
+        var rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().ToList();
+        return security.AreAccessRulesProtected && rules.Count > 0 &&
+               rules.All(r => r.AccessControlType == AccessControlType.Allow && r.IdentityReference.Equals(user));
     }
 
     public static string SafeName(string profile)
@@ -44,19 +197,25 @@ internal static class BrowserProfiles
     public static List<string> List(string browser)
     {
         var prefix = "browser-" + Key(browser) + "-";
-        if (!Directory.Exists(JobStore.DataDir)) return [];
-        return [.. Directory.GetDirectories(JobStore.DataDir, prefix + "*")
+        return [.. AllDirs()
             .Select(Path.GetFileName)
-            .Where(n => n != null && !n.Contains(".tmp-"))
+            .Where(n => n != null && n.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
             .Select(n => n![prefix.Length..])
             .Order(StringComparer.CurrentCultureIgnoreCase)];
     }
 
-    /// <summary>Mọi thư mục hồ sơ của ScheduleApp (mọi trình duyệt).</summary>
-    public static IEnumerable<string> AllDirs() =>
-        Directory.Exists(JobStore.DataDir)
-            ? Directory.GetDirectories(JobStore.DataDir, "browser-*").Where(d => !d.Contains(".tmp-"))
-            : [];
+    /// <summary>Mọi thư mục hồ sơ của ScheduleApp (mọi trình duyệt), kể cả hồ sơ còn ở chỗ cũ chưa chuyển được.</summary>
+    public static IEnumerable<string> AllDirs()
+    {
+        var found = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var root in new[] { LegacyRoot, Root }) // cùng tên → bản ở chỗ mới
+        {
+            if (!System.IO.Directory.Exists(root)) continue;
+            foreach (var dir in System.IO.Directory.GetDirectories(root, "browser-*").Where(d => !Path.GetFileName(d).Contains(".tmp-")))
+                found[Path.GetFileName(dir)] = dir;
+        }
+        return found.Values;
+    }
 
     /// <summary>
     /// Trình duyệt đang mở thư mục dữ liệu này: Chrome/Edge giữ file "lockfile" (mở kèm quyền xóa, tự xóa khi thoát) suốt lúc chạy.

@@ -1235,9 +1235,17 @@ internal sealed class JobEditorForm : BaseForm
             (imageClicks > 0 ? $"✔ {imageClicks} click được ghi theo hình ảnh: khi chạy tìm lại chỗ được click (cửa sổ dời chỗ, đổi kích thước vẫn đúng), không thấy mới click theo tọa độ lúc ghi.\n" : "") +
             "Đã tự chèn bước \"Chờ cửa sổ\" khi chuyển sang cửa sổ khác." +
             (pointClicks > 0 ? $" Còn {pointClicks} thao tác theo tọa độ — nên xem lại, thay click quan trọng bằng \"Click vào hình ảnh\" nếu cần." : "") +
-            (hasSecret ? "\n\n🔑 Phát hiện ô mật khẩu: chữ gõ vào đó được thay bằng {{secret:MatKhau}} — hãy thêm bí mật \"MatKhau\" trong mục 🔑 Bí mật." : ""),
+            (hasSecret ? "\n\n" + RecordedSecretNote : ""),
             Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
+
+    /// <summary>
+    /// Ghi chú sau khi ghi macro có bước {{secret:MatKhau}}: bước đó có thể là ô mật khẩu thật hoặc ô không xác định được loại
+    /// (trình ghi giữ bí mật cho chắc) — người dùng cần xem lại chứ không chỉ thêm bí mật.
+    /// </summary>
+    internal const string RecordedSecretNote =
+        "🔑 Chữ gõ vào ô mật khẩu (hoặc ô chưa xác định được là ô gì) được thay bằng {{secret:MatKhau}} — kiểm tra lại các bước này: " +
+        "ô mật khẩu thật → thêm bí mật \"MatKhau\" trong mục 🔑 Bí mật; ô thường (vd ô tìm kiếm) → sửa lại chữ cần gõ.";
 
     private void UpdateStepCount()
     {

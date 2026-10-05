@@ -2167,7 +2167,7 @@ internal sealed class StepEditorForm : BaseForm
         var browserName = BrowserProfiles.DisplayName(source.Browser);
         var profileName = BrowserProfiles.SafeName(source.Name);
         if (profileName.Length == 0) profileName = BrowserProfiles.SafeName(source.Directory);
-        bool exists = Directory.Exists(BrowserProfiles.Dir(source.Browser, profileName));
+        bool exists = BrowserProfiles.Exists(source.Browser, profileName);   // không chuyển hồ sơ cũ ở đây (có thể chép qua ổ mạng, treo giao diện)
 
         var message =
             $"Sao chép hồ sơ \"{source.Name}\" của {browserName} sang hồ sơ \"{profileName}\" của ScheduleApp?\n\n" +

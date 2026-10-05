@@ -118,7 +118,7 @@ public class BrowserProfileTests
             Assert.Contains(@"Network\Cookies", ex.Message);
         }
         Assert.Equal("bản cũ", File.ReadAllText(Path.Combine(dir, "danh-dau.txt")));
-        Assert.Empty(Directory.GetDirectories(JobStore.DataDir, "*.tmp-*"));
+        Assert.Empty(Directory.GetDirectories(BrowserProfiles.Root, "*.tmp-*"));
         Assert.False(BrowserProfiles.InUse(dir));
     }
 

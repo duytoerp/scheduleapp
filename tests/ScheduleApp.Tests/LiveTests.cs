@@ -193,6 +193,7 @@ public class LiveTests
                    "<div id='kq'></div></body></html>");
         var proc = Process.Start(new ProcessStartInfo(edge!,
             $"--headless=new --remote-debugging-port={port} --user-data-dir=\"{profile}\" --no-first-run \"data:text/html;charset=utf-8,{html}\"") { UseShellExecute = false });
+        BrowserClient.Track(proc, port, profile);
         try
         {
             using var http = new HttpClient();

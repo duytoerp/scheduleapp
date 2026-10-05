@@ -35,6 +35,7 @@ public sealed class D365LiveTests
         var proc = Process.Start(new ProcessStartInfo(edge!,
             $"--headless=new --remote-debugging-port={BrowserPort + 1} --user-data-dir=\"{profile}\" --no-first-run \"{server.BaseUrl}main.aspx?appid=test\"")
             { UseShellExecute = false });
+        BrowserClient.Track(proc, BrowserPort + 1, profile);
         try
         {
             using var http = new HttpClient();
@@ -140,6 +141,7 @@ public sealed class D365LiveTests
         var proc = Process.Start(new ProcessStartInfo(edge!,
             $"--headless=new --remote-debugging-port={BrowserPort} --user-data-dir=\"{profile}\" --no-first-run \"{server.BaseUrl}main.aspx?appid=test\"")
             { UseShellExecute = false });
+        BrowserClient.Track(proc, BrowserPort, profile);
         try
         {
             using var http = new HttpClient();

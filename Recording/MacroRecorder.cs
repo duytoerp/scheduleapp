@@ -84,12 +84,13 @@ internal sealed class MacroRecorder : IDisposable
         Unhook();
         _pressed?.Shot?.Dispose();
         _pressed = null;
-        // Chờ các lần nhận diện phần tử / chọn hình mẫu còn dở (chạy nền, không cần luồng UI).
+        // Chữ đang gõ dở thành bước trước khi chờ, để lần kiểm tra ô mật khẩu của nó cũng được chờ.
+        FlushTyped();
+        // Chờ các lần nhận diện phần tử / chọn hình mẫu / kiểm tra ô mật khẩu còn dở (chạy nền, không cần luồng UI).
         try { Task.WaitAll([.. _conversions], 5000); } catch (AggregateException) { }
         _stopped = true;
         // Lần nhận diện nào đang ghi dở vào bước thì chờ nó ghi xong (các lần sau đó bị bỏ qua).
         foreach (var step in _steps) lock (step) { }
-        FlushTyped();
         if (_steps.Count > 0) _steps[^1].DelayAfterMs = 500;
         return [.. _steps];
     }
@@ -427,35 +428,86 @@ internal sealed class MacroRecorder : IDisposable
         }
     }
 
-    private void AppendText(string text, IntPtr fg, long now)
+    internal void AppendText(string text, IntPtr fg, long now)
     {
         var target = ResolveTarget(fg).Target;
-        if (_typed.Length > 0 && target != _typedTarget) FlushTyped();
+        // Biết ô đang nhập có phải ô mật khẩu không trước khi giữ ký tự; đổi loại ô (kể cả sang ô chưa rõ như ô mật khẩu WPF / trang web)
+        // → bước gõ mới, để chữ gõ vào ô chưa rõ không bị gộp vào bước chữ thường đang ghi dở.
+        var field = FocusedField(fg);
+        if (_typed.Length > 0 && (target != _typedTarget || field != _typedField)) FlushTyped();
         if (_typed.Length == 0)
         {
             _typedTarget = target;
             _typedStart = now;
-            CheckPasswordField();
+            _typedField = field;
+            // Chưa rõ (trình duyệt, WPF, UWP…) → hỏi UI Automation ở nền; chữ chỉ nằm trong bộ nhớ tới khi có kết quả.
+            _typedProbe = field == FieldKind.Unknown ? StartProbe() : null;
         }
         _typed.Append(text);
         _typedEnd = now;
         Changed?.Invoke();
     }
 
-    private volatile bool _typedIsPassword;
+    // ───────────────────────────── Ô mật khẩu ─────────────────────────────
 
-    /// <summary>Kiểm tra (nền) ô đang nhập có phải ô mật khẩu không — nếu có, chữ gõ sẽ không được lưu.</summary>
-    private void CheckPasswordField()
+    internal enum FieldKind { Unknown, Text, Password }
+
+    /// <summary>Chữ gõ vào ô mật khẩu được lưu thành bí mật này (người dùng thêm giá trị trong 🔑 Bí mật), không bao giờ lưu chữ thật.</summary>
+    internal const string PasswordPlaceholder = "{{secret:MatKhau}}";
+
+    private const long ES_PASSWORD = 0x20;
+
+    private FieldKind _typedField;
+    private Task<bool?>? _typedProbe;
+
+    /// <summary>Kiểm tra ngay (đồng bộ, trong hook) ô đang có tiêu điểm của cửa sổ <c>fg</c>.</summary>
+    internal Func<IntPtr, FieldKind> FocusedField { get; set; } = FocusedFieldOf;
+
+    /// <summary>Kiểm tra nền bằng UI Automation phần tử đang có tiêu điểm có phải ô mật khẩu (null = không xác định được).</summary>
+    internal Func<Task<bool?>> PasswordProbe { get; set; } = ProbeFocusedElement;
+
+    /// <summary>
+    /// Ô Edit của Win32 / WinForms / Delphi (kể cả RichEdit): có kiểu ES_PASSWORD → mật khẩu, không có → chữ thường;
+    /// cửa sổ khác (trang web, WPF, UWP…) không có kiểu này → chưa rõ.
+    /// </summary>
+    internal static FieldKind Classify(string className, long style) =>
+        !className.Contains("edit", StringComparison.OrdinalIgnoreCase) ? FieldKind.Unknown
+        : (style & ES_PASSWORD) != 0 ? FieldKind.Password : FieldKind.Text;
+
+    internal static FieldKind FieldOf(IntPtr hwnd) =>
+        hwnd == IntPtr.Zero ? FieldKind.Unknown : Classify(WindowHelper.GetClassName(hwnd), (long)Win32.GetWindowLongPtr(hwnd, Win32.GWL_STYLE));
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct GUITHREADINFO
     {
-        _typedIsPassword = false;
-        _ = Task.Run(() =>
-        {
-            try
-            {
-                if (System.Windows.Automation.AutomationElement.FocusedElement?.Current.IsPassword == true) _typedIsPassword = true;
-            }
-            catch (Exception ex) { Debug.WriteLine(ex); }
-        });
+        public int cbSize;
+        public uint flags;
+        public IntPtr hwndActive, hwndFocus, hwndCapture, hwndMenuOwner, hwndMoveSize, hwndCaret;
+        public Win32.RECT rcCaret;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetGUIThreadInfo(uint threadId, ref GUITHREADINFO info);
+
+    /// <summary>Ô có tiêu điểm bàn phím trong luồng của cửa sổ <paramref name="foreground"/> (GetGUIThreadInfo — không gửi message, không chờ ứng dụng).</summary>
+    private static FieldKind FocusedFieldOf(IntPtr foreground)
+    {
+        if (foreground == IntPtr.Zero) return FieldKind.Unknown;
+        uint thread = Win32.GetWindowThreadProcessId(foreground, out _);
+        var info = new GUITHREADINFO { cbSize = Marshal.SizeOf<GUITHREADINFO>() };
+        return thread != 0 && GetGUIThreadInfo(thread, ref info) ? FieldOf(info.hwndFocus) : FieldKind.Unknown;
+    }
+
+    private static Task<bool?> ProbeFocusedElement() => Task.Run<bool?>(() =>
+    {
+        try { return System.Windows.Automation.AutomationElement.FocusedElement?.Current.IsPassword; }
+        catch (Exception ex) { Debug.WriteLine(ex); return null; }
+    });
+
+    private Task<bool?>? StartProbe()
+    {
+        try { return PasswordProbe(); }
+        catch (Exception ex) { Debug.WriteLine(ex); return null; }
     }
 
     private void FlushTyped()
@@ -463,11 +515,36 @@ internal sealed class MacroRecorder : IDisposable
         if (_typed.Length == 0) return;
         var text = _typed.ToString();
         _typed.Clear();
-        // Ô mật khẩu: không lưu chữ thật vào jobs.json, dùng bí mật mã hóa thay thế.
-        if (_typedIsPassword) text = "{{secret:MatKhau}}";
-        _typedIsPassword = false;
-        Add(new ActionStep { Type = StepType.TypeText, Target = _typedTarget, Text = text }, _typedStart, _typedEnd);
+        var (field, probe) = (_typedField, _typedProbe);
+        _typedField = FieldKind.Unknown;
+        _typedProbe = null;
+        // Ô mật khẩu — hoặc chưa biết chắc — không lưu chữ thật vào jobs.json, dùng bí mật mã hóa thay thế.
+        var step = new ActionStep { Type = StepType.TypeText, Target = _typedTarget, Text = field == FieldKind.Text ? text : PasswordPlaceholder };
+        Add(step, _typedStart, _typedEnd);
+        if (field == FieldKind.Unknown && probe != null) ResolveTyped(step, text, probe);
     }
+
+    /// <summary>
+    /// Kiểm tra nền xong: chỉ khi chắc chắn không phải ô mật khẩu mới đưa chữ thật vào bước.
+    /// Lỗi, không xác định hoặc chưa xong khi dừng ghi → giữ {{secret:MatKhau}}.
+    /// </summary>
+    private void ResolveTyped(ActionStep step, string text, Task<bool?> probe)
+    {
+        if (probe.IsCompleted)
+        {
+            if (IsPlainText(probe)) step.Text = text;
+            return;
+        }
+        _conversions.Add(probe.ContinueWith(t =>
+        {
+            lock (step)
+            {
+                if (!_stopped && IsPlainText(t)) step.Text = text;
+            }
+        }, TaskScheduler.Default));
+    }
+
+    private static bool IsPlainText(Task<bool?> probe) => probe.IsCompletedSuccessfully && probe.Result == false;
 
     private void AddKey(string name, IntPtr fg, long now)
     {

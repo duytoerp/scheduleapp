@@ -15,7 +15,6 @@ internal sealed class SettingsForm : BaseForm
     private readonly CheckBox _chkSafe = new() { Text = "Chế độ an toàn: tạm dừng flow và hỏi khi tôi dùng chuột/bàn phím trong lúc flow chạy", AutoSize = true };
     private readonly CheckBox _chkAwake = new() { Text = "Không cho máy ngủ / tắt màn hình khi flow đang chạy", AutoSize = true };
     private readonly CheckBox _chkOverlay = new() { Text = "Hiện khung trạng thái ở góc phải màn hình khi flow đang chạy", AutoSize = true };
-    private readonly NumericUpDown _numPort = new() { Minimum = 1024, Maximum = 65535, Width = 90 };
 
     // Ngày nghỉ
     private readonly TextBox _txtHolidays = new() { Multiline = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, AcceptsReturn = true };
@@ -123,8 +122,6 @@ internal sealed class SettingsForm : BaseForm
         col.Controls.Add(Hint("Khi bật, nếu bạn click / gõ phím vào ứng dụng khác lúc flow đang chạy, flow tạm dừng trước bước kế tiếp và hỏi chạy tiếp hay dừng. " +
                               "Tránh việc flow gõ nhầm vào chỗ bạn đang làm."));
         col.Controls.Add(_chkAwake);
-        col.Controls.Add(Line(Caption("Cổng điều khiển trình duyệt (remote debugging):"), _numPort));
-        col.Controls.Add(Hint("Dùng cho các bước \"Trình duyệt\". Đổi nếu cổng 9222 đã bị phần mềm khác dùng."));
         col.Controls.Add(Caption("Dòng lệnh:"));
         col.Controls.Add(Hint("ScheduleApp.exe --run \"Tên công việc\"   ·   ScheduleApp.exe --stop   ·   ScheduleApp.exe --minimized\n" +
                               "Chuột phải một công việc → \"Tạo shortcut trên Desktop\" để chạy bằng 1 cú nhấp đúp."));
@@ -366,7 +363,6 @@ internal sealed class SettingsForm : BaseForm
         _chkSafe.Checked = _s.SafeMode;
         _chkAwake.Checked = _s.PreventSleepWhileRunning;
         _chkOverlay.Checked = _s.ShowRunOverlay;
-        _numPort.Value = Math.Clamp(_s.BrowserPort, 1024, 65535);
         _txtHolidays.Text = string.Join(Environment.NewLine, _s.Holidays);
 
         _chkTelegram.Checked = _s.Telegram.Enabled;
@@ -465,7 +461,6 @@ internal sealed class SettingsForm : BaseForm
         _s.SafeMode = _chkSafe.Checked;
         _s.PreventSleepWhileRunning = _chkAwake.Checked;
         _s.ShowRunOverlay = _chkOverlay.Checked;
-        _s.BrowserPort = (int)_numPort.Value;
         _s.Holidays = holidays;
         _s.Telegram = ReadTelegram();
         _s.Email = ReadEmail();

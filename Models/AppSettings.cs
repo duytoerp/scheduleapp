@@ -24,7 +24,10 @@ public sealed class AppSettings
     /// <summary>Trình ghi macro: chụp hình mẫu quanh mỗi click để khi chạy tìm lại theo hình ảnh rồi mới dùng tọa độ.</summary>
     public bool RecordImages { get; set; } = true;
 
-    /// <summary>Cổng remote debugging của Chrome/Edge cho các bước "Trình duyệt".</summary>
+    /// <summary>
+    /// Không còn dùng: trình duyệt điều khiển tự chọn cổng ngẫu nhiên (--remote-debugging-port=0).
+    /// Giữ lại để settings.json của bản cũ vẫn đọc / ghi lại nguyên vẹn.
+    /// </summary>
     public int BrowserPort { get; set; } = 9222;
 
     /// <summary>

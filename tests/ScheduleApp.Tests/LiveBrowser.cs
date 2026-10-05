@@ -30,6 +30,7 @@ internal sealed class LiveBrowser : IAsyncDisposable
         var profile = profileDir ?? Path.Combine(TestSupport.NewDir(), "edge-" + port);
         var proc = Process.Start(new ProcessStartInfo(edge!,
             $"{(headless ? "--headless=new --window-size=1920,1080 " : "")}--remote-debugging-port={port} --user-data-dir=\"{profile}\" --no-first-run --disable-extensions \"{url}\"") { UseShellExecute = false })!;
+        BrowserClient.Track(proc, port, profile);   // chỉ cổng do đúng tiến trình này lắng nghe mới được kết nối
         using var http = new HttpClient();
         for (int i = 0; i < 50; i++)
         {

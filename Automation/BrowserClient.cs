@@ -1,10 +1,15 @@
+using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
+using System.Net;
 using System.Net.Http;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Win32;
 using ScheduleApp.Models;
+using ScheduleApp.Native;
 using ScheduleApp.Services;
 
 namespace ScheduleApp.Automation;
@@ -14,13 +19,23 @@ namespace ScheduleApp.Automation;
 /// Trình duyệt phải được mở bằng bước "Mở trình duyệt ở chế độ điều khiển" (hồ sơ riêng của ScheduleApp).
 /// Bộ chọn: CSS (#id, .class, input[name=q]), "xpath://button[.='Lưu']" hoặc "text:Đăng nhập".
 /// </summary>
-internal static class BrowserClient
+/// <remarks>
+/// Cổng DevTools không có mật khẩu: ai kết nối được là đọc được mọi trang (cookie, dữ liệu D365…). Vì vậy trình duyệt được mở với
+/// cổng ngẫu nhiên (--remote-debugging-port=0, cổng thật đọc từ file DevToolsActivePort trong thư mục hồ sơ) và trước mỗi lần kết nối
+/// ScheduleApp kiểm tra cổng đó đúng do tiến trình trình duyệt mình đã mở (hoặc tiến trình con của nó) lắng nghe — chương trình khác
+/// chiếm cổng thì từ chối, không gửi lệnh / dữ liệu nào.
+/// </remarks>
+internal static partial class BrowserClient
 {
     private const int PollMs = 300;
+    private const string ActivePortFile = "DevToolsActivePort";
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(5) };
     private static int _messageId;
 
-    private static int Port => SettingsStore.Current.BrowserPort;
+    /// <summary>Trình duyệt điều khiển đang dùng: cổng DevTools, thư mục hồ sơ và tiến trình trình duyệt (giữ handle để PID không bị dùng lại).</summary>
+    private sealed record Session(int Port, string Dir, Process Process);
+
+    private static Session? _session;
 
     /// <summary>Tham số thêm khi mở trình duyệt (kiểm thử dùng " --headless=new").</summary>
     internal static string ExtraLaunchArgs { get; set; } = "";
@@ -30,7 +45,15 @@ internal static class BrowserClient
 
     /// <summary>Tiến trình trình duyệt mở gần nhất (kiểm thử dùng để dọn dẹp).</summary>
     internal static Process? LastLaunched { get; private set; }
-    private static string BaseUrl => $"http://127.0.0.1:{Port}";
+
+    private static string BaseUrl(Session s) => $"http://127.0.0.1:{s.Port}";
+
+    /// <summary>
+    /// Dùng trình duyệt do chính ScheduleApp (kiểm thử) tự mở với cổng <paramref name="port"/> — chỉ cổng do <paramref name="process"/>
+    /// lắng nghe mới được kết nối. null = bỏ trình duyệt đang dùng.
+    /// </summary>
+    internal static void Track(Process? process, int port, string dir = "") =>
+        _session = process == null ? null : new Session(port, dir, process);
 
     public static async Task ExecuteAsync(ActionStep s, Func<string, string, Task> setVar, CancellationToken ct)
     {
@@ -102,83 +125,135 @@ internal static class BrowserClient
         var dir = BrowserProfiles.Dir(browser, profile);
         var label = BrowserProfiles.DisplayName(browser) + (profile.Length == 0 ? "" : $" · hồ sơ \"{profile}\"");
 
-        if (await IsAvailableAsync(ct))
+        if (Current() is { } current)
         {
-            if (BrowserProfiles.InUse(dir) || (profile.Length == 0 && !BrowserProfiles.AllDirs().Any(BrowserProfiles.InUse)))
+            if (await IsAvailableAsync(current, ct, throwIfForeign: true))
             {
-                // Đúng hồ sơ đang được điều khiển (hoặc trình duyệt do người dùng tự mở ở cổng này) → chỉ mở tab mới.
-                await OpenTabAsync(url, ct);
+                if (SamePath(current.Dir, dir))
+                {
+                    // Đúng hồ sơ đang được điều khiển → chỉ mở tab mới.
+                    await OpenTabAsync(current, url, ct);
+                    return;
+                }
+                // Mỗi lúc chỉ điều khiển một trình duyệt: đóng trình duyệt đang mở hồ sơ khác rồi mở hồ sơ được chọn.
+                Log.Info($"      Đóng trình duyệt điều khiển đang mở hồ sơ khác ({Path.GetFileName(current.Dir)}) để mở {label}.");
+                await CloseBrowserAsync(current.Dir, ct);
+            }
+            else if (_session == current) _session = null;
+        }
+
+        if (BrowserProfiles.InUse(dir))
+        {
+            // Trình duyệt ScheduleApp mở từ trước (vd trước khi khởi động lại ScheduleApp) vẫn giữ hồ sơ → dùng tiếp nếu xác minh được.
+            if (TryReattach(dir) is { } previous && await IsAvailableAsync(previous, ct, throwIfForeign: true))
+            {
+                _session = previous;
+                await OpenTabAsync(previous, url, ct);
                 return;
             }
-            // Cổng điều khiển chỉ có một: đóng trình duyệt điều khiển đang mở hồ sơ khác rồi mở hồ sơ được chọn.
-            var other = BrowserProfiles.AllDirs().FirstOrDefault(BrowserProfiles.InUse);
-            if (other == null)
-                throw new InvalidOperationException(
-                    $"Cổng điều khiển {Port} đang được một trình duyệt khác dùng. Hãy đóng trình duyệt đó (hoặc đổi cổng trong ⚙ Cài đặt) rồi chạy lại.");
-            Log.Info($"      Đóng trình duyệt điều khiển đang mở hồ sơ khác ({Path.GetFileName(other)}) để mở {label}.");
-            await CloseBrowserAsync(other, ct);
-        }
-        else if (BrowserProfiles.InUse(dir))
-        {
             // Mở thêm lần nữa chỉ tạo cửa sổ mới trong phiên cũ (không có cổng điều khiển).
             throw new InvalidOperationException(
-                $"{label} đang mở nhưng không ở chế độ điều khiển (cổng {Port}). Hãy đóng cửa sổ trình duyệt đó rồi chạy lại.");
+                $"{label} đang mở nhưng không ở chế độ điều khiển. Hãy đóng cửa sổ trình duyệt đó rồi chạy lại.");
         }
 
         var exe = ResolveBrowser(browser);
         if (!Directory.Exists(dir)) Log.Info($"      Hồ sơ mới ({Path.GetFileName(dir)}) — lần đầu cần đăng nhập các trang web, lần sau được giữ lại.");
-        // Chrome 136+ chỉ cho remote debugging với thư mục hồ sơ riêng (không phải hồ sơ mặc định).
-        var args = $"--remote-debugging-port={Port} --user-data-dir=\"{dir}\" --no-first-run --no-default-browser-check{ExtraLaunchArgs}";
-        // Ẩn: không hiện cửa sổ, vẫn chụp ảnh được qua DevTools. Đặt kích thước như màn hình Full HD để giao diện (thanh lệnh D365…) không bị thu gọn.
-        if (headless) args += " --headless=new --window-size=1920,1080";
-        if (!string.IsNullOrWhiteSpace(url)) args += " " + NormalizeUrl(url);
-        LastLaunched = Process.Start(new ProcessStartInfo(exe, args) { UseShellExecute = false });
+        // File cổng của lần mở trước (trình duyệt bị tắt đột ngột) → xóa để không đọc nhầm cổng cũ.
+        try { File.Delete(Path.Combine(dir, ActivePortFile)); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+
+        // Truyền từng tham số riêng (không ghép chuỗi) → URL / thư mục có dấu nháy, khoảng trắng không thành tham số khác.
+        var start = new ProcessStartInfo(exe) { UseShellExecute = false };
+        foreach (var arg in LaunchArguments(dir, headless, ExtraLaunchArgs, url)) start.ArgumentList.Add(arg);
+        var process = Process.Start(start) ?? throw new InvalidOperationException($"Không mở được {label}.");
+        LastLaunched = process;
 
         var sw = Stopwatch.StartNew();
-        while (!await IsAvailableAsync(ct))
+        while (true)
         {
+            if (ReadActivePort(dir) is int port)
+            {
+                var session = new Session(port, dir, process);
+                if (await IsAvailableAsync(session, ct, throwIfForeign: true))
+                {
+                    _session = session;
+                    break;
+                }
+            }
+            if (process.HasExited)
+                throw new InvalidOperationException($"{label} đóng ngay sau khi mở (mã {process.ExitCode}). Nếu {label} đang chạy với hồ sơ này, hãy đóng hết rồi thử lại.");
             if (sw.ElapsedMilliseconds > 20_000)
-                throw new TimeoutException($"Trình duyệt không mở cổng điều khiển {Port}. Nếu {label} đang chạy, hãy đóng hết rồi thử lại.");
-            await Task.Delay(500, ct);
+                throw new TimeoutException($"Trình duyệt không mở cổng điều khiển. Nếu {label} đang chạy, hãy đóng hết rồi thử lại.");
+            await Task.Delay(300, ct);
         }
         if (!string.IsNullOrWhiteSpace(url)) await WaitReadyAsync("", 30_000, ct);
     }
 
-    private static async Task OpenTabAsync(string url, CancellationToken ct)
+    /// <summary>
+    /// Tham số dòng lệnh mở trình duyệt, mỗi phần tử một tham số: cổng 0 = trình duyệt tự chọn cổng trống và ghi vào DevToolsActivePort;
+    /// Chrome 136+ chỉ cho remote debugging với thư mục hồ sơ riêng (không phải hồ sơ mặc định). URL đã chuẩn hóa đứng sau "--"
+    /// nên không bao giờ bị hiểu là tham số của trình duyệt.
+    /// </summary>
+    internal static List<string> LaunchArguments(string dir, bool headless, string extraArgs, string url)
+    {
+        List<string> args = ["--remote-debugging-port=0", "--user-data-dir=" + dir, "--no-first-run", "--no-default-browser-check"];
+        args.AddRange(extraArgs.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        // Ẩn: không hiện cửa sổ, vẫn chụp ảnh được qua DevTools. Đặt kích thước như màn hình Full HD để giao diện (thanh lệnh D365…) không bị thu gọn.
+        if (headless) args.AddRange(["--headless=new", "--window-size=1920,1080"]);
+        if (!string.IsNullOrWhiteSpace(url)) args.AddRange(["--", NormalizeUrl(url)]);
+        return args;
+    }
+
+    private static async Task OpenTabAsync(Session s, string url, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(url)) return;
-        using var req = new HttpRequestMessage(HttpMethod.Put, $"{BaseUrl}/json/new?{Uri.EscapeDataString(NormalizeUrl(url))}");
+        using var req = new HttpRequestMessage(HttpMethod.Put, $"{BaseUrl(s)}/json/new?{Uri.EscapeDataString(NormalizeUrl(url))}");
         (await Http.SendAsync(req, ct)).EnsureSuccessStatusCode();
         await Task.Delay(500, ct);
         await WaitReadyAsync("", 30_000, ct); // tab mới nằm đầu danh sách
     }
 
-    /// <summary>Đóng trình duyệt đang chiếm cổng điều khiển (lệnh Browser.close) và chờ nó nhả cổng + thư mục hồ sơ.</summary>
+    /// <summary>Đóng trình duyệt điều khiển đang mở thư mục hồ sơ <paramref name="dir"/> (lệnh Browser.close) và chờ nó nhả cổng + thư mục hồ sơ.</summary>
     internal static async Task CloseBrowserAsync(string dir, CancellationToken ct)
     {
-        try
+        var s = _session is { } cur && SamePath(cur.Dir, dir) ? cur : TryReattach(dir);
+        if (s == null)
         {
-            using var doc = JsonDocument.Parse(await Http.GetStringAsync($"{BaseUrl}/json/version", ct));
-            var wsUrl = doc.RootElement.GetProperty("webSocketDebuggerUrl").GetString()!;
-            using var ws = new ClientWebSocket();
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(TimeSpan.FromSeconds(5));
-            await ws.ConnectAsync(new Uri(wsUrl), timeout.Token);
-            var payload = JsonSerializer.SerializeToUtf8Bytes(new { id = Interlocked.Increment(ref _messageId), method = "Browser.close" });
-            await ws.SendAsync(payload, WebSocketMessageType.Text, true, timeout.Token);
+            if (!BrowserProfiles.InUse(dir)) return;
+            throw new InvalidOperationException(
+                $"Trình duyệt đang mở hồ sơ {Path.GetFileName(dir)} không ở chế độ điều khiển của ScheduleApp — hãy tự đóng nó rồi chạy lại.");
         }
-        catch (Exception ex) when (ex is HttpRequestException or WebSocketException or OperationCanceledException or KeyNotFoundException && !ct.IsCancellationRequested)
+
+        var (owner, pid) = Probe(s);
+        if (owner == Ownership.Foreign) throw ForeignListener(s, pid);
+        if (owner == Ownership.Trusted)
         {
-            Log.Warn("      Không gửi được lệnh đóng trình duyệt: " + ex.Message);
+            try
+            {
+                using var doc = JsonDocument.Parse(await Http.GetStringAsync($"{BaseUrl(s)}/json/version", ct));
+                var wsUrl = doc.RootElement.GetProperty("webSocketDebuggerUrl").GetString()!;
+                if (!IsLocalDevToolsUrl(wsUrl, s.Port)) throw new InvalidOperationException("Địa chỉ điều khiển trình duyệt không hợp lệ: " + wsUrl);
+                using var ws = new ClientWebSocket();
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(TimeSpan.FromSeconds(5));
+                await ws.ConnectAsync(new Uri(wsUrl), timeout.Token);
+                var payload = JsonSerializer.SerializeToUtf8Bytes(new { id = Interlocked.Increment(ref _messageId), method = "Browser.close" });
+                await ws.SendAsync(payload, WebSocketMessageType.Text, true, timeout.Token);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or WebSocketException or OperationCanceledException or KeyNotFoundException && !ct.IsCancellationRequested)
+            {
+                Log.Warn("      Không gửi được lệnh đóng trình duyệt: " + ex.Message);
+            }
         }
 
         var sw = Stopwatch.StartNew();
-        while (await IsAvailableAsync(ct) || BrowserProfiles.InUse(dir))
+        while (Probe(s).Result == Ownership.Trusted || BrowserProfiles.InUse(dir))
         {
             if (sw.ElapsedMilliseconds > 15_000)
                 throw new TimeoutException($"Trình duyệt điều khiển ({Path.GetFileName(dir)}) không đóng. Hãy tự đóng nó rồi chạy lại.");
             await Task.Delay(300, ct);
         }
+        if (_session == s) _session = null;
     }
 
     private static string ResolveBrowser(string browser)
@@ -204,11 +279,20 @@ internal static class BrowserClient
         throw new FileNotFoundException($"Không tìm thấy {(edge ? "Microsoft Edge" : "Google Chrome")} trên máy.");
     }
 
-    private static async Task<bool> IsAvailableAsync(CancellationToken ct)
+    /// <summary>Cổng trả lời và đúng do trình duyệt của phiên lắng nghe; cổng của chương trình khác → false (hoặc báo lỗi khi <paramref name="throwIfForeign"/>).</summary>
+    private static async Task<bool> IsAvailableAsync(Session s, CancellationToken ct, bool throwIfForeign = false)
     {
+        var (owner, pid) = Probe(s);
+        if (owner == Ownership.Foreign)
+        {
+            if (throwIfForeign) throw ForeignListener(s, pid);
+            Log.Warn("      " + ForeignListener(s, pid).Message);
+            return false;
+        }
+        if (owner == Ownership.NoListener) return false;
         try
         {
-            using var resp = await Http.GetAsync($"{BaseUrl}/json/version", ct);
+            using var resp = await Http.GetAsync($"{BaseUrl(s)}/json/version", ct);
             return resp.IsSuccessStatusCode;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
@@ -217,11 +301,171 @@ internal static class BrowserClient
         }
     }
 
-    private static string NormalizeUrl(string url)
+    // ───────────────────────────── Địa chỉ trang ─────────────────────────────
+
+    private static readonly HashSet<string> AllowedSchemes = new(StringComparer.OrdinalIgnoreCase) { "http", "https", "file", "about" };
+
+    /// <summary>Giao thức ở đầu địa chỉ ("javascript:", "data:", "http:"…) — "localhost:8080" là tên máy kèm cổng, không phải giao thức.</summary>
+    [GeneratedRegex(@"^([a-zA-Z][a-zA-Z0-9+.\-]*):(?!\d)")]
+    private static partial Regex SchemePattern();
+
+    [GeneratedRegex(@"^about:[a-zA-Z0-9\-]+$")]
+    private static partial Regex AboutPattern();
+
+    /// <summary>
+    /// Địa chỉ mở / chuyển trang: chỉ http, https, file và about: (vd about:blank); không ghi giao thức → https://.
+    /// Khoảng trắng và dấu nháy được mã hóa %XX, ký tự điều khiển bị từ chối — kết quả luôn bắt đầu bằng giao thức, không bao giờ bằng "-".
+    /// </summary>
+    internal static string NormalizeUrl(string url)
     {
         url = url.Trim();
-        return url.Contains("://") || url.StartsWith("about:") ? url : "https://" + url;
+        if (url.Any(char.IsControl)) throw new InvalidOperationException("Địa chỉ URL có ký tự điều khiển (xuống dòng, tab…) — hãy nhập lại.");
+        var scheme = SchemePattern().Match(url);
+        if (!scheme.Success) url = "https://" + url;
+        else if (!AllowedSchemes.Contains(scheme.Groups[1].Value) ||
+                 scheme.Groups[1].Value.Equals("about", StringComparison.OrdinalIgnoreCase) && !AboutPattern().IsMatch(url))
+            throw new InvalidOperationException($"Không mở được địa chỉ \"{Short(url)}\": chỉ hỗ trợ http://, https://, file:// và about:blank.");
+
+        var sb = new StringBuilder(url.Length);
+        foreach (var c in url)
+        {
+            if (c is '"' or '\'' or '<' or '>' or '`' || char.IsWhiteSpace(c)) sb.Append(Uri.EscapeDataString(c.ToString()));
+            else sb.Append(c);
+        }
+        return sb.ToString();
     }
+
+    // ───────────────────────────── Xác minh cổng điều khiển ─────────────────────────────
+
+    internal enum Ownership { Trusted, NoListener, Foreign }
+
+    /// <summary>
+    /// Cổng <paramref name="port"/> (127.0.0.1) có đúng do tiến trình <paramref name="rootPid"/> hoặc tiến trình con / cháu của nó lắng nghe không,
+    /// theo ảnh chụp bảng cổng TCP và cây tiến trình. Một tiến trình lạ cùng lắng nghe cổng đó (vd 0.0.0.0) → Foreign kèm PID của nó.
+    /// </summary>
+    internal static (Ownership Result, int Pid) CheckOwner(int port, IEnumerable<ProcessNet.Listener> listeners,
+        IReadOnlyDictionary<int, int> parents, int rootPid)
+    {
+        var owners = listeners.Where(l => l.Port == port && ReachesLoopback(l.Address)).Select(l => l.Pid).Distinct().ToList();
+        if (owners.Count == 0) return (Ownership.NoListener, 0);
+        foreach (var pid in owners)
+            if (!IsSelfOrDescendant(pid, rootPid, parents)) return (Ownership.Foreign, pid);
+        return (Ownership.Trusted, owners[0]);
+    }
+
+    /// <summary>Kết nối tới 127.0.0.1 có thể tới socket này: 127.0.0.1, 0.0.0.0, [::] (dual-stack) hoặc [::ffff:127.0.0.1].</summary>
+    private static bool ReachesLoopback(IPAddress a) =>
+        a.Equals(IPAddress.Loopback) || a.Equals(IPAddress.Any) || a.Equals(IPAddress.IPv6Any) ||
+        a.IsIPv4MappedToIPv6 && (a.MapToIPv4().Equals(IPAddress.Loopback) || a.MapToIPv4().Equals(IPAddress.Any));
+
+    private static bool IsSelfOrDescendant(int pid, int rootPid, IReadOnlyDictionary<int, int> parents)
+    {
+        var seen = new HashSet<int>();
+        while (seen.Add(pid))
+        {
+            if (pid == rootPid) return true;
+            if (!parents.TryGetValue(pid, out var parent) || parent <= 0) return false;
+            pid = parent;
+        }
+        return false; // vòng lặp (PID bị dùng lại)
+    }
+
+    private static (Ownership Result, int Pid) Probe(Session s)
+    {
+        try
+        {
+            if (s.Process.HasExited) return (Ownership.NoListener, 0);
+            return CheckOwner(s.Port, ProcessNet.TcpListeners(), ProcessNet.ParentMap(), s.Process.Id);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or Win32Exception)
+        {
+            Log.Warn("      Không kiểm tra được cổng điều khiển trình duyệt: " + ex.Message);
+            return (Ownership.NoListener, 0);
+        }
+    }
+
+    private static InvalidOperationException ForeignListener(Session s, int pid)
+    {
+        if (_session == s) _session = null;
+        return new InvalidOperationException(
+            $"Cổng điều khiển {s.Port} đang do một chương trình khác (PID {pid}) lắng nghe, không phải trình duyệt ScheduleApp đã mở — " +
+            "ScheduleApp không kết nối để tránh lộ dữ liệu trang web. Hãy chạy lại bước \"Trình duyệt → Mở trình duyệt ở chế độ điều khiển\".");
+    }
+
+    /// <summary>Nội dung file DevToolsActivePort: dòng 1 là cổng, dòng 2 là đường dẫn "/devtools/browser/…" (null = chưa ghi xong / sai dạng).</summary>
+    internal static int? ParseActivePort(string content)
+    {
+        var lines = content.Replace("\r", "").Split('\n');
+        if (lines.Length < 2 || !lines[1].StartsWith("/devtools/browser/", StringComparison.Ordinal)) return null;
+        return int.TryParse(lines[0], NumberStyles.None, CultureInfo.InvariantCulture, out int port) && port is > 0 and <= 65535 ? port : null;
+    }
+
+    private static int? ReadActivePort(string dir)
+    {
+        try
+        {
+            using var stream = new FileStream(Path.Combine(dir, ActivePortFile), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+            return ParseActivePort(reader.ReadToEnd());
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    [GeneratedRegex("""(?<q>")?--user-data-dir=(?:"(?<v>[^"]*)"|(?(q)(?<v>[^"]*)|(?<v>[^\s"]+)))""", RegexOptions.IgnoreCase)]
+    private static partial Regex UserDataDirPattern();
+
+    /// <summary>Dòng lệnh trình duyệt có mở đúng thư mục hồ sơ <paramref name="dir"/> (--user-data-dir) không.</summary>
+    internal static bool UsesProfile(string commandLine, string dir) =>
+        UserDataDirPattern().Matches(commandLine).Any(m => SamePath(m.Groups["v"].Value, dir));
+
+    private static bool SamePath(string a, string b)
+    {
+        if (a.Trim().Length == 0 || b.Trim().Length == 0) return false;
+        try
+        {
+            return string.Equals(Path.GetFullPath(a.Trim()).TrimEnd('\\', '/'), Path.GetFullPath(b.Trim()).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Trình duyệt do ScheduleApp mở trong lần chạy trước vẫn giữ hồ sơ <paramref name="dir"/>: chỉ dùng tiếp khi đúng một tiến trình lắng nghe
+    /// cổng ghi trong DevToolsActivePort và dòng lệnh của nó mở chính thư mục hồ sơ này.
+    /// </summary>
+    private static Session? TryReattach(string dir)
+    {
+        if (!BrowserProfiles.InUse(dir) || ReadActivePort(dir) is not int port) return null;
+        try
+        {
+            var owners = ProcessNet.TcpListeners().Where(l => l.Port == port && ReachesLoopback(l.Address)).Select(l => l.Pid).Distinct().ToList();
+            if (owners.Count != 1 || ProcessNet.CommandLine(owners[0]) is not { } commandLine || !UsesProfile(commandLine, dir)) return null;
+            return new Session(port, dir, Process.GetProcessById(owners[0]));
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Trình duyệt điều khiển hiện tại; chưa có thì tìm trình duyệt ScheduleApp mở từ trước còn giữ hồ sơ.</summary>
+    private static Session? Current()
+    {
+        if (_session is { } s) return s;
+        foreach (var dir in BrowserProfiles.AllDirs().Where(BrowserProfiles.InUse))
+            if (TryReattach(dir) is { } found) return _session = found;
+        return null;
+    }
+
+    /// <summary>Địa chỉ WebSocket của tab phải trỏ về đúng cổng điều khiển trên máy này.</summary>
+    internal static bool IsLocalDevToolsUrl(string url, int port) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme == "ws" && uri.Port == port &&
+        (uri.Host == "127.0.0.1" || uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase));
 
     // ───────────────────────────── Tab & DevTools ─────────────────────────────
 
@@ -229,21 +473,28 @@ internal static class BrowserClient
 
     private static async Task<List<TabInfo>> ListTabsAsync(CancellationToken ct)
     {
+        var s = Current() ?? throw new InvalidOperationException(
+            "Chưa có trình duyệt điều khiển nào đang mở. Thêm bước \"Trình duyệt → Mở trình duyệt ở chế độ điều khiển\" ở đầu flow.");
+        var (owner, pid) = Probe(s);
+        if (owner == Ownership.Foreign) throw ForeignListener(s, pid);
         string json;
         try
         {
-            json = await Http.GetStringAsync($"{BaseUrl}/json/list", ct);
+            if (owner == Ownership.NoListener) throw new HttpRequestException();
+            json = await Http.GetStringAsync($"{BaseUrl(s)}/json/list", ct);
         }
         catch (HttpRequestException)
         {
+            if (_session == s) _session = null;
             throw new InvalidOperationException(
-                $"Không kết nối được trình duyệt ở cổng {Port}. Thêm bước \"Trình duyệt → Mở trình duyệt ở chế độ điều khiển\" ở đầu flow.");
+                $"Không kết nối được trình duyệt ở cổng {s.Port}. Thêm bước \"Trình duyệt → Mở trình duyệt ở chế độ điều khiển\" ở đầu flow.");
         }
 
         var tabs = new List<TabInfo>();
         foreach (var t in JsonDocument.Parse(json).RootElement.EnumerateArray())
         {
             if (t.GetProperty("type").GetString() != "page" || !t.TryGetProperty("webSocketDebuggerUrl", out var ws)) continue;
+            if (!IsLocalDevToolsUrl(ws.GetString() ?? "", s.Port)) continue;
             tabs.Add(new TabInfo(t.GetProperty("id").GetString() ?? "", t.GetProperty("title").GetString() ?? "",
                 t.GetProperty("url").GetString() ?? "", ws.GetString() ?? ""));
         }
@@ -264,7 +515,8 @@ internal static class BrowserClient
     }
 
     /// <summary>Trình duyệt điều khiển đang mở (cổng remote debugging trả lời).</summary>
-    internal static Task<bool> IsRunningAsync(CancellationToken ct) => IsAvailableAsync(ct);
+    internal static Task<bool> IsRunningAsync(CancellationToken ct) =>
+        Current() is { } s ? IsAvailableAsync(s, ct) : Task.FromResult(false);
 
     /// <summary>Chụp ảnh nội dung tab (PNG) — chụp được cả khi cửa sổ trình duyệt bị che hoặc chạy headless.</summary>
     internal static async Task<byte[]> CaptureScreenshotAsync(string tabQuery, CancellationToken ct)
