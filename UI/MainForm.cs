@@ -874,6 +874,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
         _jobs.Remove(job);
         JobsChanged();
+        JobVersions.Delete(job.Id);
         Log.Info($"Đã xóa công việc \"{job.Name}\".");
     }
 

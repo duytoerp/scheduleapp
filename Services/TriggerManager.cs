@@ -278,18 +278,25 @@ public sealed class TriggerManager : IDisposable
         return name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? name[..^4] : name;
     }
 
+    /// <summary>Tên các tiến trình đang chạy trong phiên đăng nhập này (người dùng khác / dịch vụ không kích hoạt công việc).</summary>
     private static HashSet<string> RunningProcessNames()
     {
-        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        int session;
+        using (var self = Process.GetCurrentProcess()) session = self.SessionId;
+        var list = new List<(string Name, int Session)>();
         foreach (var p in Process.GetProcesses())
         {
             using (p)
             {
-                try { set.Add(p.ProcessName); } catch (InvalidOperationException) { }
+                try { list.Add((p.ProcessName, p.SessionId)); } catch (InvalidOperationException) { }
             }
         }
-        return set;
+        return NamesInSession(list, session);
     }
+
+    /// <summary>Tên (không phân biệt hoa thường) của các tiến trình thuộc phiên <paramref name="session"/>.</summary>
+    internal static HashSet<string> NamesInSession(IEnumerable<(string Name, int Session)> processes, int session) =>
+        new(processes.Where(p => p.Session == session).Select(p => p.Name), StringComparer.OrdinalIgnoreCase);
 
     private void OnSessionSwitch(object? sender, SessionSwitchEventArgs e)
     {

@@ -58,17 +58,89 @@ public sealed class ScheduleConfig
     public static readonly string[] WeekOfMonthNames = ["đầu tiên", "thứ hai", "thứ ba", "thứ tư", "cuối cùng"];
 
     /// <summary>
-    /// Lần chạy kế tiếp sau thời điểm <paramref name="after"/> (null nếu không còn lần nào).
-    /// <paramref name="isHoliday"/>: bỏ qua các ngày nghỉ (cả ngày).
+    /// Lần chạy kế tiếp sau thời điểm <paramref name="after"/> (giờ địa phương của <paramref name="zone"/>; null nếu không còn lần nào).
+    /// <paramref name="isHoliday"/>: bỏ qua các ngày nghỉ (cả ngày). <paramref name="zone"/>: null = múi giờ của Windows.
     /// </summary>
-    public DateTime? NextOccurrence(DateTime after, Func<DateTime, bool>? isHoliday = null)
+    public DateTime? NextOccurrence(DateTime after, Func<DateTime, bool>? isHoliday = null, TimeZoneInfo? zone = null)
     {
-        var next = NextRaw(after, isHoliday);
-        for (int guard = 0; next is DateTime n && isHoliday != null && isHoliday(n.Date) && guard < 400; guard++)
-            next = NextRaw(n.Date.AddDays(1).AddSeconds(-1), isHoliday);
+        zone ??= TimeZoneInfo.Local;
+        return NextOccurrenceUtc(LocalToUtc(after, zone), isHoliday, zone) is DateTime u ? UtcToLocal(u, zone) : null;
+    }
+
+    /// <summary>
+    /// Lần chạy kế tiếp sau <paramref name="afterUtc"/>, tính bằng giờ UTC để không nhầm khi đồng hồ đổi giờ mùa hè:
+    /// lặp theo phút đếm theo thời gian thực; "lúc HH:mm" (ngày/tuần/tháng/một lần) theo giờ đồng hồ treo tường —
+    /// giờ bị bỏ qua khi đồng hồ nhảy tới thì chạy lúc vừa nhảy tới, giờ lặp lại khi lùi đồng hồ chỉ chạy một lần.
+    /// </summary>
+    public DateTime? NextOccurrenceUtc(DateTime afterUtc, Func<DateTime, bool>? isHoliday = null, TimeZoneInfo? zone = null)
+    {
+        zone ??= TimeZoneInfo.Local;
+        afterUtc = DateTime.SpecifyKind(afterUtc, DateTimeKind.Utc);
+        var next = NextRawUtc(afterUtc, isHoliday, zone);
+        for (int guard = 0; next is DateTime n && isHoliday != null && guard < 400; guard++)
+        {
+            var day = UtcToLocal(n, zone).Date;
+            if (!isHoliday(day)) break;
+            next = NextRawUtc(LocalToUtc(day.AddDays(1).AddSeconds(-1), zone), isHoliday, zone);
+        }
         return next;
     }
 
+    internal static DateTime UtcToLocal(DateTime utc, TimeZoneInfo zone) =>
+        DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), zone), DateTimeKind.Unspecified);
+
+    /// <summary>Giờ địa phương → UTC. Giờ không tồn tại (đồng hồ nhảy tới) → lúc đồng hồ vừa nhảy tới; giờ lặp lại (lùi đồng hồ) → luôn lần đầu.</summary>
+    internal static DateTime LocalToUtc(DateTime local, TimeZoneInfo zone)
+    {
+        local = DateTime.SpecifyKind(local, DateTimeKind.Unspecified);
+        if (zone.IsInvalidTime(local))
+        {
+            var t = new DateTime(local.Year, local.Month, local.Day, local.Hour, local.Minute, 0);
+            for (int guard = 0; zone.IsInvalidTime(t) && guard < 24 * 60; guard++) t = t.AddMinutes(1);
+            local = t;
+        }
+        if (zone.IsAmbiguousTime(local))
+            return zone.GetAmbiguousTimeOffsets(local).Select(o => DateTime.SpecifyKind(local - o, DateTimeKind.Utc)).Min();
+        return TimeZoneInfo.ConvertTimeToUtc(local, zone);
+    }
+
+    private DateTime? NextRawUtc(DateTime afterUtc, Func<DateTime, bool>? isHoliday, TimeZoneInfo zone)
+    {
+        if (Type == ScheduleType.Interval) return NextIntervalUtc(afterUtc, zone);
+        var after = UtcToLocal(afterUtc, zone);
+        for (int guard = 0; guard < 3; guard++)
+        {
+            if (NextRaw(after, isHoliday) is not DateTime local) return null;
+            var utc = LocalToUtc(local, zone);
+            if (utc > afterUtc) return utc;
+            // Đang ở lần thứ hai của giờ lặp lại mà giờ chạy đã qua ở lần đầu → coi như đã chạy, tính từ sau giờ đó.
+            after = local;
+        }
+        return null;
+    }
+
+    /// <summary>Lặp theo phút: lưới thời gian tính bằng UTC (đổi giờ mùa hè không làm khoảng cách lệch), khung giờ/ngày xét theo giờ địa phương.</summary>
+    private DateTime? NextIntervalUtc(DateTime afterUtc, TimeZoneInfo zone)
+    {
+        var start = LocalToUtc(TrimToSecond(StartAt), zone);
+        var step = TimeSpan.FromMinutes(Math.Max(1, IntervalMinutes));
+        var candidate = afterUtc < start ? start : GridAfter(start, step, afterUtc);
+        if (!UseTimeWindow || WindowEnd <= WindowStart) return candidate;
+        if (Days.Count == 0) return null;
+
+        for (int guard = 0; guard < 30; guard++)
+        {
+            var local = UtcToLocal(candidate, zone);
+            var t = local.TimeOfDay;
+            bool dayOk = Days.Contains(local.DayOfWeek);
+            if (dayOk && t >= WindowStart && t < WindowEnd) return candidate;
+            var target = LocalToUtc(dayOk && t < WindowStart ? local.Date + WindowStart : local.Date.AddDays(1) + WindowStart, zone);
+            candidate = target <= start ? start : GridAtOrAfter(start, step, target);
+        }
+        return null;
+    }
+
+    /// <summary>Các lịch "lúc HH:mm" (không gồm lặp theo phút), tính theo giờ đồng hồ địa phương.</summary>
     private DateTime? NextRaw(DateTime after, Func<DateTime, bool>? isHoliday)
     {
         var start = TrimToSecond(StartAt);
@@ -106,24 +178,6 @@ public sealed class ScheduleConfig
                     if (day == null) continue;
                     var candidate = day.Value + timeOfDay;
                     if (candidate > from) return candidate;
-                }
-                return null;
-            }
-
-            case ScheduleType.Interval:
-            {
-                var step = TimeSpan.FromMinutes(Math.Max(1, IntervalMinutes));
-                var candidate = after < start ? start : GridAfter(start, step, after);
-                if (!UseTimeWindow || WindowEnd <= WindowStart) return candidate;
-                if (Days.Count == 0) return null;
-
-                for (int guard = 0; guard < 30; guard++)
-                {
-                    var t = candidate.TimeOfDay;
-                    bool dayOk = Days.Contains(candidate.DayOfWeek);
-                    if (dayOk && t >= WindowStart && t < WindowEnd) return candidate;
-                    var target = dayOk && t < WindowStart ? candidate.Date + WindowStart : candidate.Date.AddDays(1) + WindowStart;
-                    candidate = target <= start ? start : GridAtOrAfter(start, step, target);
                 }
                 return null;
             }

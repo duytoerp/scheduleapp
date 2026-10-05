@@ -172,3 +172,51 @@ public static class ErrorScreenshots
         }
     }
 }
+
+/// <summary>Dọn dữ liệu cũ mỗi ngày một lần: nhật ký + file crash, báo cáo kiểm thử, ảnh lỗi.</summary>
+public static class Housekeeping
+{
+    /// <summary>Số ngày giữ báo cáo kiểm thử.</summary>
+    public const int KeepReportDays = 30;
+
+    /// <summary>Số báo cáo kiểm thử giữ tối đa (mới nhất), dù chưa quá hạn.</summary>
+    public const int KeepReportCount = 200;
+
+    public static void Run()
+    {
+        try
+        {
+            int logs = Log.Cleanup(Log.LogDir, DateTime.Today);
+            int reports = PruneTestReports(Testing.TestReport.RootDir, DateTime.Now);
+            ErrorScreenshots.Cleanup();
+            if (logs + reports > 0) Log.Info($"🧹 Đã dọn {logs} file nhật ký/crash cũ và {reports} báo cáo kiểm thử cũ.");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Log.Warn("Không dọn được dữ liệu cũ: " + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Xóa thư mục báo cáo kiểm thử (tên "yyyy-MM-dd_HHmmss_…") cũ hơn <paramref name="keepDays"/> ngày hoặc ngoài
+    /// <paramref name="keepCount"/> báo cáo mới nhất. Thư mục/file khác (latest.json, thư mục người dùng tự tạo) giữ nguyên. Trả về số thư mục đã xóa.
+    /// </summary>
+    internal static int PruneTestReports(string root, DateTime now, int keepDays = KeepReportDays, int keepCount = KeepReportCount)
+    {
+        if (!Directory.Exists(root)) return 0;
+        var reports = new List<(string Dir, DateTime At)>();
+        foreach (var d in Directory.GetDirectories(root))
+        {
+            var name = Path.GetFileName(d);
+            if (name.Length >= 17 && DateTime.TryParseExact(name[..17], "yyyy-MM-dd_HHmmss", null, System.Globalization.DateTimeStyles.None, out var at))
+                reports.Add((d, at));
+        }
+        var cutoff = now.AddDays(-Math.Max(1, keepDays));
+        int deleted = 0;
+        foreach (var (dir, _) in reports.OrderByDescending(r => r.At).Where((r, i) => i >= keepCount || r.At < cutoff))
+        {
+            try { Directory.Delete(dir, true); deleted++; } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+        return deleted;
+    }
+}

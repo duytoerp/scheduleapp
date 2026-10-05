@@ -225,6 +225,26 @@ public static class JobVersions
         return result;
     }
 
+    /// <summary>Xóa mọi phiên bản cũ của công việc (gọi khi xóa công việc). Trả về false nếu không xóa được thư mục.</summary>
+    public static bool Delete(Guid jobId)
+    {
+        lock (Sync)
+        {
+            LastSaved.Remove(jobId);
+            var dir = Path.Combine(Dir, jobId.ToString("N"));
+            try
+            {
+                if (Directory.Exists(dir)) Directory.Delete(dir, true);
+                return true;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Log.Warn($"Không xóa được các phiên bản cũ trong {dir}: {ex.Message}");
+                return false;
+            }
+        }
+    }
+
     private static void Write(Guid id, string json)
     {
         var dir = Path.Combine(Dir, id.ToString("N"));

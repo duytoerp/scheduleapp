@@ -75,8 +75,7 @@ internal sealed class HistoryForm : BaseForm
         openLog.Click += (_, _) =>
         {
             if (Selected() is not { } r) return;
-            var path = Path.Combine(Log.LogDir, $"{r.Start:yyyy-MM-dd}.log");
-            if (File.Exists(path)) Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+            if (Log.FileFor(Log.LogDir, r.Start) is string path) Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
         };
         clear.Click += (_, _) =>
         {
