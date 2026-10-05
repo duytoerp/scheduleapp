@@ -6,6 +6,9 @@ public static class Log
     private static readonly object Sync = new();
     private static readonly HashSet<string> Masks = new(StringComparer.Ordinal);
 
+    /// <summary>Các giá trị cần che, dài trước ngắn sau (che "abcdef" trước "abc" để không còn sót "def"); null = cần sắp lại.</summary>
+    private static string[]? _ordered;
+
     public static event Action<string>? Written;
 
     public static string LogDir => Path.Combine(JobStore.DataDir, "logs");
@@ -14,21 +17,39 @@ public static class Log
     public static void Warn(string message) => Write("WARN", message);
     public static void Error(string message) => Write("LỖI", message);
 
-    /// <summary>Che giá trị bí mật (mật khẩu…) mỗi khi nó xuất hiện trong log.</summary>
-    public static void Mask(string secret)
+    /// <summary>
+    /// Che giá trị bí mật (mật khẩu, token, khóa API…) mỗi khi nó xuất hiện trong log, lịch sử chạy, kết quả, báo cáo, thông báo.
+    /// Che cả dạng đã mã hóa URL (%40…) của nó.
+    /// </summary>
+    public static void Mask(string? secret)
     {
+        if (string.IsNullOrEmpty(secret)) return;
+        secret = secret.Trim();
         if (secret.Length < 3) return; // quá ngắn — che sẽ làm hỏng log
-        lock (Sync) Masks.Add(secret);
-    }
-
-    public static string Redact(string text)
-    {
         lock (Sync)
         {
-            foreach (var m in Masks)
-                if (text.Contains(m, StringComparison.Ordinal)) text = text.Replace(m, "***");
+            bool added = Masks.Add(secret);
+            var escaped = Uri.EscapeDataString(secret);
+            if (escaped != secret) added |= Masks.Add(escaped);
+            if (added) _ordered = null;
         }
+    }
+
+    /// <summary>
+    /// Thay mọi giá trị bí mật đã đăng ký bằng "***". Gọi TRƯỚC khi cắt ngắn chuỗi — cắt trước thì nửa bí mật còn lại không khớp để che.
+    /// </summary>
+    public static string Redact(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return text ?? "";
+        foreach (var m in Snapshot())
+            if (text.Contains(m, StringComparison.Ordinal)) text = text.Replace(m, "***");
         return text;
+    }
+
+    /// <summary>Các giá trị đang được che (dài trước) — để nơi khác thay bằng chữ giữ chỗ riêng (vd khi gửi flow cho AI).</summary>
+    internal static string[] Snapshot()
+    {
+        lock (Sync) return _ordered ??= [.. Masks.OrderByDescending(m => m.Length)];
     }
 
     private static void Write(string level, string message)

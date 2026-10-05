@@ -9,7 +9,12 @@ namespace ScheduleApp.Services;
 /// <summary>Gửi kết quả chạy flow ra ngoài: Telegram, email (SMTP), webhook (Teams / Slack / Discord / Google Chat).</summary>
 public static class NotificationService
 {
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(30) };
+    private static readonly HttpClient Http = new(new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(15) })
+    {
+        Timeout = TimeSpan.FromSeconds(30),
+        // Phản hồi của Telegram / webhook chỉ là vài dòng JSON — không đọc cả trang lỗi khổng lồ vào bộ nhớ.
+        MaxResponseContentBufferSize = 1024 * 1024
+    };
 
     public static async Task SendForRunAsync(Job job, RunRecord r)
     {
@@ -38,13 +43,17 @@ public static class NotificationService
         }
     }
 
-    /// <summary>Gửi qua mọi kênh đang bật. Lỗi được ghi log và trả về (không ném ra ngoài).</summary>
-    public static async Task<List<string>> SendAsync(string title, string body, string? screenshot)
+    /// <summary>Gửi qua mọi kênh đang bật. Lỗi được ghi log và trả về (không ném ra ngoài). Bí mật trong tiêu đề / nội dung bị che.</summary>
+    /// <param name="screenshot">Ảnh đính kèm: ảnh lỗi chỉ gửi ở kênh có bật "Kèm ảnh chụp màn hình lỗi".</param>
+    /// <param name="requested">Ảnh do bước "Gửi thông báo" yêu cầu rõ ("Gửi kèm ảnh chụp màn hình hiện tại") — gửi ở mọi kênh hỗ trợ ảnh.</param>
+    public static async Task<List<string>> SendAsync(string title, string body, string? screenshot, bool requested = false)
     {
         var s = SettingsStore.Current;
+        title = Log.Redact(title);
+        body = Log.Redact(body);
         var tasks = new List<Task<string?>>();
-        if (s.Telegram.Enabled) tasks.Add(Guard("Telegram", () => SendTelegramAsync(s.Telegram, title, body, screenshot)));
-        if (s.Email.Enabled) tasks.Add(Guard("Email", () => SendEmailAsync(s.Email, title, body, screenshot)));
+        if (s.Telegram.Enabled) tasks.Add(Guard("Telegram", () => SendTelegramAsync(s.Telegram, title, body, screenshot, requested)));
+        if (s.Email.Enabled) tasks.Add(Guard("Email", () => SendEmailAsync(s.Email, title, body, screenshot, requested)));
         if (s.Webhook.Enabled) tasks.Add(Guard("Webhook", () => SendWebhookAsync(s.Webhook, title, body)));
         var results = await Task.WhenAll(tasks);
         return results.OfType<string>().ToList();
@@ -59,20 +68,21 @@ public static class NotificationService
         }
         catch (Exception ex)
         {
-            Log.Error($"Không gửi được thông báo {channel}: {ex.Message}");
-            return $"{channel}: {ex.Message}";
+            var message = Log.Redact(ex.Message);
+            Log.Error($"Không gửi được thông báo {channel}: {message}");
+            return $"{channel}: {message}";
         }
     }
 
-    public static async Task SendTelegramAsync(TelegramSettings t, string title, string body, string? screenshot)
+    public static async Task SendTelegramAsync(TelegramSettings t, string title, string body, string? screenshot, bool requested = false)
     {
-        var token = Protector.Unprotect(t.BotToken);
+        var token = Credentials.Reveal(t.BotToken, "token bot Telegram");
         if (token.Length == 0 || t.ChatId.Trim().Length == 0) throw new InvalidOperationException("Chưa nhập token bot hoặc chat id.");
         var api = $"https://api.telegram.org/bot{token}";
-        var text = $"{title}\n{body}";
+        var text = Log.Redact($"{title}\n{body}");
 
         HttpResponseMessage resp;
-        if (t.SendScreenshot && screenshot != null && File.Exists(screenshot))
+        if ((requested || t.SendScreenshot) && screenshot != null && File.Exists(screenshot))
         {
             using var form = new MultipartFormDataContent
             {
@@ -88,30 +98,57 @@ public static class NotificationService
         {
             resp = await Http.PostAsJsonAsync($"{api}/sendMessage", new { chat_id = t.ChatId.Trim(), text });
         }
-        if (!resp.IsSuccessStatusCode)
-            throw new HttpRequestException($"Telegram trả về {(int)resp.StatusCode}: {await resp.Content.ReadAsStringAsync()}");
+        using (resp)
+            if (!resp.IsSuccessStatusCode)
+                throw new HttpRequestException($"Telegram trả về {(int)resp.StatusCode}: {await ErrorText(resp)}");
     }
 
-    public static async Task SendEmailAsync(EmailSettings e, string title, string body, string? screenshot)
+    public static async Task SendEmailAsync(EmailSettings e, string title, string body, string? screenshot, bool requested = false)
     {
         if (string.IsNullOrWhiteSpace(e.Host) || string.IsNullOrWhiteSpace(e.To)) throw new InvalidOperationException("Chưa nhập máy chủ SMTP hoặc người nhận.");
+        var host = e.Host.Trim();
+        // Không có TLS thì mật khẩu và nội dung đi trên mạng dạng chữ thường — chỉ cho phép với máy chủ ngay trên máy này hoặc khi đã cho phép rõ.
+        if (!e.UseSsl && !e.AllowNoTls && !IsLoopback(host))
+            throw new InvalidOperationException($"Máy chủ SMTP \"{host}\" đang tắt SSL/TLS — mật khẩu và nội dung sẽ gửi không mã hóa. " +
+                                                "Bật SSL/TLS (STARTTLS, cổng 587) trong ⚙ Cài đặt → Thông báo.");
+        var password = Credentials.Reveal(e.Password, "mật khẩu email (SMTP)");
         var from = string.IsNullOrWhiteSpace(e.From) ? e.User : e.From;
-        using var msg = new MailMessage { From = new MailAddress(from), Subject = "[ScheduleApp] " + title, Body = body };
+        using var msg = new MailMessage { From = new MailAddress(from), Subject = "[ScheduleApp] " + Log.Redact(title), Body = Log.Redact(body) };
         foreach (var to in e.To.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) msg.To.Add(to);
-        if (e.AttachScreenshot && screenshot != null && File.Exists(screenshot)) msg.Attachments.Add(new Attachment(screenshot));
+        if ((requested || e.AttachScreenshot) && screenshot != null && File.Exists(screenshot)) msg.Attachments.Add(new Attachment(screenshot));
 
-        using var smtp = new SmtpClient(e.Host.Trim(), e.Port) { EnableSsl = e.UseSsl, DeliveryMethod = SmtpDeliveryMethod.Network };
-        if (!string.IsNullOrWhiteSpace(e.User)) smtp.Credentials = new NetworkCredential(e.User.Trim(), Protector.Unprotect(e.Password));
+        using var smtp = new SmtpClient(host, e.Port) { EnableSsl = e.UseSsl, DeliveryMethod = SmtpDeliveryMethod.Network, Timeout = 60_000 };
+        if (!string.IsNullOrWhiteSpace(e.User)) smtp.Credentials = new NetworkCredential(e.User.Trim(), password);
         await smtp.SendMailAsync(msg);
     }
 
     public static async Task SendWebhookAsync(WebhookSettings w, string title, string body)
     {
-        if (string.IsNullOrWhiteSpace(w.Url)) throw new InvalidOperationException("Chưa nhập URL webhook.");
-        var text = $"{title}\n{body}";
+        // URL webhook chứa khóa bí mật (lưu mã hóa) — ai có URL là gửi được tin vào kênh.
+        var url = Credentials.Reveal(w.Url, "URL webhook").Trim();
+        if (url.Length == 0) throw new InvalidOperationException("Chưa nhập URL webhook.");
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
+            throw new InvalidOperationException("URL webhook không hợp lệ (cần bắt đầu bằng https://).");
+        var text = Log.Redact($"{title}\n{body}");
         // "text": Teams / Slack / Google Chat · "content": Discord.
-        var resp = await Http.PostAsJsonAsync(w.Url.Trim(), new { text, content = text });
+        using var resp = await Http.PostAsJsonAsync(uri, new { text, content = text });
         if (!resp.IsSuccessStatusCode)
-            throw new HttpRequestException($"Webhook trả về {(int)resp.StatusCode}: {await resp.Content.ReadAsStringAsync()}");
+            throw new HttpRequestException($"Webhook trả về {(int)resp.StatusCode}: {await ErrorText(resp)}");
+    }
+
+    /// <summary>Máy chủ ngay trên máy này (localhost, 127.x, ::1).</summary>
+    internal static bool IsLoopback(string host)
+    {
+        host = host.Trim().Trim('[', ']');
+        return host.Equals("localhost", StringComparison.OrdinalIgnoreCase) || (IPAddress.TryParse(host, out var ip) && IPAddress.IsLoopback(ip));
+    }
+
+    /// <summary>Nội dung lỗi máy chủ trả về: đã che bí mật, tối đa 300 ký tự.</summary>
+    private static async Task<string> ErrorText(HttpResponseMessage resp)
+    {
+        string text;
+        try { text = await resp.Content.ReadAsStringAsync(); }
+        catch (HttpRequestException) { return "(không đọc được nội dung)"; }
+        return ApiClient.Short(Log.Redact(text));
     }
 }

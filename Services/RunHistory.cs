@@ -79,6 +79,7 @@ public static class RunHistory
 
     public static void Add(RunRecord record)
     {
+        record.Message = Log.Redact(record.Message); // history.jsonl không bao giờ chứa mật khẩu / token nguyên văn
         lock (Sync)
         {
             Records.Add(record);
@@ -134,7 +135,10 @@ public static class ErrorScreenshots
     public static string? Capture(string jobName, int stepNumber) =>
         SettingsStore.Current.ScreenshotOnError ? CaptureAlways(jobName, $"buoc{stepNumber}") : null;
 
-    /// <summary>Chụp toàn bộ màn hình (kể cả khi tắt "chụp khi lỗi") — dùng cho bước "Gửi thông báo" kèm ảnh.</summary>
+    /// <summary>
+    /// Chụp toàn bộ màn hình (kể cả khi tắt "chụp khi lỗi") — dùng cho bước "Gửi thông báo" kèm ảnh. Ảnh chỉ lưu trên máy;
+    /// ảnh lỗi chỉ gửi ra kênh thông báo khi kênh đó bật "Kèm ảnh" (mặc định tắt).
+    /// </summary>
     public static string? CaptureAlways(string jobName, string suffix)
     {
         try

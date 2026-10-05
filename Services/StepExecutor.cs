@@ -207,8 +207,9 @@ public static class StepExecutor
                 var title = string.IsNullOrWhiteSpace(s.Target) ? $"🔔 {job.Name}" : s.Target;
                 if (!NotificationService.AnyChannelEnabled)
                     throw new InvalidOperationException("Chưa bật kênh thông báo nào (⚙ Cài đặt → Thông báo).");
-                var errors = await NotificationService.SendAsync(title, s.Text, shot);
-                if (errors.Count > 0) throw new InvalidOperationException("Gửi thông báo lỗi: " + string.Join("; ", errors));
+                // Bí mật trong tiêu đề / nội dung bị che trước khi gửi; ảnh do bước yêu cầu rõ nên gửi ở mọi kênh hỗ trợ ảnh.
+                var errors = await NotificationService.SendAsync(Log.Redact(title), Log.Redact(s.Text), shot, requested: shot != null);
+                if (errors.Count > 0) throw new InvalidOperationException(Log.Redact("Gửi thông báo lỗi: " + string.Join("; ", errors)));
                 Log.Info("      Đã gửi thông báo.");
                 break;
             }
@@ -734,5 +735,10 @@ public static class StepExecutor
         return sb.ToString();
     }
 
-    private static string Truncate(string s) => s.Length > 500 ? s[..500] + "…" : s;
+    /// <summary>Rút gọn để ghi log / báo lỗi — che bí mật TRƯỚC khi cắt (cắt trước thì nửa bí mật còn lại không che được).</summary>
+    private static string Truncate(string s)
+    {
+        s = Log.Redact(s);
+        return s.Length > 500 ? s[..500] + "…" : s;
+    }
 }

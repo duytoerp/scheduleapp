@@ -94,8 +94,10 @@ internal sealed class AiFlowForm : BaseForm
         bottom.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         bottom.Controls.Add(new Label
         {
-            Text = "Mô tả của bạn, các bước hiện có, tên biến / công việc / kết nối API (và danh sách cửa sổ nếu chọn) được gửi tới Anthropic để tạo flow. " +
-                   "Giá trị trong mục Bí mật không bị gửi. Hãy xem lại flow và chạy thử trước khi đặt lịch.",
+            Text = "Được gửi tới Anthropic để tạo flow: mô tả của bạn, các bước hiện có (cả chữ, URL, nội dung trong bước), tên và giá trị biến, " +
+                   "tên công việc / kết nối API (và danh sách cửa sổ nếu chọn). Mật khẩu, token, khóa API nhận ra được (mục 🔑 Bí mật, ⚙ Cài đặt, " +
+                   "ô mật khẩu, header / tham số tên password, token, key…) được thay bằng chữ giữ chỗ trước khi gửi và tự điền lại sau. " +
+                   "Bí mật gõ thẳng ở chỗ khác có thể không nhận ra — nên dùng {{secret:Tên}}. Hãy xem lại flow và chạy thử trước khi đặt lịch.",
             AutoSize = true,
             MaximumSize = new Size(LogicalToDeviceUnits(640), 0),
             ForeColor = UiText.Muted

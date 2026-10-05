@@ -1,3 +1,4 @@
+using System.Reflection;
 using ScheduleApp.Models;
 using ScheduleApp.Services.Testing;
 
@@ -76,7 +77,7 @@ public static class FlowEngine
                     ctx.StepMode = cmd == DebugCommand.Step;
                 }
                 if (ctx.BeforeStep != null) await ctx.BeforeStep(ctx);
-                Log.Info($"{indent}   [{pc + 1}/{total}] {step.Describe()}");
+                Log.Info($"{indent}   [{pc + 1}/{total}] {RedactedDescribe(step)}");
             }
 
             switch (step.Type)
@@ -200,10 +201,10 @@ public static class FlowEngine
                         Log.Warn($"{indent}   ■ Dừng flow (lỗi){(msg.Length > 0 ? ": " + msg : "")}");
                         ctx.Recorder?.Add(new StepRecord
                         {
-                            Number = pc + 1, Depth = ctx.Depth, JobName = job.Name, Description = Log.Redact(step.Describe()),
+                            Number = pc + 1, Depth = ctx.Depth, JobName = job.Name, Description = RedactedDescribe(step),
                             Ok = false, Detail = Log.Redact(msg), Start = DateTime.Now
                         });
-                        return new FlowResult(false, msg.Length > 0 ? msg : "Dừng flow theo bước " + (pc + 1), pc + 1, ctx.LastScreenshot);
+                        return new FlowResult(false, msg.Length > 0 ? Log.Redact(msg) : "Dừng flow theo bước " + (pc + 1), pc + 1, ctx.LastScreenshot);
                     }
                     Log.Info($"{indent}   ■ Dừng flow{(msg.Length > 0 ? ": " + msg : "")}");
                     return new FlowResult(errors == 0, msg.Length > 0 ? msg : "Dừng sớm theo flow");
@@ -289,7 +290,7 @@ public static class FlowEngine
             }
             catch (Exception ex)
             {
-                error = ex.Message;
+                error = Log.Redact(ex.Message);
                 if (i < attempts)
                 {
                     Log.Warn($"      ⟳ Lỗi: {error} — thử lại lần {i}/{attempts - 1} sau {ActionStep.FormatMs(step.RetryDelayMs)}.");
@@ -315,7 +316,7 @@ public static class FlowEngine
             Number = pc + 1,
             Depth = ctx.Depth,
             JobName = ctx.CurrentJob.Name,
-            Description = Log.Redact((expanded ?? step).Describe()),
+            Description = RedactedDescribe(expanded ?? step),
             IsAssert = step.Type == StepType.Assert,
             Ok = ok,
             Detail = Log.Redact(detail),
@@ -350,8 +351,28 @@ public static class FlowEngine
             case ErrorAction.Continue:
                 return -1;
             default:
-                fail = new FlowResult(false, $"Lỗi ở bước {pc + 1}: {error}", pc + 1, ctx.LastScreenshot);
+                fail = new FlowResult(false, Log.Redact($"Lỗi ở bước {pc + 1}: {error}"), pc + 1, ctx.LastScreenshot);
                 return -1;
         }
+    }
+
+    /// <summary>Các trường chữ của bước (trừ dữ liệu ảnh) — che bí mật trong từng trường trước khi mô tả.</summary>
+    private static readonly PropertyInfo[] TextProperties = [.. typeof(ActionStep).GetProperties(BindingFlags.Public | BindingFlags.Instance)
+        .Where(p => p.PropertyType == typeof(string) && p.CanRead && p.CanWrite && p.GetIndexParameters().Length == 0 && p.Name != nameof(ActionStep.ImageData))];
+
+    /// <summary>
+    /// Mô tả bước đã thay biến cho báo cáo: che bí mật trong từng trường TRƯỚC khi <see cref="ActionStep.Describe"/> cắt ngắn
+    /// (cắt ở 50 ký tự trước rồi mới che thì nửa mật khẩu bị cắt không còn khớp để che).
+    /// </summary>
+    internal static string RedactedDescribe(ActionStep step)
+    {
+        var copy = step.ShallowCopy();
+        foreach (var p in TextProperties)
+            if (p.GetValue(copy) is string { Length: > 0 } v)
+            {
+                var redacted = Log.Redact(v);
+                if (redacted != v) p.SetValue(copy, redacted);
+            }
+        return Log.Redact(copy.Describe());
     }
 }

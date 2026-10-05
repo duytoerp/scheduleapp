@@ -162,8 +162,10 @@ public sealed class FlowRunner
 
             var p = progress;
             var result = await Task.Run(() => RunFlowAsync(job, trigger, options, p, run, ct));
+            // Kết quả đi tiếp tới lịch sử, cột "Kết quả" (jobs.json, file xuất), thông báo — che bí mật một lần ở đây.
+            var message = Log.Redact(result.Message);
             // Kết thúc lúc công việc khác đang giữ lượt (quá giờ khi đã nhường lượt): khung trạng thái đang là của công việc đó.
-            var final = progress with { Ok = result.Ok, Message = result.Message, FailedStep = result.FailedStep };
+            var final = progress with { Ok = result.Ok, Message = message, FailedStep = result.FailedStep };
             bool shown = !OtherHoldsTurn(run);
             if (shown) Progress?.Invoke(final);
             progress = null;
@@ -188,14 +190,14 @@ public sealed class FlowRunner
                 Start = started,
                 End = DateTime.Now,
                 Ok = result.Ok,
-                Message = result.Message,
+                Message = message,
                 FailedStep = Math.Max(0, result.FailedStep),
                 Screenshot = result.Screenshot,
                 Report = report
             };
             RunHistory.Add(record);
-            JobFinished?.Invoke(job.Id, started, result.Ok, result.Message);
-            if (!result.Ok) _ui.Notify($"Flow \"{job.Name}\" không hoàn thành", result.Message, true);
+            JobFinished?.Invoke(job.Id, started, result.Ok, message);
+            if (!result.Ok) _ui.Notify($"Flow \"{job.Name}\" không hoàn thành", message, true);
             if (!options.IsTest) _ = NotificationService.SendForRunAsync(job, record);
             // Quá giờ lúc đã nhường lượt: kết quả đã ghi và đã báo — giờ mới chờ lấy lại lượt để chạy công việc xử lý lỗi.
             if (run.AfterRecorded is { } after)

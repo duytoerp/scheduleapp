@@ -17,24 +17,42 @@ public sealed record HttpResult(int Status, string Body, string ContentType, str
 /// <summary>
 /// Gọi API HTTP/REST cho bước "Gọi API": nối URL với kết nối đã khai báo, gắn xác thực
 /// (Bearer, Basic, khóa API, tài khoản Windows, Microsoft Entra ID cho Dynamics 365 / Graph, OAuth client credentials).
+/// Xác thực và header của kết nối chỉ gửi tới đúng máy chủ trong URL gốc của kết nối, không gửi qua http:// không mã hóa
+/// (trừ máy chủ trên chính máy này); chuyển hướng sang máy chủ khác thì bỏ xác thực.
 /// </summary>
 public static class ApiClient
 {
     private const int MaxBodyChars = 20_000_000;
 
-    private static readonly HttpClient Plain = Create(useWindowsAuth: false);
-    private static readonly HttpClient Windows = Create(useWindowsAuth: true);
+    /// <summary>Phản hồi lớn hơn mức này bị từ chối (không đọc cả file khổng lồ vào bộ nhớ).</summary>
+    internal const int MaxResponseBytes = 64 * 1024 * 1024;
+
+    private const int MaxRedirects = 10;
+
+    /// <summary>Thời gian chờ khi bước không đặt "Chờ tối đa" — không để flow treo mãi vì một API không trả lời.</summary>
+    internal static readonly TimeSpan DefaultTimeout = TimeSpan.FromMinutes(5);
+
+    internal static readonly HttpClient Plain = Create(useWindowsAuth: false);
+    internal static readonly HttpClient Windows = Create(useWindowsAuth: true);
     private static readonly ConcurrentDictionary<string, (string Token, DateTime Expires)> Tokens = new();
 
+    /// <summary>Header mang bí mật: bỏ khi chuyển hướng sang máy chủ khác, che giá trị trong log.</summary>
+    private static readonly string[] SecretHeaderWords = ["authorization", "cookie", "key", "token", "secret", "password", "signature"];
+
+    // Tài khoản Windows (NTLM/Kerberos) chỉ có ở client riêng, dùng khi kết nối chọn rõ "Tài khoản Windows" và đúng máy chủ của kết nối.
+    // Tự xử lý chuyển hướng (AllowAutoRedirect = false): .NET chỉ bỏ Authorization, vẫn gửi header khóa API sang máy chủ mới.
     private static HttpClient Create(bool useWindowsAuth) =>
         new(new SocketsHttpHandler
         {
             Credentials = useWindowsAuth ? CredentialCache.DefaultCredentials : null,
+            AllowAutoRedirect = false,
             AutomaticDecompression = DecompressionMethods.All,
+            ConnectTimeout = TimeSpan.FromSeconds(30),
             PooledConnectionLifetime = TimeSpan.FromMinutes(5)
         })
         {
-            Timeout = Timeout.InfiniteTimeSpan,
+            Timeout = Timeout.InfiniteTimeSpan, // mỗi lần gọi tự đặt hạn (thời gian chờ của bước hoặc DefaultTimeout)
+            MaxResponseContentBufferSize = MaxResponseBytes,
             DefaultRequestHeaders = { { "User-Agent", "ScheduleApp" } }
         };
 
@@ -48,45 +66,152 @@ public static class ApiClient
     {
         var fullUrl = Combine(conn?.BaseUrl ?? "", url);
         if (!Uri.TryCreate(fullUrl, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
-            throw new InvalidOperationException($"URL \"{fullUrl}\" không hợp lệ (cần bắt đầu bằng http:// hoặc https://, hoặc chọn kết nối có URL gốc).");
+            throw new InvalidOperationException($"URL \"{Log.Redact(fullUrl)}\" không hợp lệ (cần bắt đầu bằng http:// hoặc https://, hoặc chọn kết nối có URL gốc).");
 
+        var stepHeaders = ParseHeaders(headers).ToList();
+        var connHeaders = conn == null ? [] : ParseHeaders(Credentials.Reveal(conn.Headers, $"header của kết nối \"{conn.Name}\"")).ToList();
+        foreach (var (name, value) in connHeaders.Concat(stepHeaders))
+            if (IsSecretHeader(name)) MaskHeaderValue(value);
+
+        // Kết nối có xác thực / header riêng → chỉ gắn khi URL đúng máy chủ của kết nối và đi qua kênh mã hóa.
+        bool withConn = conn != null && (conn.Auth != ApiAuthType.None || connHeaders.Count > 0);
+        if (withConn && !CredentialsAllowed(conn!, uri, out var refused)) throw new InvalidOperationException(refused);
+
+        int limitMs = timeoutMs > 0 ? timeoutMs : (int)DefaultTimeout.TotalMilliseconds;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        if (timeoutMs > 0) timeout.CancelAfter(timeoutMs);
+        timeout.CancelAfter(limitMs);
 
-        using var req = new HttpRequestMessage(new HttpMethod(method.Trim().ToUpperInvariant()), uri);
-        string? contentType = null;
-        foreach (var (name, value) in ParseHeaders(conn?.Headers).Concat(ParseHeaders(headers)))
-        {
-            if (name.Equals("Content-Type", StringComparison.OrdinalIgnoreCase)) { contentType = value; continue; }
-            req.Headers.Remove(name);
-            if (!req.Headers.TryAddWithoutValidation(name, value)) throw new InvalidOperationException($"Header \"{name}\" không hợp lệ.");
-        }
-        if (conn != null) await AuthorizeAsync(req, conn, timeout.Token);
-
-        if (body.Length > 0 && req.Method != HttpMethod.Get)
-        {
-            var trimmed = body.TrimStart();
-            contentType ??= trimmed.StartsWith('{') || trimmed.StartsWith('[') ? "application/json" : "text/plain";
-            req.Content = new StringContent(body, Encoding.UTF8);
-            req.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType.Contains("charset", StringComparison.OrdinalIgnoreCase) ? contentType : contentType + "; charset=utf-8");
-        }
-
-        var client = conn?.Auth == ApiAuthType.Windows ? Windows : Plain;
+        var httpMethod = new HttpMethod(method.Trim().ToUpperInvariant());
+        bool sendBody = body.Length > 0 && httpMethod != HttpMethod.Get;
+        bool stepSecrets = true; // header bí mật do chính bước khai báo — bỏ khi chuyển hướng sang máy chủ khác
+        var current = uri;
         try
         {
-            using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead, timeout.Token);
-            var text = await resp.Content.ReadAsStringAsync(timeout.Token);
-            if (text.Length > MaxBodyChars) text = text[..MaxBodyChars];
-            return new HttpResult((int)resp.StatusCode, text, resp.Content.Headers.ContentType?.MediaType ?? "", uri.ToString());
+            for (int hop = 0; ; hop++)
+            {
+                using var req = new HttpRequestMessage(httpMethod, current);
+                string? contentType = null;
+                foreach (var (name, value) in (withConn ? connHeaders : []).Concat(stepHeaders.Where(h => stepSecrets || !IsSecretHeader(h.Name))))
+                {
+                    if (name.Equals("Content-Type", StringComparison.OrdinalIgnoreCase)) { contentType = value; continue; }
+                    req.Headers.Remove(name);
+                    if (!req.Headers.TryAddWithoutValidation(name, value)) throw new InvalidOperationException($"Header \"{name}\" không hợp lệ.");
+                }
+                if (withConn) await AuthorizeAsync(req, conn!, timeout.Token);
+
+                if (sendBody)
+                {
+                    var trimmed = body.TrimStart();
+                    contentType ??= trimmed.StartsWith('{') || trimmed.StartsWith('[') ? "application/json" : "text/plain";
+                    req.Content = new StringContent(body, Encoding.UTF8);
+                    req.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType.Contains("charset", StringComparison.OrdinalIgnoreCase) ? contentType : contentType + "; charset=utf-8");
+                }
+
+                var client = withConn && conn!.Auth == ApiAuthType.Windows ? Windows : Plain;
+                using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+                if (hop < MaxRedirects && IsRedirect(resp.StatusCode) && resp.Headers.Location is { } location)
+                {
+                    var next = location.IsAbsoluteUri ? location : new Uri(current, location);
+                    if (next.Scheme is not ("http" or "https"))
+                        throw new InvalidOperationException($"API chuyển hướng tới địa chỉ không hỗ trợ ({next.Scheme}:).");
+                    // 303 (và 301/302 với POST, như trình duyệt) → đổi sang GET, bỏ nội dung gửi.
+                    if (resp.StatusCode == HttpStatusCode.SeeOther ||
+                        (resp.StatusCode is HttpStatusCode.MovedPermanently or HttpStatusCode.Found && httpMethod == HttpMethod.Post))
+                    {
+                        httpMethod = HttpMethod.Get;
+                        sendBody = false;
+                    }
+                    bool keepConn = withConn && CredentialsAllowed(conn!, next, out _);
+                    bool keepStep = stepSecrets && SameHost(current, next) && !Downgraded(current, next);
+                    if ((withConn && !keepConn) || (stepSecrets && !keepStep && stepHeaders.Any(h => IsSecretHeader(h.Name))))
+                        Log.Info($"      ↪ API chuyển hướng sang {next.Host} — không gửi kèm xác thực / header bí mật.");
+                    withConn = keepConn;
+                    stepSecrets = keepStep;
+                    current = next;
+                    continue;
+                }
+
+                var text = await ReadLimitedAsync(resp.Content, timeout.Token);
+                if (text.Length > MaxBodyChars) text = text[..MaxBodyChars];
+                return new HttpResult((int)resp.StatusCode, text, resp.Content.Headers.ContentType?.MediaType ?? "", current.ToString());
+            }
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            throw new TimeoutException($"API không phản hồi sau {ActionStep.FormatMs(timeoutMs)} ({uri.Host}).");
+            throw new TimeoutException($"API không phản hồi sau {ActionStep.FormatMs(limitMs)} ({current.Host}).");
         }
         catch (HttpRequestException ex)
         {
-            throw new HttpRequestException($"Không kết nối được {uri.Host}: {ex.Message}", ex);
+            throw new HttpRequestException($"Không kết nối được {current.Host}: {Log.Redact(ex.Message)}", ex);
         }
+    }
+
+    /// <summary>
+    /// Có được gắn xác thực / header của kết nối vào yêu cầu tới <paramref name="uri"/> không: phải đúng máy chủ trong URL gốc
+    /// của kết nối (127.0.0.1 và localhost là hai máy chủ khác nhau — so đúng tên), và không qua http:// không mã hóa
+    /// (trừ máy chủ trên chính máy này; tài khoản Windows cho phép thêm máy nội bộ tên một chữ như http://crmserver/).
+    /// </summary>
+    internal static bool CredentialsAllowed(ApiConnection c, Uri uri, out string reason)
+    {
+        if (!Uri.TryCreate(c.BaseUrl.Trim(), UriKind.Absolute, out var b) || b.Scheme is not ("http" or "https"))
+        {
+            reason = $"Kết nối \"{c.Name}\" chưa có URL gốc nên không biết được gửi mật khẩu / token tới máy chủ nào — nhập URL gốc trong ⚙ Cài đặt → Kết nối API.";
+            return false;
+        }
+        if (!SameHost(b, uri))
+        {
+            reason = $"URL \"{uri.Host}\" khác máy chủ của kết nối \"{c.Name}\" ({b.Host}) — không gửi mật khẩu / token / header của kết nối sang máy chủ khác. " +
+                     "Dùng đường dẫn tương đối, hoặc tạo kết nối riêng cho máy chủ đó.";
+            return false;
+        }
+        if (uri.Scheme == "http" && !NotificationService.IsLoopback(uri.Host) &&
+            !(c.Auth == ApiAuthType.Windows && !uri.Host.Contains('.') && !uri.Host.Contains(':')))
+        {
+            reason = $"Không gửi mật khẩu / token của kết nối \"{c.Name}\" qua http:// (không mã hóa) tới {uri.Host} — dùng https://.";
+            return false;
+        }
+        reason = "";
+        return true;
+    }
+
+    private static bool SameHost(Uri a, Uri b) => string.Equals(a.IdnHost, b.IdnHost, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Chuyển từ https sang http (không mã hóa) tới máy khác máy này.</summary>
+    private static bool Downgraded(Uri from, Uri to) => from.Scheme == "https" && to.Scheme == "http" && !NotificationService.IsLoopback(to.Host);
+
+    private static bool IsRedirect(HttpStatusCode s) => s is HttpStatusCode.MovedPermanently or HttpStatusCode.Found or HttpStatusCode.SeeOther
+        or HttpStatusCode.TemporaryRedirect or HttpStatusCode.PermanentRedirect;
+
+    internal static bool IsSecretHeader(string name) =>
+        SecretHeaderWords.Any(w => name.Contains(w, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Che giá trị header bí mật, cả phần token sau "Bearer " / "Basic ".</summary>
+    private static void MaskHeaderValue(string value)
+    {
+        Log.Mask(value);
+        int space = value.IndexOf(' ');
+        if (space > 0) Log.Mask(value[(space + 1)..]);
+    }
+
+    /// <summary>Đọc nội dung phản hồi, từ chối khi lớn hơn <see cref="MaxResponseBytes"/>.</summary>
+    internal static async Task<string> ReadLimitedAsync(HttpContent content, CancellationToken ct)
+    {
+        static InvalidOperationException TooLarge() =>
+            new($"Phản hồi của API quá lớn (hơn {MaxResponseBytes / (1024 * 1024)} MB) — hãy lọc bớt ($select, $top…).");
+        if (content.Headers.ContentLength > MaxResponseBytes) throw TooLarge();
+        await using var stream = await content.ReadAsStreamAsync(ct);
+        using var buffer = new MemoryStream();
+        var chunk = new byte[81920];
+        int n;
+        while ((n = await stream.ReadAsync(chunk, ct)) > 0)
+        {
+            if (buffer.Length + n > MaxResponseBytes) throw TooLarge();
+            buffer.Write(chunk, 0, n);
+        }
+        // Giải mã chữ theo charset của phản hồi (như ReadAsStringAsync).
+        using var copy = new ByteArrayContent(buffer.ToArray());
+        if (content.Headers.ContentType != null) copy.Headers.ContentType = content.Headers.ContentType;
+        return await copy.ReadAsStringAsync(ct);
     }
 
     /// <summary>Nối URL gốc của kết nối với đường dẫn của bước (URL đầy đủ trong bước thì dùng luôn).</summary>
@@ -103,26 +228,31 @@ public static class ApiClient
     public static IEnumerable<(string Name, string Value)> ParseHeaders(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) yield break;
+        int number = 0;
         foreach (var raw in text.Replace("\r\n", "\n").Split('\n'))
         {
+            number++;
             var line = raw.Trim();
             if (line.Length == 0 || line.StartsWith('#')) continue;
             int colon = line.IndexOf(':');
-            if (colon <= 0) throw new FormatException($"Header \"{line}\" thiếu dấu : (cần dạng Tên: giá trị).");
+            // Không nhắc lại nội dung dòng: thường là "Authorization Bearer <token>" thiếu dấu hai chấm.
+            if (colon <= 0) throw new FormatException($"Dòng header thứ {number} thiếu dấu : (cần dạng Tên: giá trị).");
             yield return (line[..colon].Trim(), line[(colon + 1)..].Trim());
         }
     }
 
     private static async Task AuthorizeAsync(HttpRequestMessage req, ApiConnection c, CancellationToken ct)
     {
-        string Secret() => Protector.Unprotect(c.Secret);
+        string Secret() => Credentials.Reveal(c.Secret, $"mật khẩu / token của kết nối \"{c.Name}\"");
         switch (c.Auth)
         {
             case ApiAuthType.Bearer:
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Secret());
                 break;
             case ApiAuthType.Basic:
-                req.Headers.Authorization = new AuthenticationHeaderValue("Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{c.User}:{Secret()}")));
+                var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{c.User}:{Secret()}"));
+                Log.Mask(basic);
+                req.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
                 break;
             case ApiAuthType.ApiKey:
                 req.Headers.Remove(string.IsNullOrWhiteSpace(c.User) ? "x-api-key" : c.User.Trim());
@@ -153,6 +283,10 @@ public static class ApiClient
         {
             tokenUrl = c.TokenUrl.Trim();
             if (tokenUrl.Length == 0) throw new InvalidOperationException($"Kết nối \"{c.Name}\": chưa nhập URL lấy token.");
+            if (!Uri.TryCreate(tokenUrl, UriKind.Absolute, out var t) || t.Scheme is not ("http" or "https"))
+                throw new InvalidOperationException($"Kết nối \"{c.Name}\": URL lấy token không hợp lệ.");
+            if (t.Scheme == "http" && !NotificationService.IsLoopback(t.Host))
+                throw new InvalidOperationException($"Kết nối \"{c.Name}\": không gửi client secret qua http:// (không mã hóa) tới {t.Host} — dùng https://.");
         }
         if (string.IsNullOrWhiteSpace(c.User)) throw new InvalidOperationException($"Kết nối \"{c.Name}\": chưa nhập Client ID.");
 
@@ -163,11 +297,11 @@ public static class ApiClient
         {
             ["grant_type"] = "client_credentials",
             ["client_id"] = c.User.Trim(),
-            ["client_secret"] = Protector.Unprotect(c.Secret)
+            ["client_secret"] = Credentials.Reveal(c.Secret, $"client secret của kết nối \"{c.Name}\"")
         };
         if (scope.Length > 0) form["scope"] = scope;
         using var resp = await Plain.PostAsync(tokenUrl, new FormUrlEncodedContent(form), ct);
-        var text = await resp.Content.ReadAsStringAsync(ct);
+        var text = await ReadLimitedAsync(resp.Content, ct);
         if (!resp.IsSuccessStatusCode)
         {
             string detail = text;
@@ -194,5 +328,10 @@ public static class ApiClient
         return $"{r.Status} {(HttpStatusCode)r.Status} — {Short(r.Body.Replace("\r", "").Replace("\n", " "))}";
     }
 
-    public static string Short(string s) => s.Length > 300 ? s[..300] + "…" : s;
+    /// <summary>Rút gọn để hiện trong thông báo lỗi — che bí mật TRƯỚC khi cắt (cắt trước thì nửa bí mật còn lại không che được).</summary>
+    public static string Short(string s)
+    {
+        s = Log.Redact(s);
+        return s.Length > 300 ? s[..300] + "…" : s;
+    }
 }

@@ -119,7 +119,9 @@ public static class TestReport
     internal static string JUnit(string suiteName, IReadOnlyList<TestCaseResult> cases, string? environment = null)
     {
         static string Sec(double s) => s.ToString("0.###", CultureInfo.InvariantCulture);
-        static XElement Prop(string name, string value) => new("property", new XAttribute("name", name), new XAttribute("value", value));
+        static XElement Prop(string name, string value) => new("property", new XAttribute("name", name), new XAttribute("value", Log.Redact(value)));
+        // Báo cáo được đưa lên Azure DevOps / Jenkins / gửi cho người khác → che mật khẩu / token trong thông điệp và chi tiết bước.
+        static string R(string? s) => Log.Redact(s);
 
         var suites = new XElement("testsuites",
             new XAttribute("name", suiteName),
@@ -154,13 +156,13 @@ public static class TestReport
                 {
                     var failed = c.Steps.Where(s => !s.Ok).ToList();
                     tc.Add(new XElement("failure",
-                        new XAttribute("message", c.Message),
+                        new XAttribute("message", R(c.Message)),
                         new XAttribute("type", failed.Any(s => s.IsAssert) ? "AssertionFailed" : "StepFailed"),
-                        string.Join("\n", failed.Select(s => $"Bước {s.Number} [{s.JobName}] {s.Description}: {s.Detail}"))));
+                        R(string.Join("\n", failed.Select(s => $"Bước {s.Number} [{s.JobName}] {s.Description}: {s.Detail}")))));
                 }
                 var flaky = c.Flaky ? $"Đạt sau khi chạy lại (lần {c.Attempts}) — lần đầu không đạt: {c.FirstFailure}\n" : "";
-                tc.Add(new XElement("system-out", flaky + string.Join("\n", c.Steps.Select(s =>
-                    $"{(s.Ok ? "✔" : "✖")} {new string(' ', s.Depth * 2)}{s.Number}. {s.Description}{(s.Detail.Length > 0 ? " — " + s.Detail : "")} ({Sec(s.Seconds)}s)"))));
+                tc.Add(new XElement("system-out", R(flaky + string.Join("\n", c.Steps.Select(s =>
+                    $"{(s.Ok ? "✔" : "✖")} {new string(' ', s.Depth * 2)}{s.Number}. {s.Description}{(s.Detail.Length > 0 ? " — " + s.Detail : "")} ({Sec(s.Seconds)}s)")))));
                 foreach (var shot in c.Steps.Where(s => s.Screenshot != null))
                     tc.Add(new XElement("system-err", $"[[ATTACHMENT|{shot.Screenshot}]]"));
                 suite.Add(tc);
@@ -175,7 +177,8 @@ public static class TestReport
     private static string Html(string suiteName, IReadOnlyList<TestCaseResult> cases, string folder, string? environment)
     {
         // Chỉ thoát ký tự đặc biệt của HTML — WebUtility.HtmlEncode đổi cả chữ có dấu thành &#NNN; làm file khó đọc.
-        static string E(string? s) => (s ?? "").Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
+        // Che bí mật trước khi thoát (sau khi thoát, mật khẩu chứa & < > " không còn khớp để che).
+        static string E(string? s) => Log.Redact(s).Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
         int passed = cases.Count(c => c.Ok);
         bool allOk = passed == cases.Count && cases.Count > 0;
         var start = cases.Count > 0 ? cases.Min(c => c.Start) : DateTime.Now;

@@ -70,7 +70,16 @@ public sealed class FlowGenerator
     private readonly JsonArray _messages = [];
     private string? _pendingToolId;
 
-    public FlowGenerator(Context ctx) => _ctx = ctx;
+    /// <summary>Chữ giữ chỗ → giá trị bí mật thật: giá trị bí mật không gửi cho AI, điền lại vào flow AI trả về.</summary>
+    private readonly Dictionary<string, string> _hidden = new(StringComparer.Ordinal);
+    private const string HiddenPrefix = "[[bi-mat-";
+    private readonly SecretHider _hider;
+
+    public FlowGenerator(Context ctx)
+    {
+        _ctx = ctx;
+        _hider = new SecretHider(HideValue);
+    }
 
     /// <summary>Đã có kết quả (lần gửi tiếp theo là yêu cầu sửa).</summary>
     public bool HasResult => _pendingToolId != null;
@@ -102,8 +111,9 @@ public sealed class FlowGenerator
                 result.Repairs = attempt;
                 if (result.Problems.Count == 0 || attempt >= MaxRepairs) return result;
 
-                var problems = "Flow chưa chạy được vì các lỗi sau. Hãy gọi lại build_flow với flow đã sửa (trả về đầy đủ như lần trước):\n- " +
-                               string.Join("\n- ", result.Problems);
+                // Thông báo lỗi có thể nhắc lại giá trị đã điền lại → ẩn lần nữa trước khi gửi.
+                var problems = Hide("Flow chưa chạy được vì các lỗi sau. Hãy gọi lại build_flow với flow đã sửa (trả về đầy đủ như lần trước):\n- " +
+                                    string.Join("\n- ", result.Problems));
                 _messages.Add(new JsonObject { ["role"] = "user", ["content"] = new JsonArray { ToolResult(toolId, problems, true) } });
             }
         }
@@ -158,8 +168,19 @@ public sealed class FlowGenerator
 
     private string FirstMessage(string prompt, Mode mode)
     {
+        RegisterStoredSecrets();
+        // Flow hiện tại trước: biết biến nào chứa mật khẩu (vd mật khẩu đăng nhập = {{matKhau}}) để ẩn giá trị của biến đó.
+        string? flow = null;
+        if (_ctx.Steps.Count > 0)
+        {
+            var arr = new JsonArray();
+            for (int i = 0; i < _ctx.Steps.Count; i++) arr.Add(Compact(_ctx.Steps[i], i, _hider));
+            flow = arr.ToJsonString(JsonDefaults.Options);
+        }
+        var masked = new SecretHider(_ => "***"); // mô tả công việc khác: chỉ để AI biết, không cần điền lại
+
         var sb = new StringBuilder();
-        sb.AppendLine("# Yêu cầu của người dùng").AppendLine(prompt.Trim()).AppendLine();
+        sb.AppendLine("# Yêu cầu của người dùng").AppendLine(Hide(prompt.Trim())).AppendLine();
         sb.AppendLine("# Chế độ");
         sb.AppendLine(ModeText(mode)).AppendLine();
 
@@ -168,18 +189,18 @@ public sealed class FlowGenerator
         if (_ctx.JobName.Trim().Length > 0) sb.AppendLine($"- Tên công việc hiện tại: \"{_ctx.JobName.Trim()}\"");
         sb.AppendLine("- Biến đã khai báo: " + (_ctx.Variables.Count == 0
             ? "(chưa có)"
-            : string.Join(", ", _ctx.Variables.Select(v => $"{v.Name} = \"{Short(v.Value, 60)}\""))));
+            : string.Join(", ", _ctx.Variables.Select(v => $"{v.Name} = \"{Short(_hider.Variable(v), 60)}\""))));
         if (_ctx.OtherJobs.Count > 0)
         {
             sb.AppendLine("- Công việc khác gọi được bằng CallJob (Target = đúng tên):");
             foreach (var j in _ctx.OtherJobs.Take(40))
                 sb.AppendLine($"  - \"{j.Name}\" ({j.Steps.Count} bước): " +
-                              string.Join("; ", j.Steps.Where(s => s.Enabled && !s.IsControl).Take(4).Select(s => Short(s.Describe(), 70))));
+                              string.Join("; ", j.Steps.Where(s => s.Enabled && !s.IsControl).Take(4).Select(s => Short(masked.Step(s).Describe(), 70))));
         }
         else sb.AppendLine("- Chưa có công việc nào khác để gọi bằng CallJob.");
         sb.AppendLine(_ctx.Connections.Count == 0
             ? "- Kết nối API: chưa khai báo (HttpRequest phải dùng URL đầy đủ; nếu API cần đăng nhập, ghi notes hướng dẫn tạo kết nối trong ⚙ Cài đặt → Kết nối API)."
-            : "- Kết nối API (Connection): " + string.Join("; ", _ctx.Connections.Select(c => $"\"{c.Name}\" — {c.Info}")));
+            : "- Kết nối API (Connection): " + string.Join("; ", _ctx.Connections.Select(c => $"\"{c.Name}\" — {masked.Text(c.Info)}")));
         if (_ctx.EmailTrigger)
             sb.AppendLine("- Công việc chạy khi có email mới: có sẵn {{email.subject}}, {{email.from}}, {{email.body}}, " +
                           "{{email.attachments}} (danh sách đường dẫn file đính kèm, mỗi dòng một file), {{email.attachmentDir}}.");
@@ -188,21 +209,22 @@ public sealed class FlowGenerator
         if (_ctx.OpenWindows.Count > 0)
         {
             sb.AppendLine("- Cửa sổ đang mở (tiêu đề [tiến trình]):");
-            foreach (var w in _ctx.OpenWindows.Take(40)) sb.AppendLine("  - " + Short(w, 100));
+            foreach (var w in _ctx.OpenWindows.Take(40)) sb.AppendLine("  - " + Short(masked.Text(w), 100));
         }
+        if (_hidden.Count > 0)
+            sb.AppendLine($"- Chuỗi dạng {HiddenPrefix}1]] là giá trị bí mật (mật khẩu, token…) đã được ẩn: giữ nguyên đúng chuỗi đó ở chỗ cần dùng " +
+                          "giá trị này, ScheduleApp tự điền lại giá trị thật. Không đoán, không đổi chuỗi đó.");
 
-        if (_ctx.Steps.Count > 0)
+        if (flow != null)
         {
             sb.AppendLine().AppendLine($"# Flow hiện tại ({_ctx.Steps.Count} bước; _ref = số thứ tự bước, bắt đầu từ 0)");
-            var arr = new JsonArray();
-            for (int i = 0; i < _ctx.Steps.Count; i++) arr.Add(Compact(_ctx.Steps[i], i));
-            sb.AppendLine(arr.ToJsonString(JsonDefaults.Options));
+            sb.AppendLine(flow);
         }
         return sb.ToString();
     }
 
     private string FollowUp(string prompt, Mode mode) =>
-        "Yêu cầu sửa tiếp: " + prompt.Trim() + "\n\n" +
+        "Yêu cầu sửa tiếp: " + Hide(prompt.Trim()) + "\n\n" +
         (mode == Mode.Replace
             ? "Sửa flow vừa đề xuất theo yêu cầu và trả về TOÀN BỘ flow sau khi sửa."
             : $"Trả về các bước chèn vào sau bước thứ {_ctx.InsertAt} của flow hiện tại (thay cho đề xuất trước).");
@@ -218,9 +240,13 @@ public sealed class FlowGenerator
         _ => "TẠO MỚI: trả về toàn bộ flow."
     };
 
-    /// <summary>Bước ở dạng gọn (chỉ các trường khác mặc định) để gửi cho AI; hình mẫu thay bằng chữ giữ chỗ.</summary>
-    internal static JsonObject Compact(ActionStep s, int? reference = null)
+    /// <summary>
+    /// Bước ở dạng gọn (chỉ các trường khác mặc định) để gửi cho AI; hình mẫu thay bằng chữ giữ chỗ, giá trị bí mật thay bằng chữ giữ chỗ
+    /// của <paramref name="hider"/> (không có → "***").
+    /// </summary>
+    internal static JsonObject Compact(ActionStep s, int? reference = null, SecretHider? hider = null)
     {
+        s = (hider ?? new SecretHider(_ => "***")).Step(s);
         var full = JsonSerializer.SerializeToNode(s, JsonDefaults.Options)!.AsObject();
         var defaults = JsonSerializer.SerializeToNode(ActionStep.CreateDefault(s.Type), JsonDefaults.Options)!.AsObject();
         var o = new JsonObject();
@@ -263,7 +289,7 @@ public sealed class FlowGenerator
             {
                 var name = Str(v, "name").Trim().Trim('{', '}').Trim();
                 if (name.Length > 0 && r.Variables.All(x => !x.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
-                    r.Variables.Add(new VariableDef { Name = name, Value = Str(v, "value") });
+                    r.Variables.Add(new VariableDef { Name = name, Value = Reveal(Str(v, "value")) });
             }
         if (input["schedule"] is JsonObject schedule) ParseSchedule(schedule, r);
         if (input["triggers"] is JsonArray triggers) ParseTriggers(triggers, r);
@@ -336,6 +362,10 @@ public sealed class FlowGenerator
         }
         step.Type = type;
         step.Breakpoint = false;
+        // Điền lại giá trị bí mật đã ẩn khi gửi.
+        foreach (var p in SecretHider.TextProperties)
+            if (p.GetValue(step) is string text && text.Contains(HiddenPrefix, StringComparison.Ordinal))
+                p.SetValue(step, Reveal(text));
 
         // Hình mẫu không gửi cho AI → lấy lại từ bước gốc cùng _ref.
         // Chữ giữ chỗ (hoặc chữ bất kỳ không phải base64 của ảnh PNG).
@@ -645,6 +675,52 @@ public sealed class FlowGenerator
             if (k.Equals(key, StringComparison.OrdinalIgnoreCase))
                 return v is JsonValue jv && jv.TryGetValue(out string? s) ? s ?? "" : v?.ToString() ?? "";
         return "";
+    }
+
+    // ───────────────────────────── Ẩn bí mật ─────────────────────────────
+
+    /// <summary>Chữ giữ chỗ cho một giá trị bí mật (cùng giá trị → cùng chữ giữ chỗ).</summary>
+    private string HideValue(string value)
+    {
+        if (_hidden.ContainsKey(value)) return value; // đã là chữ giữ chỗ
+        foreach (var (key, secret) in _hidden)
+            if (secret == value) return key;
+        var placeholder = $"{HiddenPrefix}{_hidden.Count + 1}]]";
+        _hidden[placeholder] = value;
+        return placeholder;
+    }
+
+    /// <summary>Ẩn bí mật trong đoạn chữ sắp gửi: giá trị đã ẩn trước đó (dài trước) rồi bí mật đã biết / cặp tên=giá trị.</summary>
+    private string Hide(string text)
+    {
+        foreach (var (key, secret) in _hidden.OrderByDescending(h => h.Value.Length))
+            if (secret.Length >= 3) text = text.Replace(secret, key, StringComparison.Ordinal);
+        return _hider.Text(text);
+    }
+
+    /// <summary>Điền lại giá trị thật vào chỗ AI giữ nguyên chữ giữ chỗ.</summary>
+    private string Reveal(string text)
+    {
+        if (!text.Contains(HiddenPrefix, StringComparison.Ordinal)) return text;
+        foreach (var (key, secret) in _hidden) text = text.Replace(key, secret, StringComparison.Ordinal);
+        return text;
+    }
+
+    /// <summary>
+    /// Giải mã một lần mọi mật khẩu / token đã lưu (kho 🔑 Bí mật, ⚙ Cài đặt) để chúng được đăng ký che — chép nguyên văn vào bước
+    /// hay mô tả thì cũng không bị gửi cho AI.
+    /// </summary>
+    private static void RegisterStoredSecrets()
+    {
+        foreach (var name in SecretStore.Names)
+        {
+            try { SecretStore.Get(name); }
+            catch (InvalidOperationException) { } // không giải mã được trên máy này → cũng không thể nằm trong flow
+        }
+        var s = SettingsStore.Current;
+        string[] stored = [s.Ai.ApiKey, s.Telegram.BotToken, s.Email.Password, s.Inbox.Password, s.Update.Token, s.Webhook.Url,
+            .. s.ApiConnections.Select(c => c.Secret)];
+        foreach (var value in stored) Protector.TryUnprotect(value, out _);
     }
 
     private static string Short(string s, int max)

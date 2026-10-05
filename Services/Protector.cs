@@ -44,11 +44,13 @@ public static class Protector
         if (!IsProtected(stored))
         {
             plain = stored;
+            Log.Mask(plain);
             return true;
         }
         try
         {
             plain = Encoding.UTF8.GetString(Crypt(Convert.FromBase64String(stored[Prefix.Length..]), protect: false));
+            Log.Mask(plain); // mật khẩu / token vừa giải mã không bao giờ hiện nguyên văn trong log, lịch sử, thông báo
             return true;
         }
         catch (Exception ex) when (ex is FormatException or Win32Exception)

@@ -688,7 +688,7 @@ internal static class D365Client
         var user = Required(s.Text, "tài khoản đăng nhập (email)");
         var password = StepSecret(s.Arguments, "mật khẩu");
         var totpSecret = StepSecret(s.RowRef, "khóa TOTP").Trim();
-        Log.Mask(password);
+        Log.Mask(password); // nhập thẳng (không qua {{secret:…}}) cũng không hiện trong log / báo cáo
         Log.Mask(totpSecret);
         if (totpSecret.Length > 0) Totp.DecodeBase32(totpSecret); // báo lỗi khóa sai ngay từ đầu
         var sw = Stopwatch.StartNew();

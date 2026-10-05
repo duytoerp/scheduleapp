@@ -10,7 +10,7 @@ internal sealed class SettingsForm : BaseForm
     private readonly AppSettings _s;
 
     // Chung
-    private readonly CheckBox _chkScreenshot = new() { Text = "Chụp màn hình khi bước bị lỗi (lưu trong thư mục log, gửi kèm thông báo)", AutoSize = true };
+    private readonly CheckBox _chkScreenshot = new() { Text = "Chụp màn hình khi bước bị lỗi (lưu trong thư mục log; chỉ gửi kèm thông báo ở kênh có tích \"Kèm ảnh\")", AutoSize = true };
     private readonly NumericUpDown _numKeep = new() { Minimum = 0, Maximum = 3650, Width = 70 };
     private readonly CheckBox _chkSafe = new() { Text = "Chế độ an toàn: tạm dừng flow và hỏi khi tôi dùng chuột/bàn phím trong lúc flow chạy", AutoSize = true };
     private readonly CheckBox _chkAwake = new() { Text = "Không cho máy ngủ / tắt màn hình khi flow đang chạy", AutoSize = true };

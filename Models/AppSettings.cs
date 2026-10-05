@@ -90,7 +90,9 @@ public sealed class TelegramSettings
     /// <summary>Token bot (mã hóa DPAPI).</summary>
     public string BotToken { get; set; } = "";
     public string ChatId { get; set; } = "";
-    public bool SendScreenshot { get; set; } = true;
+
+    /// <summary>Kèm ảnh chụp màn hình lỗi (cả màn hình, có thể lộ thông tin khác) — mặc định tắt, người dùng tự bật.</summary>
+    public bool SendScreenshot { get; set; }
 
     /// <summary>Nhận lệnh điều khiển từ Telegram (/run, /stop, /status…) — chỉ từ đúng chat id ở trên.</summary>
     public bool AllowCommands { get; set; }
@@ -205,7 +207,15 @@ public sealed class EmailSettings
     public string Password { get; set; } = "";
     public string From { get; set; } = "";
     public string To { get; set; } = "";
-    public bool AttachScreenshot { get; set; } = true;
+
+    /// <summary>Đính kèm ảnh chụp màn hình lỗi (cả màn hình, có thể lộ thông tin khác) — mặc định tắt, người dùng tự bật.</summary>
+    public bool AttachScreenshot { get; set; }
+
+    /// <summary>
+    /// Cho phép gửi qua máy chủ SMTP không có TLS (máy chủ chuyển tiếp nội bộ cũ) — chỉ đặt tay trong settings.json.
+    /// Mặc định bắt buộc SSL/TLS, trừ máy chủ trên chính máy này (localhost).
+    /// </summary>
+    public bool AllowNoTls { get; set; }
 }
 
 public sealed class WebhookSettings

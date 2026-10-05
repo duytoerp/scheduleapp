@@ -12,7 +12,20 @@ public static class AiClient
 
     /// <summary>Địa chỉ API (kiểm thử trỏ sang máy chủ giả lập).</summary>
     internal static string Endpoint { get; set; } = "https://api.anthropic.com/v1/messages";
-    private static readonly HttpClient Http = new() { Timeout = Timeout.InfiniteTimeSpan };
+    /// <summary>Hạn chót cứng cho mỗi lần gọi khi người gọi không đặt thời gian chờ.</summary>
+    internal static readonly TimeSpan MaxWait = TimeSpan.FromMinutes(10);
+
+    // Không tự theo chuyển hướng: .NET chỉ bỏ Authorization, vẫn gửi header x-api-key sang máy chủ mới.
+    internal static readonly HttpClient Http = new(new SocketsHttpHandler
+    {
+        AllowAutoRedirect = false,
+        ConnectTimeout = TimeSpan.FromSeconds(30),
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+    })
+    {
+        Timeout = MaxWait,
+        MaxResponseContentBufferSize = 16 * 1024 * 1024
+    };
 
     /// <summary>Chỉ dẫn mặc định: trả lời đúng phần được hỏi để dùng làm giá trị biến.</summary>
     private const string SystemPrompt =
@@ -60,11 +73,12 @@ public static class AiClient
     /// <summary>Gửi một yêu cầu Messages API, trả về JSON phản hồi (báo lỗi rõ ràng khi API trả lỗi / quá thời gian).</summary>
     internal static async Task<JsonElement> PostAsync(JsonObject body, int timeoutMs, CancellationToken ct)
     {
-        var key = Protector.Unprotect(SettingsStore.Current.Ai.ApiKey);
+        var key = Credentials.Reveal(SettingsStore.Current.Ai.ApiKey, "khóa API Claude");
         if (key.Length == 0) throw new InvalidOperationException("Chưa nhập khóa API Claude (⚙ Cài đặt → Tích hợp).");
 
+        if (timeoutMs <= 0 || timeoutMs > MaxWait.TotalMilliseconds) timeoutMs = (int)MaxWait.TotalMilliseconds;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        if (timeoutMs > 0) timeout.CancelAfter(timeoutMs);
+        timeout.CancelAfter(timeoutMs);
         using var req = new HttpRequestMessage(HttpMethod.Post, Endpoint)
         {
             Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json")
@@ -83,7 +97,7 @@ public static class AiClient
         }
         catch (HttpRequestException ex)
         {
-            throw new InvalidOperationException("Không kết nối được tới Claude: " + ex.Message, ex);
+            throw new InvalidOperationException("Không kết nối được tới Claude: " + Log.Redact(ex.Message), ex);
         }
         using (resp)
         {
@@ -99,8 +113,8 @@ public static class AiClient
             using var doc = JsonDocument.Parse(text.Length > 0 ? text : "{}");
             if (!resp.IsSuccessStatusCode)
             {
-                var msg = doc.RootElement.TryGetProperty("error", out var err) && err.TryGetProperty("message", out var m) ? m.GetString() : text;
-                throw new InvalidOperationException($"Claude trả về lỗi {(int)resp.StatusCode}: {msg}");
+                var msg = doc.RootElement.TryGetProperty("error", out var err) && err.TryGetProperty("message", out var m) ? m.GetString() ?? "" : text;
+                throw new InvalidOperationException($"Claude trả về lỗi {(int)resp.StatusCode}: {ApiClient.Short(msg)}");
             }
             return doc.RootElement.Clone();
         }
