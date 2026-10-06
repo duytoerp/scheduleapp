@@ -52,6 +52,7 @@ english.RuntimeInstallingHint=Windows hỏi quyền quản trị thì bấm Có 
 english.RuntimeDeclined=Bạn chọn chưa cài .NET 10 Desktop Runtime (x64).
 english.RuntimeCancelled=Đã hủy tải .NET 10 Desktop Runtime (x64).
 english.RuntimeDownloadFailed=Không tải được .NET 10 Desktop Runtime (x64): %1
+english.RuntimeBadSignature=File .NET 10 Desktop Runtime (x64) vừa tải về không có chữ ký số hợp lệ của Microsoft (có thể bị thay trên đường tải) — không chạy file này.
 english.RuntimeInstallCancelled=Đã hủy cài .NET 10 Desktop Runtime (x64) (chưa cấp quyền quản trị?).
 english.RuntimeInstallFailed=Cài .NET 10 Desktop Runtime (x64) chưa xong (mã lỗi %1).
 english.RuntimeStartFailed=Không chạy được bộ cài .NET 10 Desktop Runtime (x64): %1
@@ -157,6 +158,23 @@ begin
   Result := True;
 end;
 
+// Chỉ chạy bộ cài .NET có chữ ký số hợp lệ của Microsoft: tải qua https vẫn có thể bị proxy / phần mềm trung gian thay file
+// (không ghim được SHA-256 vì aka.ms luôn trỏ tới bản mới nhất).
+function RuntimeSignedByMicrosoft(const FileName: String): Boolean;
+var
+  Path, Params: String;
+  ResultCode: Integer;
+begin
+  Path := FileName;
+  StringChangeEx(Path, '''', '''''', True);
+  Params := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$s = Get-AuthenticodeSignature -LiteralPath ''' + Path +
+    '''; if ($s.Status -eq ''Valid'' -and $s.SignerCertificate.Subject -match ''O=Microsoft Corporation'') { exit 0 } else { exit 1 }"';
+  ResultCode := -1;
+  Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+    and (ResultCode = 0);
+  Log('Kiểm chữ ký bộ cài .NET: mã ' + IntToStr(ResultCode));
+end;
+
 // Tải bộ cài .NET (trang tải có nút hủy), chạy "/install /quiet /norestart" và chờ xong, rồi kiểm tra lại.
 procedure InstallRuntime();
 var
@@ -178,6 +196,11 @@ begin
         OfferRuntimePage(CustomMessage('RuntimeCancelled'))
       else
         OfferRuntimePage(FmtMessage(CustomMessage('RuntimeDownloadFailed'), [GetExceptionMessage]));
+    end;
+    if Downloaded and not RuntimeSignedByMicrosoft(ExpandConstant('{tmp}\') + RuntimeFile) then
+    begin
+      Downloaded := False;
+      OfferRuntimePage(CustomMessage('RuntimeBadSignature'));
     end;
     if Downloaded then
     begin
