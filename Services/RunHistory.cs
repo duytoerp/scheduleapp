@@ -193,7 +193,9 @@ public static class Housekeeping
             int logs = Log.Cleanup(Log.LogDir, DateTime.Today);
             int reports = PruneTestReports(Testing.TestReport.RootDir, DateTime.Now);
             ErrorScreenshots.Cleanup();
-            if (logs + reports > 0) Log.Info($"🧹 Đã dọn {logs} file nhật ký/crash cũ và {reports} báo cáo kiểm thử cũ.");
+            int shots = Vision.RecordedShots.Cleanup();
+            if (logs + reports + shots > 0)
+                Log.Info($"🧹 Đã dọn {logs} file nhật ký/crash cũ, {reports} báo cáo kiểm thử cũ và {shots} ảnh ghi thao tác không còn dùng.");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

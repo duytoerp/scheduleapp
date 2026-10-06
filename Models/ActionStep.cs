@@ -292,6 +292,14 @@ public sealed class ActionStep
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public int ImageOffsetY { get; set; }
 
     /// <summary>
+    /// Ảnh cả cửa sổ ứng dụng lúc ghi click (tên file trong recorded-shots, xem <c>Vision.RecordedShots</c>) — chỉ để xem lại
+    /// đã click vào đâu, không dùng khi chạy. ContextClickX / Y = điểm click trong ảnh đó (px của ảnh đã lưu).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public string? ContextShot { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public int ContextClickX { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public int ContextClickY { get; set; }
+
+    /// <summary>
     /// Phát video / nhạc: tổng thời lượng các file trong danh sách (ms) — tự tính mỗi khi danh sách thay đổi; 0 = chưa rõ
     /// (file dùng biến, không đọc được thời lượng…).
     /// </summary>

@@ -164,6 +164,19 @@ internal sealed class StepEditorForm : BaseForm
     private readonly Label _lblImage = Caption("Hình mẫu:");
     private readonly FlowLayoutPanel _pnlImage = Row();
     private readonly PictureBox _picImage = new() { Size = new Size(240, 96), SizeMode = PictureBoxSizeMode.Zoom, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.White };
+
+    // Ảnh cả cửa sổ lúc ghi click (chỉ để xem lại, không dùng khi chạy).
+    private readonly Label _lblContext = Caption("Ảnh lúc ghi:");
+    private readonly FlowLayoutPanel _pnlContext = Row();
+    private readonly PictureBox _picContext = new()
+    {
+        Size = new Size(320, 180), SizeMode = PictureBoxSizeMode.Zoom, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.White, Cursor = Cursors.Hand
+    };
+    private readonly Button _btnContextView = new() { Text = "Xem lớn…", AutoSize = true };
+    private readonly Button _btnContextClear = new() { Text = "Bỏ ảnh", AutoSize = true };
+    private string? _contextShot;
+    private Point _contextClick;
+    private readonly ToolTip _contextTip = new();
     private readonly Button _btnSnip = new() { Text = "✂ Chụp hình mẫu", AutoSize = true, Margin = new Padding(10, 2, 3, 2) };
     private readonly Button _btnClearImage = new() { Text = "✕ Bỏ hình mẫu", AutoSize = true, Margin = new Padding(3, 2, 3, 2) };
     private readonly Label _lblConfidence = Caption("Độ khớp tối thiểu (%):");
@@ -274,6 +287,10 @@ internal sealed class StepEditorForm : BaseForm
 
         _pnlImage.Controls.AddRange([_picImage, _btnSnip, _btnClearImage]);
         AddRow(_lblImage, _pnlImage, span: true);
+        var contextButtons = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, Margin = new Padding(0) };
+        contextButtons.Controls.AddRange([_btnContextView, _btnContextClear]);
+        _pnlContext.Controls.AddRange([_picContext, contextButtons]);
+        AddRow(_lblContext, _pnlContext, span: true);
         AddRow(_lblConfidence, _numConfidence);
         AddRow(_lblMatchIndex, _numMatchIndex);
         AddRow(null, _chkRelative, span: true);
@@ -416,6 +433,21 @@ internal sealed class StepEditorForm : BaseForm
         _btnSnip.Click += async (_, _) => await SnipAsync();
         _btnClearImage.Click += (_, _) => ClearImage();
         _picImage.Paint += (_, e) => DrawClickMarker(e.Graphics);
+        _picContext.Paint += (_, e) => ContextShotViewer.DrawMarker(e.Graphics, _picContext, _contextClick);
+        _picContext.Click += (_, _) => ShowContextShot();
+        _btnContextView.Click += (_, _) => ShowContextShot();
+        _btnContextClear.Click += (_, _) =>
+        {
+            _contextShot = null;
+            SetContextImage(null);
+        };
+        _contextTip.SetToolTip(_picContext, "Cửa sổ ứng dụng lúc ghi thao tác — dấu đỏ là chỗ đã click. Bấm để xem lớn.");
+        _contextTip.SetToolTip(_btnContextClear, "Bỏ ảnh khỏi bước này (không ảnh hưởng cách chạy)");
+        Disposed += (_, _) =>
+        {
+            _contextTip.Dispose();
+            _picContext.Image?.Dispose();
+        };
         _numX.ValueChanged += (_, _) => { if (CurrentType == StepType.ClickImage) _picImage.Invalidate(); };
         _numY.ValueChanged += (_, _) => { if (CurrentType == StepType.ClickImage) _picImage.Invalidate(); };
         _btnTestFind.Click += async (_, _) => await TestFindAsync();
@@ -523,6 +555,9 @@ internal sealed class StepEditorForm : BaseForm
         _imageScale = _step.ImageScale;
         _imageOffset = new Point(_step.ImageOffsetX, _step.ImageOffsetY);
         UpdateImagePreview();
+        _contextShot = _step.ContextShot;
+        _contextClick = new Point(_step.ContextClickX, _step.ContextClickY);
+        SetContextImage(Vision.RecordedShots.Load(_contextShot));
         _numConfidence.Value = Math.Clamp(_step.Confidence, 50, 100);
         _numMatchIndex.Value = Math.Clamp(_step.MatchIndex, 1, 50);
         _cboTypeMode.SelectedIndex = (int)_step.TypeMode;
@@ -585,6 +620,9 @@ internal sealed class StepEditorForm : BaseForm
         bool anchor = ActionStep.CanHaveImageAnchor(type) && _imageData.Length > 0;
         s.ImageOffsetX = anchor ? _imageOffset.X : 0;
         s.ImageOffsetY = anchor ? _imageOffset.Y : 0;
+        s.ContextShot = _contextShot;
+        s.ContextClickX = _contextShot != null ? _contextClick.X : 0;
+        s.ContextClickY = _contextShot != null ? _contextClick.Y : 0;
         s.Confidence = (int)_numConfidence.Value;
         s.MatchIndex = (int)_numMatchIndex.Value;
         s.TypeMode = (TypeMode)Math.Max(0, _cboTypeMode.SelectedIndex);
@@ -1962,6 +2000,22 @@ internal sealed class StepEditorForm : BaseForm
     }
 
     // ───────────────────────────── Nhận dạng màn hình ─────────────────────────────
+
+    /// <summary>Ảnh cửa sổ lúc ghi: có ảnh mới hiện dòng "Ảnh lúc ghi".</summary>
+    private void SetContextImage(Bitmap? image)
+    {
+        var old = _picContext.Image;
+        _picContext.Image = image;
+        old?.Dispose();
+        SetVisible(image != null, _lblContext, _pnlContext);
+    }
+
+    private void ShowContextShot()
+    {
+        if (_picContext.Image is not Bitmap image) return;
+        using var viewer = new ContextShotViewer(image, _contextClick, _step.Describe());
+        viewer.ShowDialog(this);
+    }
 
     private void UpdateImagePreview()
     {

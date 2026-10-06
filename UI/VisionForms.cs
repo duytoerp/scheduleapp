@@ -256,12 +256,28 @@ internal sealed class RecorderToolbar : BaseForm
             Services.SettingsStore.Save();
         };
 
+        var chkWindow = new CheckBox
+        {
+            Text = "Lưu ảnh cả cửa sổ lúc click — xem lại bước biết đã click vào đâu (không dùng khi chạy)",
+            AutoSize = true,
+            Checked = Services.SettingsStore.Current.RecordWindowShots,
+            Margin = new Padding(3, 2, 3, 0)
+        };
+        _recorder.RecordWindowShots = chkWindow.Checked;
+        chkWindow.CheckedChanged += (_, _) =>
+        {
+            _recorder.RecordWindowShots = chkWindow.Checked;
+            Services.SettingsStore.Current.RecordWindowShots = chkWindow.Checked;
+            Services.SettingsStore.Save();
+        };
+
         var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
         row.Controls.AddRange([_status, btnStop, btnCancel]);
         var layout = new TableLayoutPanel { AutoSize = true, ColumnCount = 1, Dock = DockStyle.Fill };
         layout.Controls.Add(row);
         layout.Controls.Add(chkElements);
         layout.Controls.Add(chkImages);
+        layout.Controls.Add(chkWindow);
         layout.Controls.Add(hint);
         Controls.Add(layout);
         ResumeLayout(true);
@@ -273,6 +289,13 @@ internal sealed class RecorderToolbar : BaseForm
     }
 
     protected override bool ShowWithoutActivation => true;
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        // Không lọt vào ảnh chụp lúc ghi (hình mẫu, ảnh cả cửa sổ) khi thanh ghi nằm đè lên ứng dụng — Windows 10 2004 trở lên.
+        Native.Win32.SetWindowDisplayAffinity(Handle, 0x11 /*WDA_EXCLUDEFROMCAPTURE*/);
+    }
 
     protected override CreateParams CreateParams
     {

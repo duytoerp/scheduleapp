@@ -24,6 +24,9 @@ public sealed class AppSettings
     /// <summary>Trình ghi macro: chụp hình mẫu quanh mỗi click để khi chạy tìm lại theo hình ảnh rồi mới dùng tọa độ.</summary>
     public bool RecordImages { get; set; } = true;
 
+    /// <summary>Trình ghi macro: lưu ảnh cả cửa sổ ứng dụng lúc mỗi click (đánh dấu chỗ click) để xem lại bước.</summary>
+    public bool RecordWindowShots { get; set; } = true;
+
     /// <summary>
     /// Không còn dùng: trình duyệt điều khiển tự chọn cổng ngẫu nhiên (--remote-debugging-port=0).
     /// Giữ lại để settings.json của bản cũ vẫn đọc / ghi lại nguyên vẹn.

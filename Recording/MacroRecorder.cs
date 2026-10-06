@@ -58,6 +58,9 @@ internal sealed class MacroRecorder : IDisposable
     /// </summary>
     public bool RecordImages { get; set; } = true;
 
+    /// <summary>Lưu ảnh cả cửa sổ ứng dụng lúc mỗi click / kéo thả (đánh dấu chỗ click) để xem lại bước — không dùng khi chạy.</summary>
+    public bool RecordWindowShots { get; set; } = true;
+
     /// <summary>Số click đã được ghi thành bước "Click phần tử UI".</summary>
     public int ElementClicks => _steps.Count(s => s.Type == StepType.ClickElement);
 
@@ -82,7 +85,7 @@ internal sealed class MacroRecorder : IDisposable
     public List<ActionStep> Stop()
     {
         Unhook();
-        _pressed?.Shot?.Dispose();
+        _pressed?.Release();
         _pressed = null;
         // Chữ đang gõ dở thành bước ngay (ô mật khẩu quyết định theo kết quả đã có lúc này, không chờ thêm).
         FlushTyped();
@@ -133,7 +136,21 @@ internal sealed class MacroRecorder : IDisposable
     }
 
     internal sealed record Press(Point Point, MouseButtonKind Button, IntPtr Root, IntPtr Window, string Target, long Tick,
-        Task<Automation.UiElementFinder.CapturedElement?>? Element, Snapshot? Shot);
+        Task<Automation.UiElementFinder.CapturedElement?>? Element, Snapshot? Shot, WindowShot? View = null)
+    {
+        /// <summary>Bỏ cả hai ảnh (click bị gộp / bị bỏ qua).</summary>
+        public void Release()
+        {
+            Shot?.Dispose();
+            View?.Dispose();
+        }
+    }
+
+    /// <summary>Ảnh cả cửa sổ được click lúc nhấn chuột; <paramref name="Click"/> = điểm click trong ảnh.</summary>
+    internal sealed record WindowShot(Bitmap Image, Point Click) : IDisposable
+    {
+        public void Dispose() => Image.Dispose();
+    }
 
     /// <summary>Ảnh chụp quanh điểm nhấn chuột; <paramref name="Covered"/> = phần bị cửa sổ khác che (tọa độ trong ảnh).</summary>
     internal sealed record Snapshot(Bitmap Image, Rectangle Area, double Scale, List<Rectangle> Covered) : IDisposable
@@ -146,17 +163,58 @@ internal sealed class MacroRecorder : IDisposable
     private void OnButtonDown(Point p, MouseButtonKind button)
     {
         _winAlone = false;
-        _pressed?.Shot?.Dispose();
+        _pressed?.Release();
         _pressed = null;
         var root = WindowHelper.RootWindowAt(p);
         if (root == IntPtr.Zero || WindowHelper.BelongsToThisApp(root)) return;
         // Chụp ngay trong hook: ứng dụng chưa nhận click nên nút chưa lõm xuống, menu chưa mở/đóng.
         var shot = RecordImages ? Snap(p, root) : null;
+        var view = RecordWindowShots ? SnapWindow(p, root) : null;
         // Xác định cửa sổ đích ngay lúc nhấn: popup (menu, gợi ý…) thường đóng ngay sau click.
         var (window, target) = ResolveTarget(root);
         // Đọc phần tử dưới chuột ngay lúc nhấn (trước khi click làm giao diện thay đổi), chạy nền để hook trả về ngay.
         var element = RecordElements && target.Length > 0 ? Task.Run(() => CaptureElement(p)) : null;
-        _pressed = new Press(p, button, root, window, target, Environment.TickCount64, element, shot);
+        _pressed = new Press(p, button, root, window, target, Environment.TickCount64, element, shot, view);
+    }
+
+    /// <summary>Chụp cả cửa sổ được click (khung nhìn thấy, trong phạm vi màn hình); null nếu cửa sổ quá nhỏ / lỗi.</summary>
+    private static WindowShot? SnapWindow(Point p, IntPtr root)
+    {
+        try
+        {
+            var area = RecordedShots.WindowArea(root);
+            if (area.Width < 16 || area.Height < 16 || !area.Contains(p)) return null;
+            return new WindowShot(ScreenCapture.Capture(area), new Point(p.X - area.X, p.Y - area.Y));
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine(ex);
+            return null;
+        }
+    }
+
+    /// <summary>Lưu ảnh cửa sổ thành file (chạy nền) rồi gắn vào bước.</summary>
+    private void AttachWindowShot(ActionStep step, WindowShot? view)
+    {
+        if (view == null) return;
+        _conversions.Add(Task.Run(() =>
+        {
+            using (view)
+            {
+                try
+                {
+                    var (name, click) = RecordedShots.Save(view.Image, view.Click);
+                    lock (step)
+                    {
+                        if (_stopped) return;   // ảnh lưu muộn sau khi đã dừng ghi → bỏ (file tự dọn sau)
+                        step.ContextShot = name;
+                        step.ContextClickX = click.X;
+                        step.ContextClickY = click.Y;
+                    }
+                }
+                catch (Exception ex) { Debug.WriteLine(ex); }
+            }
+        }));
     }
 
     private static Snapshot? Snap(Point p, IntPtr root)
@@ -259,11 +317,13 @@ internal sealed class MacroRecorder : IDisposable
         if (Math.Abs(p.X - down.Point.X) > 8 || Math.Abs(p.Y - down.Point.Y) > 8)
         {
             down.Shot?.Dispose();
-            Add(new ActionStep
+            var drag = new ActionStep
             {
                 Type = StepType.MouseDrag, Target = target, X = x, Y = y,
                 X2 = p.X - origin.X, Y2 = p.Y - origin.Y, Button = down.Button
-            }, now, Environment.TickCount64);
+            };
+            Add(drag, now, Environment.TickCount64);
+            AttachWindowShot(drag, down.View);   // ảnh lúc bắt đầu kéo, đánh dấu điểm nhấn
             return;
         }
 
@@ -273,7 +333,7 @@ internal sealed class MacroRecorder : IDisposable
             now - _lastTick <= Win32.GetDoubleClickTime() &&
             Math.Abs(last.X - x) <= 4 && Math.Abs(last.Y - y) <= 4)
         {
-            down.Shot?.Dispose();
+            down.Release();
             lock (last) last.DoubleClick = true;
             _lastTick = now;
             Changed?.Invoke();
@@ -283,6 +343,7 @@ internal sealed class MacroRecorder : IDisposable
         var click = new ActionStep { Type = StepType.MouseClick, Target = target, X = x, Y = y, Button = down.Button };
         Add(click, now, now);
         Recognize(click, down);
+        AttachWindowShot(click, down.View);
     }
 
     /// <summary>Cuộn chuột: các lần cuộn liên tiếp trong cùng cửa sổ được gộp thành một bước.</summary>

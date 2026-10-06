@@ -258,7 +258,8 @@ public sealed class FlowGenerator
                 if (s.ImageData.Length > 0) o[key] = ImagePlaceholder;
                 continue;
             }
-            if (key is nameof(ActionStep.Breakpoint) or nameof(ActionStep.JobRef) or nameof(ActionStep.MediaDurationMs) or nameof(ActionStep.MonitorId)) continue;
+            if (key is nameof(ActionStep.Breakpoint) or nameof(ActionStep.JobRef) or nameof(ActionStep.MediaDurationMs) or nameof(ActionStep.MonitorId)
+                or nameof(ActionStep.ContextShot) or nameof(ActionStep.ContextClickX) or nameof(ActionStep.ContextClickY)) continue;
             if (key == nameof(ActionStep.Type) || !JsonNode.DeepEquals(value, defaults[key])) o[key] = value?.DeepClone();
         }
         return o;
@@ -383,6 +384,13 @@ public sealed class FlowGenerator
                 step.ImageOffsetY = original.ImageOffsetY;
             }
             if (original.Type == StepType.CallJob && step.Type == StepType.CallJob && step.Target == original.Target) step.JobRef = original.JobRef;
+            // Ảnh cửa sổ lúc ghi không gửi cho AI → giữ lại cho bước cùng _ref.
+            if (step.ContextShot == null && original.ContextShot != null)
+            {
+                step.ContextShot = original.ContextShot;
+                step.ContextClickX = original.ContextClickX;
+                step.ContextClickY = original.ContextClickY;
+            }
             // Mã màn hình thật không gửi cho AI → giữ lại nếu AI không đổi số màn hình.
             if (step.MonitorId == null && step.Type == original.Type && step.Monitor == original.Monitor) step.MonitorId = original.MonitorId;
         }
