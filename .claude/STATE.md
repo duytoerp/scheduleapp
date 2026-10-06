@@ -1,6 +1,6 @@
 # STATE — Claude đang làm tới đâu
 
-> Cập nhật mỗi khi bắt đầu / xong một việc. Trưởng nhóm (phiên chính) giữ các mục chung; mỗi agent chỉ sửa đúng dòng của mình trong bảng "Agent".
+> Cập nhật mỗi khi bắt đầu / xong một việc. Một phiên làm việc giữ toàn bộ file (không còn nhóm agent).
 > Trạng thái: ⏳ đang làm · ✅ xong · ⛔ bị chặn · 💤 chờ người dùng
 
 **Cập nhật lần cuối:** 2026-10-05 · phiên `918ad934`: dừng sửa theo review theo yêu cầu — B4b xong (`7cbacc8`), B3 / B5b dở ở nhánh `wip/…`, B2 / B4a chưa sửa
@@ -21,22 +21,11 @@
   - Chưa làm: tài liệu README / F1 cho nhóm A + B (bản nháp nhóm A ở scratchpad phiên trước), nhóm C (CI + ký số, chia file lớn, GDI, test Scheduler/Trigger/Notification/CommandServer, chế độ tối, giao diện tiếng Anh, webhook + cron). Bộ cài chưa biên dịch thử (máy không có Inno Setup; CI job `installer` sẽ kiểm). Đã merge vào `main` (`6c2429b`).
 - ✅ **Rà soát "cần nâng cấp gì"** (2026-10-05, phiên khác với kiểm tra bảo mật): build Release 0 cảnh báo, test **263 đạt, 0 lỗi, 16 bỏ qua**, NuGet không lỗ hổng. Lỗi nặng đã tự xác minh trong code: settings.json hỏng bị ghi đè mặc định sau ~1 phút (SettingsStore.cs:22-34 + Scheduler.cs:90-95) · không có bắt lỗi toàn cục (Program.cs) · bộ cài không kiểm .NET 10 Desktop Runtime · cập nhật bỏ qua SHA-256 khi thiếu, nhận http:// · bước nhắc việc chờ người dùng chặn cả hàng đợi (FlowRunner.cs:16,100) · trình phát toàn màn hình giành phím khi phát ở màn hình khác (MediaPlayback.cs:191-196). Danh sách ưu tiên ở "Tiếp theo" mục 3. 💤 Chờ người dùng chọn sửa.
 
-## Agent
-| Agent | Trạng thái | Việc | Ghi chú |
-|---|---|---|---|
-| scheduleapp-implementer | ✅ | A ✅ (chưa build theo yêu cầu): dải ảnh / ô sửa bước / thiết lập mẫu — #0,11 `_stripText` + khóa dải khi chờ OK · #1 dòng lỗi thành ô đỏ, OK không kẹt · #2,15 Esc hủy kéo / dừng phát thử, thả ngoài dải = hủy · #3,12,17 ô chọn theo mục vừa chuyển / ảnh kề · #5,20 bỏ qua ≠ lỗi · #6 đếm cả thư mục · #7 vạch chèn đúng chỗ · #10 hủy tải ảnh bị bỏ · #13 biến là thư mục · #16 kích thước theo DPI · #21 tên rút gọn giữa · 5 test mới (+ mở rộng test thiết lập mẫu) | B ✅ (chưa build theo yêu cầu): #4,8,19 sơ đồ không thay biến chạy-mới-biết, nhớ dòng đã thay · #9,14,22 Thu nhỏ không có cửa sổ = bỏ qua, mẫu 15 thêm "Nếu cửa sổ còn mở" · #24 ShowWindowAsync · #25 hộp thoại → cửa sổ chủ · #26 công việc con / xử lý lỗi "Không hiện" · #18,27 "Ẩn" tới khi hết hàng đợi · #28 test · #23 không sửa (Esc = bước lỗi là thiết kế của engine), chỉ sửa mô tả mẫu |
-| scheduleapp-tester | ✅ | Build + chạy toàn bộ test (phiên chính làm) | 258 đạt, 0 lỗi, 16 bỏ qua |
-| scheduleapp-reviewer | ✅ | Review chọn màn hình phát video | 5 lỗi: giành phím khi phát ở màn hình khác (Space/N/Esc của người đang làm việc) · cửa sổ thường sai cỡ khi màn hình khác DPI · số DISPLAYn ≠ số trong Cài đặt, không ổn định · công việc cũ (cửa sổ thường) đổi màn hình · test chưa phủ toàn màn hình + StepExecutor |
-| scheduleapp-ui-checker | 💤 | — | |
-| workflow review | ✅ | Review ảnh thu nhỏ, bước Thu nhỏ cửa sổ, khung trạng thái | 29 lỗi, 28 xác nhận |
-| implementer B | ✅ | Sơ đồ, Thu nhỏ cửa sổ, mẫu 15, khung trạng thái | 13/14 mục sửa, #23 giữ thiết kế |
-
 ## Xong — chưa commit (commit cuối trên `main`: `acd4f51`)
 - ✅ Bước **Thu nhỏ cửa sổ** (nhớ cửa sổ vào biến `hwnd:…`, `{{lastWindow}}`), "Kích hoạt cửa sổ" mở lại đúng cửa sổ; nhận cả cửa sổ trình chiếu PowerPoint (đã thử PowerPoint thật).
 - ✅ Mẫu **15 · 15:30**: ẩn ứng dụng → video 1 → chờ 10 giây → video 2 → mở lại ứng dụng (Esc → mở lại ngay); không hiện khung trạng thái.
 - ✅ Bật / tắt **khung trạng thái**: nút "— Ẩn", mục ở khay, tùy chọn riêng từng công việc.
 - ✅ **Ảnh thu nhỏ video như Explorer**: dải ảnh trong ô sửa bước (kéo đổi thứ tự, nhấp đúp phát thử, chuột phải, Delete, kéo thả từ Explorer); nút "Chọn video…" + ảnh khi thiết lập mẫu; ảnh video trên nút ở sơ đồ.
-- ✅ Nhóm agent `.claude/agents/` + công cụ `.claude/tools/edit_helper.py`.
 - ✅ Sửa 27 lỗi từ review (dải ảnh, ô sửa bước, thiết lập mẫu, sơ đồ, Thu nhỏ cửa sổ, mẫu 15, khung trạng thái).
 - ✅ Chọn màn hình phát video khi có nhiều màn hình (`Native/Displays.cs`, `UI/IdentifyScreens.cs`).
 - Test gần nhất: **263 đạt, 0 lỗi, 16 bỏ qua** (toàn bộ, chạy thật).
