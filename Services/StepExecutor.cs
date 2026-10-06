@@ -420,7 +420,7 @@ public static class StepExecutor
                 var title = string.IsNullOrWhiteSpace(s.Target) ? job.Name : s.Target;
                 value = await ctx.Ui.PromptAsync(title, s.Text, s.Arguments, s.Force, ct)
                         ?? throw new OperationCanceledException("Người dùng đã hủy nhập giá trị.");
-                if (s.Force) Log.Mask(value);
+                if (s.Force) Log.MaskGuessed(value);
                 break;
             }
             case VarSource.File:
@@ -463,7 +463,9 @@ public static class StepExecutor
         }
 
         ctx.SetVar(s.Variable, value.TrimEnd('\r', '\n'));
-        Log.Info($"      {{{{{s.Variable.Trim()}}}}} = \"{Truncate(value).Replace("\r", "").Replace("\n", " ⏎ ")}\"");
+        // Giá trị nhập dạng ẩn không bao giờ hiện trong nhật ký (kể cả mã PIN ngắn không được che toàn cục).
+        var shown = s.VarSource == VarSource.AskUser && s.Force ? "***" : Truncate(value).Replace("\r", "").Replace("\n", " ⏎ ");
+        Log.Info($"      {{{{{s.Variable.Trim()}}}}} = \"{shown}\"");
     }
 
     /// <summary>Tính biểu thức số học (+ - * / %, ngoặc, so sánh) — vd "{{dem}} + 1" sau khi đã thay biến.</summary>

@@ -178,6 +178,8 @@ public sealed class FlowContext
         name = name.Trim();
         if (name.StartsWith("{{") && name.EndsWith("}}")) name = name[2..^2].Trim();
         if (name.Length == 0) throw new InvalidOperationException("Chưa nhập tên biến.");
+        // Biến tên kiểu mật khẩu / token (vd token lấy từ API đăng nhập): che giá trị ngay khi gán — TRƯỚC khi bước ghi "{{token}} = …" vào nhật ký.
+        if (SecretHider.IsSecretName(name)) Log.MaskGuessed(value);
         Vars[name] = value;
     }
 }

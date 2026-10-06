@@ -17,8 +17,8 @@ public sealed record HttpResult(int Status, string Body, string ContentType, str
 /// <summary>
 /// Gọi API HTTP/REST cho bước "Gọi API": nối URL với kết nối đã khai báo, gắn xác thực
 /// (Bearer, Basic, khóa API, tài khoản Windows, Microsoft Entra ID cho Dynamics 365 / Graph, OAuth client credentials).
-/// Xác thực và header của kết nối chỉ gửi tới đúng máy chủ trong URL gốc của kết nối, không gửi qua http:// không mã hóa
-/// (trừ máy chủ trên chính máy này); chuyển hướng sang máy chủ khác thì bỏ xác thực.
+/// Xác thực và header của kết nối chỉ gửi tới đúng máy chủ (và cổng) trong URL gốc của kết nối, mật khẩu / token không gửi qua
+/// http:// không mã hóa (trừ máy chủ trên chính máy này); chuyển hướng sang máy chủ khác thì bỏ xác thực, không gửi lại nội dung.
 /// </summary>
 public static class ApiClient
 {
@@ -71,11 +71,11 @@ public static class ApiClient
         var stepHeaders = ParseHeaders(headers).ToList();
         var connHeaders = conn == null ? [] : ParseHeaders(Credentials.Reveal(conn.Headers, $"header của kết nối \"{conn.Name}\"")).ToList();
         foreach (var (name, value) in connHeaders.Concat(stepHeaders))
-            if (IsSecretHeader(name)) MaskHeaderValue(value);
+            if (IsSecretHeader(name)) MaskHeaderValue(name, value);
 
         // Kết nối có xác thực / header riêng → chỉ gắn khi URL đúng máy chủ của kết nối và đi qua kênh mã hóa.
         bool withConn = conn != null && (conn.Auth != ApiAuthType.None || connHeaders.Count > 0);
-        if (withConn && !CredentialsAllowed(conn!, uri, out var refused)) throw new InvalidOperationException(refused);
+        if (withConn && !CredentialsAllowed(conn!, uri, out var refused, connHeaders)) throw new InvalidOperationException(refused);
 
         int limitMs = timeoutMs > 0 ? timeoutMs : (int)DefaultTimeout.TotalMilliseconds;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -121,7 +121,13 @@ public static class ApiClient
                         httpMethod = HttpMethod.Get;
                         sendBody = false;
                     }
-                    bool keepConn = withConn && CredentialsAllowed(conn!, next, out _);
+                    // 307/308 (và 301/302 với PUT, PATCH…) gửi lại nguyên nội dung — nội dung có thể chứa mật khẩu (POST /login),
+                    // nên không gửi lại sang máy chủ khác hay qua http không mã hóa.
+                    if (sendBody && (!SameHost(current, next) || Downgraded(current, next)))
+                        throw new InvalidOperationException(
+                            $"API chuyển hướng ({(int)resp.StatusCode}) sang {next.Host}{(Downgraded(current, next) ? " qua http:// không mã hóa" : "")} và đòi gửi lại nội dung — " +
+                            "không gửi lại nội dung (có thể chứa mật khẩu / dữ liệu riêng) sang máy chủ khác. Nếu tin máy chủ đó, hãy gọi thẳng URL mới.");
+                    bool keepConn = withConn && CredentialsAllowed(conn!, next, out _, connHeaders);
                     bool keepStep = stepSecrets && SameHost(current, next) && !Downgraded(current, next);
                     if ((withConn && !keepConn) || (stepSecrets && !keepStep && stepHeaders.Any(h => IsSecretHeader(h.Name))))
                         Log.Info($"      ↪ API chuyển hướng sang {next.Host} — không gửi kèm xác thực / header bí mật.");
@@ -147,11 +153,13 @@ public static class ApiClient
     }
 
     /// <summary>
-    /// Có được gắn xác thực / header của kết nối vào yêu cầu tới <paramref name="uri"/> không: phải đúng máy chủ trong URL gốc
-    /// của kết nối (127.0.0.1 và localhost là hai máy chủ khác nhau — so đúng tên), và không qua http:// không mã hóa
-    /// (trừ máy chủ trên chính máy này; tài khoản Windows cho phép thêm máy nội bộ tên một chữ như http://crmserver/).
+    /// Có được gắn xác thực / header của kết nối vào yêu cầu tới <paramref name="uri"/> không: phải đúng máy chủ và cổng trong URL gốc
+    /// của kết nối (127.0.0.1 và localhost là hai máy chủ khác nhau — so đúng tên), và không gửi bí mật qua http:// không mã hóa
+    /// (trừ máy chủ trên chính máy này). Tài khoản Windows (NTLM/Kerberos — không gửi mật khẩu) và kết nối chỉ có header thường
+    /// được qua http (vd Dynamics 365 on-premises http://crm.contoso.local/).
     /// </summary>
-    internal static bool CredentialsAllowed(ApiConnection c, Uri uri, out string reason)
+    /// <param name="headers">Header của kết nối đã giải mã; null = chưa giải mã — có header thì coi như có bí mật.</param>
+    internal static bool CredentialsAllowed(ApiConnection c, Uri uri, out string reason, IReadOnlyCollection<(string Name, string Value)>? headers = null)
     {
         if (!Uri.TryCreate(c.BaseUrl.Trim(), UriKind.Absolute, out var b) || b.Scheme is not ("http" or "https"))
         {
@@ -164,8 +172,8 @@ public static class ApiClient
                      "Dùng đường dẫn tương đối, hoặc tạo kết nối riêng cho máy chủ đó.";
             return false;
         }
-        if (uri.Scheme == "http" && !NotificationService.IsLoopback(uri.Host) &&
-            !(c.Auth == ApiAuthType.Windows && !uri.Host.Contains('.') && !uri.Host.Contains(':')))
+        if (uri.Scheme == "http" && !NotificationService.IsLoopback(uri.Host) && SendsSecrets(c, headers) &&
+            !(c.Auth == ApiAuthType.Windows && IsIntranetHost(uri.Host)))
         {
             reason = $"Không gửi mật khẩu / token của kết nối \"{c.Name}\" qua http:// (không mã hóa) tới {uri.Host} — dùng https://.";
             return false;
@@ -174,7 +182,39 @@ public static class ApiClient
         return true;
     }
 
-    private static bool SameHost(Uri a, Uri b) => string.Equals(a.IdnHost, b.IdnHost, StringComparison.OrdinalIgnoreCase);
+    /// <summary>
+    /// Kết nối có gửi bí mật đi không: mật khẩu / token / khóa API / OAuth, tài khoản Windows (NTLM qua http có thể bị chuyển tiếp
+    /// để đăng nhập thay bạn — chỉ cho phép với máy nội bộ, xem <see cref="IsIntranetHost"/>), hoặc header kiểu Authorization, x-api-key…
+    /// </summary>
+    private static bool SendsSecrets(ApiConnection c, IReadOnlyCollection<(string Name, string Value)>? headers) =>
+        c.Auth != ApiAuthType.None ||
+        (headers == null ? c.Headers.Trim().Length > 0 : headers.Any(h => IsSecretHeader(h.Name)));
+
+    /// <summary>
+    /// Máy trong mạng nội bộ (như vùng Intranet của Windows): tên một chữ (crmserver), tên miền nội bộ (.local, .lan, .internal, .corp,
+    /// .intranet, .home.arpa) hoặc địa chỉ IP riêng (10.x, 172.16–31.x, 192.168.x, fc00::/7). Tên miền Internet (crm.contoso.com) thì không.
+    /// </summary>
+    internal static bool IsIntranetHost(string host)
+    {
+        host = host.Trim().TrimEnd('.').Trim('[', ']');
+        if (System.Net.IPAddress.TryParse(host, out var ip))
+        {
+            var b = ip.MapToIPv4().GetAddressBytes();
+            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6 && !ip.IsIPv4MappedToIPv6)
+                return (ip.GetAddressBytes()[0] & 0xFE) == 0xFC;
+            return b[0] == 10 || (b[0] == 172 && b[1] is >= 16 and <= 31) || (b[0] == 192 && b[1] == 168);
+        }
+        if (!host.Contains('.')) return host.Length > 0;
+        return new[] { ".local", ".lan", ".internal", ".corp", ".intranet", ".home.arpa" }
+            .Any(s => host.EndsWith(s, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Cùng máy chủ và cùng cổng (Uri.Port đã điền cổng mặc định 80 / 443). http → https cổng mặc định của cùng máy chủ vẫn tính là
+    /// cùng máy chủ (nâng lên kênh mã hóa); hạ https → http đã kiểm riêng ở <see cref="Downgraded"/>.
+    /// </summary>
+    private static bool SameHost(Uri a, Uri b) =>
+        string.Equals(a.IdnHost, b.IdnHost, StringComparison.OrdinalIgnoreCase) && (a.Port == b.Port || (a.IsDefaultPort && b.IsDefaultPort));
 
     /// <summary>Chuyển từ https sang http (không mã hóa) tới máy khác máy này.</summary>
     private static bool Downgraded(Uri from, Uri to) => from.Scheme == "https" && to.Scheme == "http" && !NotificationService.IsLoopback(to.Host);
@@ -185,12 +225,16 @@ public static class ApiClient
     internal static bool IsSecretHeader(string name) =>
         SecretHeaderWords.Any(w => name.Contains(w, StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>Che giá trị header bí mật, cả phần token sau "Bearer " / "Basic ".</summary>
-    private static void MaskHeaderValue(string value)
+    /// <summary>
+    /// Che giá trị header bí mật, cả phần token sau "Bearer " / "Basic ". Tên header chỉ là đoán (có chữ key / token…) nên giá trị
+    /// ngắn không che (<see cref="Log.MaskGuessed"/>), header phiên bản (X-Api-Key-Version: 2024-01-01) cũng không.
+    /// </summary>
+    private static void MaskHeaderValue(string name, string value)
     {
-        Log.Mask(value);
+        if (name.EndsWith("version", StringComparison.OrdinalIgnoreCase)) return;
+        Log.MaskGuessed(value);
         int space = value.IndexOf(' ');
-        if (space > 0) Log.Mask(value[(space + 1)..]);
+        if (space > 0) Log.MaskGuessed(value[(space + 1)..]);
     }
 
     /// <summary>Đọc nội dung phản hồi, từ chối khi lớn hơn <see cref="MaxResponseBytes"/>.</summary>

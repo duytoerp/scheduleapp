@@ -21,12 +21,48 @@ public static class SettingsStore
                 if (_current == null)
                 {
                     _current = Load();
-                    // Bản cũ / sửa tay còn mật khẩu, token chữ thường → mã hóa và lưu ngay một lần.
-                    if (ProtectPlaintextSecrets(_current)) Save();
+                    // Bản cũ / sửa tay còn mật khẩu, token chữ thường → mã hóa và lưu ngay một lần; cài đặt bản cũ → chuyển đổi một lần.
+                    if (ProtectPlaintextSecrets(_current) | Upgrade(_current)) Save();
+                    WarnInsecureEmail(_current);
                 }
                 return _current;
             }
         }
+    }
+
+    /// <summary>Phiên bản cấu trúc cài đặt hiện tại (<see cref="AppSettings.SettingsVersion"/>).</summary>
+    internal const int CurrentVersion = 1;
+
+    /// <summary>
+    /// Chuyển đổi cài đặt của bản cũ, mỗi bước đúng một lần (đánh dấu bằng <see cref="AppSettings.SettingsVersion"/>, lưu cùng cài đặt):
+    /// 1 — tắt gửi ảnh chụp màn hình lỗi qua Telegram / email (bản cũ bật sẵn; ảnh cả màn hình có thể lộ thông tin khác).
+    /// Người dùng bật lại sau đó thì giữ nguyên.
+    /// </summary>
+    /// <returns>
+    /// true nếu có cài đặt vừa đổi (cần lưu ngay). Chỉ đổi dấu phiên bản thì false — dấu được ghi ở lần lưu sau
+    /// (không ghi file lúc mở app khi không có gì đổi, vd lần đầu dùng hay đang dùng mặc định vì settings.json hỏng).
+    /// </returns>
+    internal static bool Upgrade(AppSettings s)
+    {
+        if (s.SettingsVersion >= CurrentVersion) return false;
+        bool changed = false;
+        if (s.SettingsVersion < 1 && (s.Telegram.SendScreenshot || s.Email.AttachScreenshot))
+        {
+            s.Telegram.SendScreenshot = false;
+            s.Email.AttachScreenshot = false;
+            changed = true;
+            Log.Warn("Đã tắt gửi kèm ảnh chụp màn hình lỗi qua Telegram / email (ảnh cả màn hình có thể lộ thông tin khác) — " +
+                     "bật lại trong ⚙ Cài đặt → Thông báo nếu cần.");
+        }
+        s.SettingsVersion = CurrentVersion;
+        return changed;
+    }
+
+    /// <summary>Lúc mở app: email đang bật nhưng máy chủ SMTP tắt SSL/TLS và chưa cho phép gửi không mã hóa → mọi thông báo email sẽ lỗi.</summary>
+    private static void WarnInsecureEmail(AppSettings s)
+    {
+        if (s.Email.Enabled && NotificationService.SmtpTlsProblem(s.Email) is { } problem)
+            Log.Warn("Thông báo email sẽ không gửi được: " + problem);
     }
 
     /// <summary>

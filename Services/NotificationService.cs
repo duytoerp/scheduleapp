@@ -107,10 +107,7 @@ public static class NotificationService
     {
         if (string.IsNullOrWhiteSpace(e.Host) || string.IsNullOrWhiteSpace(e.To)) throw new InvalidOperationException("Chưa nhập máy chủ SMTP hoặc người nhận.");
         var host = e.Host.Trim();
-        // Không có TLS thì mật khẩu và nội dung đi trên mạng dạng chữ thường — chỉ cho phép với máy chủ ngay trên máy này hoặc khi đã cho phép rõ.
-        if (!e.UseSsl && !e.AllowNoTls && !IsLoopback(host))
-            throw new InvalidOperationException($"Máy chủ SMTP \"{host}\" đang tắt SSL/TLS — mật khẩu và nội dung sẽ gửi không mã hóa. " +
-                                                "Bật SSL/TLS (STARTTLS, cổng 587) trong ⚙ Cài đặt → Thông báo.");
+        if (SmtpTlsProblem(e) is { } problem) throw new InvalidOperationException(problem);
         var password = Credentials.Reveal(e.Password, "mật khẩu email (SMTP)");
         var from = string.IsNullOrWhiteSpace(e.From) ? e.User : e.From;
         using var msg = new MailMessage { From = new MailAddress(from), Subject = "[ScheduleApp] " + Log.Redact(title), Body = Log.Redact(body) };
@@ -122,6 +119,18 @@ public static class NotificationService
         await smtp.SendMailAsync(msg);
     }
 
+    /// <summary>
+    /// Không có TLS thì mật khẩu và nội dung đi trên mạng dạng chữ thường — chỉ cho phép với máy chủ ngay trên máy này hoặc khi đã
+    /// bật "Cho phép gửi không mã hóa". Trả về lý do từ chối, null = được gửi.
+    /// </summary>
+    internal static string? SmtpTlsProblem(EmailSettings e)
+    {
+        var host = e.Host.Trim();
+        if (e.UseSsl || e.AllowNoTls || IsLoopback(host)) return null;
+        return $"Máy chủ SMTP \"{host}\" đang tắt SSL/TLS — mật khẩu và nội dung sẽ gửi không mã hóa. " +
+               "Bật SSL/TLS (STARTTLS, cổng 587) trong ⚙ Cài đặt → Thông báo, hoặc tick \"Cho phép gửi không mã hóa\" nếu là máy chủ nội bộ tin cậy.";
+    }
+
     public static async Task SendWebhookAsync(WebhookSettings w, string title, string body)
     {
         // URL webhook chứa khóa bí mật (lưu mã hóa) — ai có URL là gửi được tin vào kênh.
@@ -129,6 +138,9 @@ public static class NotificationService
         if (url.Length == 0) throw new InvalidOperationException("Chưa nhập URL webhook.");
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
             throw new InvalidOperationException("URL webhook không hợp lệ (cần bắt đầu bằng https://).");
+        // URL chứa khóa gửi tin — qua http thì ai nghe lén mạng cũng lấy được (trừ máy chủ trên chính máy này).
+        if (uri.Scheme == "http" && !IsLoopback(uri.Host))
+            throw new InvalidOperationException($"URL webhook tới {uri.Host} dùng http:// (không mã hóa) — URL chứa khóa gửi tin, hãy dùng https://.");
         var text = Log.Redact($"{title}\n{body}");
         // "text": Teams / Slack / Google Chat · "content": Discord.
         using var resp = await Http.PostAsJsonAsync(uri, new { text, content = text });

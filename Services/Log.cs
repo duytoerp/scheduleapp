@@ -21,11 +21,26 @@ public static class Log
     /// Che giá trị bí mật (mật khẩu, token, khóa API…) mỗi khi nó xuất hiện trong log, lịch sử chạy, kết quả, báo cáo, thông báo.
     /// Che cả dạng đã mã hóa URL (%40…) của nó.
     /// </summary>
-    public static void Mask(string? secret)
+    public static void Mask(string? secret) => Mask(secret, MinLength);
+
+    /// <summary>
+    /// Che giá trị chỉ ĐOÁN là bí mật (header tên kiểu …-key / …-token, biến tên kiểu matKhau / token, giá trị nhập dạng ẩn):
+    /// chỉ che khi dài từ <see cref="MinGuessedLength"/> ký tự — không che "2.0" của X-Api-Key-Version hay "1" của biến passCount,
+    /// vì che chuỗi ngắn sẽ thay mọi chỗ trùng trong log thành ***.
+    /// </summary>
+    public static void MaskGuessed(string? value) => Mask(value, MinGuessedLength);
+
+    /// <summary>Độ dài tối thiểu của bí mật đã biết chắc (kho 🔑 Bí mật, mật khẩu / token trong ⚙ Cài đặt).</summary>
+    internal const int MinLength = 3;
+
+    /// <summary>Độ dài tối thiểu của giá trị chỉ đoán là bí mật (<see cref="MaskGuessed"/>).</summary>
+    internal const int MinGuessedLength = 6;
+
+    private static void Mask(string? secret, int minLength)
     {
         if (string.IsNullOrEmpty(secret)) return;
         secret = secret.Trim();
-        if (secret.Length < 3) return; // quá ngắn — che sẽ làm hỏng log
+        if (secret.Length < minLength) return; // quá ngắn — che sẽ làm hỏng log
         lock (Sync)
         {
             bool added = Masks.Add(secret);

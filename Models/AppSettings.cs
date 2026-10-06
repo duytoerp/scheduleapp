@@ -72,6 +72,12 @@ public sealed class AppSettings
 
     /// <summary>Thư mục kịch bản kiểm thử dùng cho Xuất / Nhập (vd thư mục trong repo git).</summary>
     public string TestFolder { get; set; } = "";
+
+    /// <summary>
+    /// Phiên bản cấu trúc settings.json — để chuyển đổi cài đặt cũ đúng một lần (xem SettingsStore.Upgrade).
+    /// File cũ không có mục này → 0. Mặc định 0 cả khi tạo mới: file chưa có cũng đi qua bước chuyển đổi (không đổi gì).
+    /// </summary>
+    public int SettingsVersion { get; set; }
 }
 
 /// <summary>
@@ -217,8 +223,8 @@ public sealed class EmailSettings
     public bool AttachScreenshot { get; set; }
 
     /// <summary>
-    /// Cho phép gửi qua máy chủ SMTP không có TLS (máy chủ chuyển tiếp nội bộ cũ) — chỉ đặt tay trong settings.json.
-    /// Mặc định bắt buộc SSL/TLS, trừ máy chủ trên chính máy này (localhost).
+    /// Cho phép gửi qua máy chủ SMTP không có TLS (máy chủ chuyển tiếp nội bộ cũ, cổng 25) — ô "Cho phép gửi không mã hóa" trong
+    /// ⚙ Cài đặt → Thông báo. Mặc định bắt buộc SSL/TLS, trừ máy chủ trên chính máy này (localhost).
     /// </summary>
     public bool AllowNoTls { get; set; }
 }

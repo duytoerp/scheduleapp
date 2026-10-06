@@ -51,24 +51,33 @@ internal sealed partial class SecretHider(Func<string, string> hide)
         return text;
     }
 
-    /// <summary>Ẩn cả giá trị — trừ khi giá trị chỉ là chỗ giữ chỗ {{…}} (khi đó ghi nhớ tên biến để ẩn giá trị của biến).</summary>
+    /// <summary>
+    /// Ẩn cả giá trị. Mọi biến {{…}} trong giá trị được ghi nhớ để ẩn giá trị của biến (vd "Basic {{cred}}" → ẩn giá trị của cred);
+    /// giá trị chỉ gồm chỗ giữ chỗ (có thể kèm chữ Bearer / Basic) thì giữ nguyên để AI vẫn đọc được.
+    /// </summary>
     private string Whole(string value)
     {
         if (value.Trim().Length == 0) return value;
-        if (Template().Match(value.Trim()) is { Success: true } t)
+        foreach (Match t in AnyTemplate().Matches(value))
         {
             var name = t.Groups[1].Value.Trim();
             int colon = name.IndexOf(':');
             if (!name.StartsWith("secret:", StringComparison.OrdinalIgnoreCase)) SecretVariables.Add(colon > 0 ? name[..colon].Trim() : name);
-            return value;
         }
+        var rest = AnyTemplate().Replace(value, "").Trim();
+        if (rest.Length < value.Trim().Length && (rest.Length == 0 || SchemeOnly().IsMatch(rest))) return value;
         return hide(value);
     }
+
+    /// <summary>Tên (biến, header, khóa JSON) kiểu mật khẩu / token / khóa bí mật — dùng cả khi chạy để che giá trị của biến có tên như vậy.</summary>
+    internal static bool IsSecretName(string name) => SecretName().IsMatch(name);
 
     /// <summary>Trường của bước chắc chắn chứa mật khẩu / khóa bí mật.</summary>
     private static HashSet<string> SecretFields(ActionStep s)
     {
         var set = new HashSet<string>(StringComparer.Ordinal);
+        // Gán giá trị cố định cho biến tên kiểu mật khẩu / token (matKhau = "…").
+        if (s.Type == StepType.SetVariable && s.VarSource == VarSource.Value && SecretName().IsMatch(s.Variable)) set.Add(nameof(ActionStep.Text));
         if (s.Type == StepType.Dynamics && s.D365Action == D365Action.Login)
         {
             set.Add(nameof(ActionStep.Arguments)); // mật khẩu
@@ -84,22 +93,30 @@ internal sealed partial class SecretHider(Func<string, string> hide)
     [GeneratedRegex(@"pass|pwd|mat_?khau|mật\s*khẩu|secret|token|api_?key|apikey|(?<![a-z])otp|mfa|credential|private", RegexOptions.IgnoreCase)]
     private static partial Regex SecretName();
 
-    [GeneratedRegex(@"^\{\{([^{}]+)\}\}$")]
-    private static partial Regex Template();
+    [GeneratedRegex(@"\{\{([^{}]+)\}\}")]
+    private static partial Regex AnyTemplate();
+
+    [GeneratedRegex(@"^(?i:bearer|basic)$")]
+    private static partial Regex SchemeOnly();
 
     // Header "Tên: giá trị" có tên kiểu Authorization, x-api-key, Cookie, …-token.
     [GeneratedRegex(@"(?im)^(\s*[\w-]*(?:authorization|cookie|key|token|secret|password|signature)[\w-]*\s*:\s*)(.*?)\s*$")]
     private static partial Regex HeaderLine();
 
+    // Tên khóa JSON / tham số kiểu mật khẩu, token, khóa: password, access_token, …; key, api-key, subscription-key, access_key,
+    // subscriptionKey (đuôi key sau dấu _ / - hoặc chữ K hoa — không bắt keyword, monkey).
+    private const string SecretKeyName =
+        @"(?:[\w-]*(?:pass|pwd|secret|token|api_?key|apikey|mat_?khau|matkhau|credential|authorization)[\w-]*|(?:[\w-]*[_-])?key|[\w-]*(?-i:[a-z0-9]Key))";
+
     // "password": "…" trong JSON.
-    [GeneratedRegex(@"(?i)(""[\w-]*(?:pass|pwd|secret|token|api_?key|apikey|mat_?khau|matkhau)[\w-]*""\s*:\s*"")((?:[^""\\]|\\.)*)("")")]
+    [GeneratedRegex(@"(?i)(""" + SecretKeyName + @"""\s*:\s*"")((?:[^""\\]|\\.)*)("")")]
     private static partial Regex JsonPair();
 
     // password=… trong URL / dữ liệu form.
-    [GeneratedRegex(@"(?i)((?:^|[?&;])[\w-]*(?:pass|pwd|secret|token|api_?key|apikey|sig|code|mat_?khau|matkhau)[\w-]*=)([^&\s#""']+)")]
+    [GeneratedRegex(@"(?i)((?:^|[?&;])(?:" + SecretKeyName + @"|[\w-]*(?:sig|code)[\w-]*)=)([^&\s#""']+)")]
     private static partial Regex QueryPair();
 
-    // Bearer / Basic <chuỗi dài>.
-    [GeneratedRegex(@"(?i)\b(Bearer|Basic)\s+([A-Za-z0-9._~+/=-]{8,})")]
+    // Bearer / Basic <chuỗi dài> hoặc Bearer / Basic {{biến}}.
+    [GeneratedRegex(@"(?i)\b(Bearer|Basic)\s+(\{\{[^{}]+\}\}|[A-Za-z0-9._~+/=-]{8,})")]
     private static partial Regex AuthScheme();
 }

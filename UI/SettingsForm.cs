@@ -29,6 +29,15 @@ internal sealed class SettingsForm : BaseForm
     private readonly TextBox _txtHost = new() { Width = 200 };
     private readonly NumericUpDown _numSmtpPort = new() { Minimum = 1, Maximum = 65535, Width = 70 };
     private readonly CheckBox _chkSsl = new() { Text = "SSL/TLS", AutoSize = true };
+    private readonly CheckBox _chkSmtpPlain = new()
+    {
+        Text = "Cho phép gửi không mã hóa (máy chủ nội bộ)", AutoSize = true, Margin = new Padding(22, 0, 3, 3)
+    };
+    private readonly Label _lblSmtpWarning = new()
+    {
+        Text = "⚠ Mật khẩu và nội dung thư đi trên mạng dạng chữ thường — chỉ dùng với máy chủ chuyển tiếp trong mạng nội bộ tin cậy (vd cổng 25).",
+        AutoSize = true, MaximumSize = new Size(680, 0), ForeColor = Theme.Danger, Margin = new Padding(40, 0, 3, 4), Visible = false
+    };
     private readonly TextBox _txtUser = new() { Width = 220 };
     private readonly TextBox _txtPass = new() { Width = 180, UseSystemPasswordChar = true };
     private readonly TextBox _txtFrom = new() { Width = 220 };
@@ -360,6 +369,10 @@ internal sealed class SettingsForm : BaseForm
         testMail.Click += async (_, _) => await TestAsync("Email", () => NotificationService.SendEmailAsync(ReadEmail(), "Thư thử", "Thư thử từ ScheduleApp trên " + Environment.MachineName, null));
         col.Controls.Add(_chkEmail);
         col.Controls.Add(Line(Caption("   Máy chủ SMTP:"), _txtHost, Caption("Cổng:"), _numSmtpPort, _chkSsl));
+        col.Controls.Add(_chkSmtpPlain);
+        col.Controls.Add(_lblSmtpWarning);
+        _chkSsl.CheckedChanged += (_, _) => UpdateSmtpUi();
+        _chkSmtpPlain.CheckedChanged += (_, _) => UpdateSmtpUi();
         col.Controls.Add(Line(Caption("   Tài khoản:"), _txtUser, Caption("Mật khẩu:"), _txtPass));
         col.Controls.Add(Line(Caption("   Người gửi:"), _txtFrom, _chkAttach));
         col.Controls.Add(Line(Caption("   Gửi tới:"), _txtTo, testMail));
@@ -399,6 +412,8 @@ internal sealed class SettingsForm : BaseForm
         _txtFrom.Text = _s.Email.From;
         _txtTo.Text = _s.Email.To;
         _chkAttach.Checked = _s.Email.AttachScreenshot;
+        _chkSmtpPlain.Checked = _s.Email.AllowNoTls;
+        UpdateSmtpUi();
 
         _chkWebhook.Checked = _s.Webhook.Enabled;
         _txtWebhook.Text = _s.Webhook.Url.Length > 0 ? Unchanged : "";
@@ -455,8 +470,16 @@ internal sealed class SettingsForm : BaseForm
         Password = _txtPass.Text == Unchanged ? _s.Email.Password : Protector.Protect(_txtPass.Text),
         From = _txtFrom.Text.Trim(),
         To = _txtTo.Text.Trim(),
-        AttachScreenshot = _chkAttach.Checked
+        AttachScreenshot = _chkAttach.Checked,
+        AllowNoTls = !_chkSsl.Checked && _chkSmtpPlain.Checked
     };
+
+    /// <summary>Ô "Cho phép gửi không mã hóa" chỉ dùng được khi tắt SSL/TLS; tick thì hiện cảnh báo đỏ ngay dưới.</summary>
+    private void UpdateSmtpUi()
+    {
+        _chkSmtpPlain.Enabled = !_chkSsl.Checked;
+        _lblSmtpWarning.Visible = !_chkSsl.Checked && _chkSmtpPlain.Checked;
+    }
 
     private WebhookSettings ReadWebhook() => new()
     {

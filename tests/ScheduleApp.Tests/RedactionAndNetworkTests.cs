@@ -238,6 +238,32 @@ public class RedactionAndNetworkTests
         Assert.True(NotificationService.IsLoopback("127.0.0.1"));
         Assert.True(NotificationService.IsLoopback("[::1]"));
         Assert.False(NotificationService.IsLoopback("smtp.gmail.com"));
+
+        // Chốt chặn: tắt SSL chỉ được với máy chủ trên máy này hoặc khi đã tick "Cho phép gửi không mã hóa".
+        EmailSettings Smtp(string host, bool ssl, bool allow) => new() { Host = host, Port = 25, UseSsl = ssl, AllowNoTls = allow };
+        Assert.Null(NotificationService.SmtpTlsProblem(Smtp("smtp.congty.vn", ssl: true, allow: false)));
+        Assert.Null(NotificationService.SmtpTlsProblem(Smtp("localhost", ssl: false, allow: false)));
+        Assert.Null(NotificationService.SmtpTlsProblem(Smtp(" 127.0.0.1 ", ssl: false, allow: false)));
+        Assert.Null(NotificationService.SmtpTlsProblem(Smtp("relay.congty.local", ssl: false, allow: true)));
+        Assert.Contains("relay.congty.local", NotificationService.SmtpTlsProblem(Smtp("relay.congty.local", ssl: false, allow: false)));
+
+        // Đã cho phép → qua được chốt chặn, lỗi tiếp theo là không kết nối được (không phải lỗi SSL/TLS).
+        var allowed = await Assert.ThrowsAnyAsync<Exception>(() => NotificationService.SendEmailAsync(
+            new EmailSettings { Host = "127.0.0.2", Port = 1, UseSsl = false, AllowNoTls = true, To = "a@x.vn", From = "b@x.vn" }, "t", "b", null));
+        Assert.DoesNotContain("SSL/TLS", allowed.Message);
+    }
+
+    [Fact]
+    public async Task WebhookOverPlainHttpIsRefusedExceptLocalhost()
+    {
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            NotificationService.SendWebhookAsync(new WebhookSettings { Enabled = true, Url = "http://hooks.example.invalid/services/khoa" }, "t", "b"));
+        Assert.Contains("https://", ex.Message);
+        Assert.DoesNotContain("khoa", ex.Message);                       // không nhắc lại đường dẫn chứa khóa
+
+        using var hook = new CaptureServer(_ => (200, "{}", null));
+        await NotificationService.SendWebhookAsync(new WebhookSettings { Enabled = true, Url = hook.BaseUrl + "local" }, "t", "b");
+        Assert.Single(hook.Requests);
     }
 
     [Fact]
@@ -246,9 +272,28 @@ public class RedactionAndNetworkTests
         var fresh = new AppSettings();
         Assert.False(fresh.Telegram.SendScreenshot);
         Assert.False(fresh.Email.AttachScreenshot);
-        var saved = JsonSerializer.Deserialize<AppSettings>("""{"Telegram":{"SendScreenshot":true},"Email":{"AttachScreenshot":true}}""", JsonDefaults.Options)!;
-        Assert.True(saved.Telegram.SendScreenshot);
-        Assert.True(saved.Email.AttachScreenshot);
+
+        // settings.json của bản cũ (chưa có dấu phiên bản) còn bật sẵn ảnh lỗi → tắt đúng một lần.
+        var path = Path.Combine(NewDir(), "settings.json");
+        File.WriteAllText(path, """{"Telegram":{"SendScreenshot":true},"Email":{"AttachScreenshot":true}}""");
+        var old = SettingsStore.Load(path);
+        Assert.True(SettingsStore.Upgrade(old));                        // có đổi → lưu ngay
+        Assert.False(old.Telegram.SendScreenshot);
+        Assert.False(old.Email.AttachScreenshot);
+        Assert.Equal(SettingsStore.CurrentVersion, old.SettingsVersion);
+
+        // Người dùng bật lại sau khi chuyển đổi (file có dấu phiên bản) → giữ nguyên lựa chọn.
+        old.Telegram.SendScreenshot = old.Email.AttachScreenshot = true;
+        File.WriteAllText(path, JsonSerializer.Serialize(old, JsonDefaults.Options));
+        var again = SettingsStore.Load(path);
+        Assert.False(SettingsStore.Upgrade(again));
+        Assert.True(again.Telegram.SendScreenshot);
+        Assert.True(again.Email.AttachScreenshot);
+
+        // Lần đầu dùng / không có gì để tắt → chỉ đặt dấu phiên bản, không cần ghi file ngay.
+        var none = new AppSettings();
+        Assert.False(SettingsStore.Upgrade(none));
+        Assert.Equal(SettingsStore.CurrentVersion, none.SettingsVersion);
     }
 
     // ───────────────────────────── Xác thực chỉ tới đúng máy chủ ─────────────────────────────
@@ -281,6 +326,13 @@ public class RedactionAndNetworkTests
         // Kết nối không xác thực, không header → URL đầy đủ tới máy khác vẫn được (không có gì để lộ).
         var plain = new ApiConnection { Name = "p", BaseUrl = server.BaseUrl };
         Assert.Equal(200, (await ApiClient.SendAsync("GET", $"http://localhost:{port}/free", plain, "", "", 5000, CancellationToken.None)).Status);
+
+        // Cùng tên máy nhưng khác cổng là máy chủ khác.
+        Assert.False(ApiClient.CredentialsAllowed(conn, new Uri($"http://127.0.0.1:{(port == 65535 ? port - 1 : port + 1)}/x"), out var reason));
+        Assert.Contains("khác máy chủ", reason);
+        var tls = new ApiConnection { Name = "t", BaseUrl = "https://api.example.invalid/", Auth = ApiAuthType.Bearer };
+        Assert.False(ApiClient.CredentialsAllowed(tls, new Uri("https://api.example.invalid:8443/x"), out _));
+        Assert.True(ApiClient.CredentialsAllowed(tls, new Uri("https://api.example.invalid:443/x"), out _));   // cổng mặc định ghi rõ
     }
 
     [Fact]
@@ -299,6 +351,15 @@ public class RedactionAndNetworkTests
         Assert.True(ApiClient.CredentialsAllowed(windows, new Uri("http://crmserver/org/api"), out _));
         var windowsFqdn = new ApiConnection { Name = "w2", BaseUrl = "http://crm.contoso.com/", Auth = ApiAuthType.Windows };
         Assert.False(ApiClient.CredentialsAllowed(windowsFqdn, new Uri("http://crm.contoso.com/api"), out _));
+        // Dynamics 365 on-premises trong mạng nội bộ (tên miền nội bộ / IP riêng) qua http: NTLM không gửi mật khẩu → cho phép.
+        foreach (var onPrem in new[] { "http://crm.contoso.local/", "http://10.1.2.3/", "http://192.168.1.20:5555/", "http://crm.corp/" })
+            Assert.True(ApiClient.CredentialsAllowed(new ApiConnection { Name = "op", BaseUrl = onPrem, Auth = ApiAuthType.Windows }, new Uri(onPrem + "api"), out _), onPrem);
+        Assert.False(ApiClient.IsIntranetHost("8.8.8.8"));
+        Assert.False(ApiClient.IsIntranetHost("crm.local.evil.com"));
+        // Bearer qua http tới máy nội bộ vẫn bị chặn (token gửi nguyên văn); kết nối chỉ có header thường thì được.
+        Assert.False(ApiClient.CredentialsAllowed(new ApiConnection { Name = "b", BaseUrl = "http://crm.contoso.local/", Auth = ApiAuthType.Bearer }, new Uri("http://crm.contoso.local/api"), out _));
+        Assert.True(ApiClient.CredentialsAllowed(new ApiConnection { Name = "h", BaseUrl = "http://api.example.invalid/" }, new Uri("http://api.example.invalid/x"), out _,
+            [("OData-Version", "4.0")]));
 
         // Token OAuth không lấy qua http tới máy khác.
         var oauth = new ApiConnection { Name = "o", BaseUrl = "https://api.example.invalid/", Auth = ApiAuthType.OAuthClientCredentials, User = "id", TokenUrl = "http://login.example.invalid/token" };
@@ -385,10 +446,97 @@ public class RedactionAndNetworkTests
         var ex = await Assert.ThrowsAnyAsync<Exception>(() => ApiClient.SendAsync("GET", server.BaseUrl + "big", null, "", "", 10_000, CancellationToken.None));
         Assert.Contains("quá lớn", ex.Message);
 
-        // Bước không đặt thời gian chờ vẫn có hạn (DefaultTimeout) — kiểm bằng hạn ngắn của bước: máy chủ không trả lời.
+        // Hết hạn chờ của bước (máy chủ không trả lời) → báo lỗi rõ. Bước không đặt hạn dùng DefaultTimeout (5 phút, kiểm ở trên) — quá lâu để chạy thật trong test.
         using var silent = new CaptureServer(_ => (0, "", null));
         var t = await Assert.ThrowsAsync<TimeoutException>(() => ApiClient.SendAsync("GET", silent.BaseUrl + "x", null, "", "", 300, CancellationToken.None));
         Assert.Contains("không phản hồi", t.Message);
+    }
+
+    // ───────────────────────────── Bí mật sinh ra lúc chạy, giá trị ngắn, chuyển hướng gửi lại nội dung ─────────────────────────────
+
+    [Fact]
+    public async Task TokenFromApiIsMaskedBeforeItIsLogged()
+    {
+        // POST /login trả token → gán vào biến "token": dòng nhật ký "{{token}} = …" phải đã bị che ngay (trước khi bước sau dùng nó trong header).
+        var token = NewSecret("eyJtok");
+        using var server = new CaptureServer(_ => (200, $"{{\"access_token\":\"{token}\"}}", null));
+        var lines = new List<string>();
+        void OnLog(string l) { lock (lines) lines.Add(l); }
+        Log.Written += OnLog;
+        try
+        {
+            var job = new Job { Steps = [S(StepType.HttpRequest, s => { s.Method = "POST"; s.Target = server.BaseUrl + "login"; s.Variable = "token"; s.Arguments = "access_token"; })] };
+            var (r, ctx) = await RunAsync(job);
+            Assert.True(r.Ok, r.Message);
+            Assert.Equal(token, ctx.Vars["token"]);
+        }
+        finally { Log.Written -= OnLog; }
+        lock (lines)
+        {
+            Assert.DoesNotContain(lines, l => l.Contains(token, StringComparison.Ordinal));
+            Assert.Contains(lines, l => l.Contains("{{token}} = \"***\"", StringComparison.Ordinal));
+        }
+    }
+
+    [Fact]
+    public void ShortGuessedValuesAreNotMaskedEverywhere()
+    {
+        // Biến tên kiểu mật khẩu nhưng giá trị ngắn (passCount = "1", x-api-key-version 2.0) không được che toàn cục — nếu che,
+        // mọi chữ "1" / "2.0" trong nhật ký, lịch sử, báo cáo đều thành ***. Bí mật đã biết chắc (kho bí mật) vẫn che từ 3 ký tự.
+        var ctx = new Services.Engine.FlowContext(new Job(), new FakeUi(), Services.Engine.RunOptions.Default, _ => null, CancellationToken.None);
+        ctx.SetVar("passCount", "17");
+        Assert.Equal("có 17 lần", Log.Redact("có 17 lần"));
+        var longOne = NewSecret("Pw-");
+        ctx.SetVar("matKhau", longOne);
+        Assert.Equal("x *** y", Log.Redact($"x {longOne} y"));
+        Log.MaskGuessed("ab12c");
+        Assert.Equal("ab12c", Log.Redact("ab12c"));
+        Log.Mask("Q7z");
+        Assert.Equal("***", Log.Redact("Q7z"));
+    }
+
+    [Fact]
+    public async Task BodyIsNotResentToAnotherHostOnRedirect()
+    {
+        // POST /login có mật khẩu trong nội dung, máy chủ trả 307 sang máy khác → không gửi lại nội dung.
+        var pw = NewSecret("Body-");
+        using var other = new CaptureServer(_ => (200, "{}", null));
+        using var server = new CaptureServer(q => q.Path == "/login" ? (307, "", new() { ["Location"] = other.BaseUrl + "steal" }) : (200, "{}", null));
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            ApiClient.SendAsync("POST", server.BaseUrl + "login", null, "Content-Type: application/json", $"{{\"password\":\"{pw}\"}}", 5000, CancellationToken.None));
+        Assert.Contains("không gửi lại nội dung", ex.Message);
+        Assert.Empty(other.Requests);
+
+        // Cùng máy chủ → vẫn đi theo 307 như trước.
+        using var same = new CaptureServer(q => q.Path == "/a" ? (307, "", new() { ["Location"] = "/b" }) : (200, "{\"ok\":1}", null));
+        var r = await ApiClient.SendAsync("POST", same.BaseUrl + "a", null, "", "{\"x\":1}", 5000, CancellationToken.None);
+        Assert.Equal(200, r.Status);
+        Assert.Equal("{\"x\":1}", same.Requests.Last().Body);
+    }
+
+    [Fact]
+    public void AiPayloadHidesSecretVariablesHeaderTemplatesAndKeyParameters()
+    {
+        int n = 0;
+        var hider = new SecretHider(_ => $"[[bi-mat-{++n}]]");
+        var lit = NewSecret("Lit-");
+        var setVar = hider.Step(S(StepType.SetVariable, s => { s.Variable = "matKhau"; s.VarSource = VarSource.Value; s.Text = lit; }));
+        Assert.DoesNotContain(lit, setVar.Text);
+
+        var gmaps = NewSecret("AIza");
+        var call = hider.Step(S(StepType.HttpRequest, s =>
+        {
+            s.Target = $"https://maps.example.invalid/geo?key={gmaps}&q=ha-noi&subscription-key={gmaps}x&monkey=chuoi";
+            s.Headers = "Authorization: Basic {{cred}}\nX-Trace: 1";
+        }));
+        Assert.DoesNotContain(gmaps, call.Target);
+        Assert.Contains("monkey=chuoi", call.Target);                        // không nhầm tên có chữ "key" ở giữa
+        Assert.Contains("q=ha-noi", call.Target);
+        Assert.Contains("Authorization: Basic {{cred}}", call.Headers);      // AI vẫn thấy cấu trúc
+        Assert.Contains("cred", hider.SecretVariables);                      // → giá trị biến cred bị ẩn
+        var cred = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("an:" + NewSecret("p")));
+        Assert.DoesNotContain(cred, hider.Variable(new VariableDef { Name = "cred", Value = cred }));
+        Assert.Equal("Hà Nội", hider.Variable(new VariableDef { Name = "thanhPho", Value = "Hà Nội" }));
     }
 
     // ───────────────────────────── Gửi cho AI ─────────────────────────────
