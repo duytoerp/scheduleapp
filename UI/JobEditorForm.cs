@@ -91,6 +91,9 @@ internal sealed class JobEditorForm : BaseForm
     private readonly ComboBox _cboDataSheet = new() { DropDownStyle = ComboBoxStyle.DropDown, Width = 160 };
 
     private readonly FlowDesigner _designer = new() { Dock = DockStyle.Fill };
+    private readonly FlowListView _flowList;
+    private readonly RadioButton _viewGraph = ViewButton("◇ Sơ đồ");
+    private readonly RadioButton _viewList = ViewButton("☰ Danh sách");
     private readonly ToolTip _tips = new();
     private readonly StepToolbox _toolbox = new() { Dock = DockStyle.Fill };
     private readonly Label _lblStepCount = new() { AutoSize = true, ForeColor = UiText.Muted, Margin = new Padding(3, 6, 3, 0) };
@@ -134,6 +137,8 @@ internal sealed class JobEditorForm : BaseForm
         if (job.NeedsApproval) _remoteBlock = RemotePathGate.Block();
         Disposed += (_, _) => _remoteBlock?.Dispose();
 
+        _flowList = new FlowListView(_designer) { Dock = DockStyle.Fill, Visible = false };
+
         SuspendLayout();
         Text = isNew ? "Thêm công việc" : $"Sửa công việc — {job.Name}";
         Size = new Size(1200, 860);
@@ -147,7 +152,56 @@ internal sealed class JobEditorForm : BaseForm
         ResumeLayout(true);
 
         LoadJob();
+        _applyingView = true;
+        (SettingsStore.Current.FlowView == "list" ? _viewList : _viewGraph).Checked = true;
+        _applyingView = false;
     }
+
+    private static RadioButton ViewButton(string text)
+    {
+        var b = new RadioButton
+        {
+            Text = text, Appearance = Appearance.Button, AutoSize = true, FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleCenter,
+            Margin = new Padding(2, 1, 2, 1), Padding = new Padding(8, 0, 8, 0), Cursor = Cursors.Hand
+        };
+        b.FlatAppearance.BorderColor = Theme.Border;
+        b.FlatAppearance.CheckedBackColor = Theme.AccentSoft;
+        return b;
+    }
+
+    private bool _applyingView;
+    private Label _toolboxHeader = null!, _flowHint = null!;
+
+    private const string GraphToolboxText = "Hộp công cụ\nKéo thả lên dây nối trên sơ đồ ➜";
+    private const string ListToolboxText = "Hộp công cụ\nKéo thả vào danh sách ➜";
+
+    private const string GraphHint =
+        "Bấm + trên dây (hoặc Tab) để thêm bước  ·  Kéo nút thả lên dây khác để di chuyển  ·  Nhấp đúp để sửa  ·  " +
+        "Kéo nền để cuộn, Ctrl+lăn chuột thu phóng, phím 1 vừa khung\n" +
+        "←→ chọn, Ctrl+←→ di chuyển, Space bật/tắt, F9 điểm dừng, Ctrl+C/V sao chép, Ctrl+D nhân bản, Delete xóa, Ctrl+Z/Y hoàn tác/làm lại";
+
+    private const string ListHint =
+        "Tab thêm bước sau dòng đang chọn  ·  Nhấp đúp (Enter) để sửa  ·  ▾ / ▸ (hoặc ← / →) thu gọn / mở khối Nếu, Lặp  ·  Chuột phải: menu của bước\n" +
+        "↑↓ chọn, Ctrl+↑↓ di chuyển, Space bật/tắt, F9 điểm dừng, Ctrl+C/V sao chép, Ctrl+D nhân bản, Delete xóa, Ctrl+Z/Y hoàn tác/làm lại";
+
+    /// <summary>Đổi cách nhìn flow (sơ đồ / danh sách) — cùng bước đang chọn; nhớ lựa chọn cho lần mở sau.</summary>
+    private void SetFlowView(bool list)
+    {
+        _flowList.Visible = list;
+        _designer.Visible = !list;
+        _toolboxHeader.Text = list ? ListToolboxText : GraphToolboxText;
+        _flowHint.Text = list ? ListHint : GraphHint;
+        if (!_applyingView)
+        {
+            SettingsStore.Current.FlowView = list ? "list" : "graph";
+            SettingsStore.Save();
+            FocusFlow();
+        }
+        if (_designer.SelectedIndex >= 0) _designer.SelectStep(_designer.SelectedIndex); // cuộn tới bước đang chọn ở cách nhìn mới
+    }
+
+    /// <summary>Đưa bàn phím về cách nhìn flow đang hiện.</summary>
+    private void FocusFlow() => (_flowList.Visible ? (Control)_flowList : _designer).Focus();
 
     private static Label Caption(string text) =>
         new() { Text = text, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 3, 3) };
@@ -186,9 +240,9 @@ internal sealed class JobEditorForm : BaseForm
         };
 
         // Bước: hộp công cụ | khung thiết kế flow | nút lệnh
-        var toolboxHeader = new Label
+        var toolboxHeader = _toolboxHeader = new Label
         {
-            Text = "Hộp công cụ\nKéo thả lên dây nối trên sơ đồ ➜",
+            Text = GraphToolboxText,
             Dock = DockStyle.Top,
             AutoSize = true,
             Padding = new Padding(8, 8, 4, 6),
@@ -206,7 +260,16 @@ internal sealed class JobEditorForm : BaseForm
         toolboxPanel.Controls.Add(toolboxHeader);
 
         var designerPanel = new Panel { Dock = DockStyle.Fill, BorderStyle = BorderStyle.FixedSingle, Margin = new Padding(0, 3, 0, 3) };
+        // Hai cách nhìn cùng một flow (cùng bước đang chọn, menu, phím tắt): sơ đồ kiểu n8n hoặc danh sách thụt lề; nhớ lựa chọn.
+        var viewBar = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = false, BackColor = Color.White, Padding = new Padding(4, 3, 4, 3) };
+        viewBar.Controls.AddRange([new Label { Text = "Cách nhìn:", AutoSize = true, ForeColor = UiText.Muted, Margin = new Padding(3, 7, 3, 3) }, _viewGraph, _viewList]);
+        _tips.SetToolTip(_viewGraph, "Sơ đồ nối từ trái sang phải, nhánh Nếu đúng/sai, vòng Lặp — thu phóng bằng Ctrl + lăn chuột");
+        _tips.SetToolTip(_viewList, "Mỗi bước một dòng, bước trong Nếu / Lặp thụt vào — bấm ▾ / ▸ (hoặc ← / →) để thu gọn / mở khối");
+        _viewGraph.CheckedChanged += (_, _) => { if (_viewGraph.Checked) SetFlowView(list: false); };
+        _viewList.CheckedChanged += (_, _) => { if (_viewList.Checked) SetFlowView(list: true); };
         designerPanel.Controls.Add(_designer);
+        designerPanel.Controls.Add(_flowList);
+        designerPanel.Controls.Add(viewBar);
 
         // Cột nút bên phải: chạy thử lên đầu (luôn thấy), cả cột cuộn được khi cửa sổ thấp.
         var buttons = new FlowLayoutPanel
@@ -266,11 +329,9 @@ internal sealed class JobEditorForm : BaseForm
         stepsLayout.Controls.Add(buttons, 2, 0);
 
         var hints = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, Margin = new Padding(0) };
-        hints.Controls.Add(new Label
+        hints.Controls.Add(_flowHint = new Label
         {
-            Text = "Bấm + trên dây (hoặc Tab) để thêm bước  ·  Kéo nút thả lên dây khác để di chuyển  ·  Nhấp đúp để sửa  ·  " +
-                   "Kéo nền để cuộn, Ctrl+lăn chuột thu phóng, phím 1 vừa khung\n" +
-                   "←→ chọn, Ctrl+←→ di chuyển, Space bật/tắt, F9 điểm dừng, Ctrl+C/V sao chép, Ctrl+D nhân bản, Delete xóa, Ctrl+Z/Y hoàn tác/làm lại",
+            Text = GraphHint,
             AutoSize = true,
             ForeColor = UiText.Muted,
             Margin = new Padding(0, 2, 0, 0)
@@ -1009,7 +1070,7 @@ internal sealed class JobEditorForm : BaseForm
         if (type is StepType.Else or StepType.EndIf or StepType.EndLoop or StepType.BreakLoop or StepType.ContinueLoop)
         {
             _designer.InsertStep(index, ActionStep.CreateDefault(type));
-            _designer.Focus();
+            FocusFlow();
             return;
         }
 
@@ -1020,7 +1081,7 @@ internal sealed class JobEditorForm : BaseForm
         if (editor.Step.Type == StepType.If) _designer.InsertStep(index + 1, ActionStep.CreateDefault(StepType.EndIf));
         if (editor.Step.Type == StepType.Loop) _designer.InsertStep(index + 1, ActionStep.CreateDefault(StepType.EndLoop));
         if (editor.Step.Type is StepType.If or StepType.Loop) _designer.SelectStep(index);
-        _designer.Focus();
+        FocusFlow();
     }
 
     private void EditStep(int index)
@@ -1030,7 +1091,7 @@ internal sealed class JobEditorForm : BaseForm
         using var editor = new StepEditorForm(_job.Steps[index].Clone(), EditorContext());
         if (editor.ShowDialog(this) != DialogResult.OK) return;
         _designer.ReplaceStep(index, editor.Step);
-        _designer.Focus();
+        FocusFlow();
     }
 
     /// <summary>
@@ -1135,7 +1196,7 @@ internal sealed class JobEditorForm : BaseForm
         }
         int index = _designer.SelectedIndex >= 0 ? _designer.SelectedIndex + 1 : _designer.StepCount;
         foreach (var step in steps) _designer.InsertStep(index++, step);
-        _designer.Focus();
+        FocusFlow();
         int asserts = steps.Count(s => s.Type == StepType.Assert);
         MessageBox.Show(this,
             $"Đã thêm {steps.Count} bước ({asserts} bước Kiểm tra).\n\n" +
@@ -1151,7 +1212,7 @@ internal sealed class JobEditorForm : BaseForm
         if (picker.ShowDialog(this) != DialogResult.OK) return Task.CompletedTask;
         int index = _designer.SelectedIndex >= 0 ? _designer.SelectedIndex + 1 : _designer.StepCount;
         foreach (var f in picker.CheckedFields) _designer.InsertStep(index++, Automation.D365Client.AssertFieldStep(f));
-        _designer.Focus();
+        FocusFlow();
         return Task.CompletedTask;
     }
 
@@ -1208,7 +1269,7 @@ internal sealed class JobEditorForm : BaseForm
                 _job.Triggers.Add(t);
             if (result.Triggers.Count > 0) RefreshTriggers();
         }
-        _designer.Focus();
+        FocusFlow();
         Log.Info($"Đã {(result.Mode == FlowGenerator.Mode.Replace ? "tạo" : "chèn")} {result.Steps.Count} bước bằng AI cho \"{_txtName.Text.Trim()}\".");
     }
 
@@ -1248,7 +1309,7 @@ internal sealed class JobEditorForm : BaseForm
         }
         int index = _designer.SelectedIndex >= 0 ? _designer.SelectedIndex + 1 : _designer.StepCount;
         foreach (var step in recorded) _designer.InsertStep(index++, step);
-        _designer.Focus();
+        FocusFlow();
         bool hasSecret = recorded.Any(s => s.Text.Contains("{{secret:"));
         int elementClicks = recorded.Count(s => s.Type == StepType.ClickElement);
         int imageClicks = recorded.Count(s => s is { HasImageAnchor: true, Type: StepType.MouseClick });

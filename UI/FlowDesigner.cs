@@ -187,6 +187,38 @@ internal sealed class FlowDesigner : Control
 
     public int StepCount => _steps.Count;
 
+    // ── Cho cách nhìn khác (danh sách thụt lề) dùng chung dữ liệu, vùng chọn, menu và phím tắt của sơ đồ ──
+
+    /// <summary>Danh sách bước đang hiển thị.</summary>
+    internal IReadOnlyList<ActionStep> Steps => _steps;
+
+    /// <summary>Bước đang chạy (-1 = không), bước lỗi của lần chạy thử (-1 = không), bước đã chạy xong.</summary>
+    internal int RunningIndex => _running;
+    internal int FailedIndex => _failed;
+    internal bool IsDone(int index) => _done.Contains(index);
+
+    /// <summary>Danh sách bước / trạng thái chạy vừa đổi — cách nhìn khác cần vẽ lại.</summary>
+    internal event EventHandler? ViewStateChanged;
+
+    private void NotifyViewState() => ViewStateChanged?.Invoke(this, EventArgs.Empty);
+
+    internal void RequestEdit(int index)
+    {
+        if (index >= 0 && index < _steps.Count) EditRequested?.Invoke(index);
+    }
+
+    internal void RequestAdd(StepType type, int index) => AddRequested?.Invoke(type, Math.Clamp(index, 0, _steps.Count));
+
+    /// <summary>Menu chuột phải của bước đang chọn, mở trên <paramref name="owner"/> (cách nhìn khác).</summary>
+    internal void ShowStepMenu(Control owner, Point location)
+    {
+        if (_selected < 0 || _selected >= _steps.Count) return;
+        _miToggle.Text = _steps[_selected].Enabled ? "Tắt bước  (Space)" : "Bật bước  (Space)";
+        _miBreakpoint.Checked = _steps[_selected].Breakpoint;
+        _miBreakpoint.Enabled = !StepVisuals.IsMarker(_steps[_selected].Type);
+        _menu.Show(owner, location);
+    }
+
     public FlowStructure Structure => _structure;
 
     internal FlowGraphLayout Graph => _layout;
@@ -240,6 +272,7 @@ internal sealed class FlowDesigner : Control
         }
         else _spinTimer.Stop();
         Invalidate();
+        NotifyViewState();
     }
 
     /// <summary>Đánh dấu bước lỗi sau khi chạy thử (-1 = bỏ).</summary>
@@ -252,6 +285,7 @@ internal sealed class FlowDesigner : Control
             if (index < _steps.Count) SelectStep(index);
         }
         Invalidate();
+        NotifyViewState();
     }
 
     /// <summary>Xóa trạng thái lần chạy trước (đang chạy, đã chạy, lỗi) — gọi trước khi chạy thử.</summary>
@@ -262,6 +296,7 @@ internal sealed class FlowDesigner : Control
         _failed = -1;
         _spinTimer.Stop();
         Invalidate();
+        NotifyViewState();
     }
 
     public void SelectStep(int index)
@@ -495,6 +530,7 @@ internal sealed class FlowDesigner : Control
         _structure = FlowStructure.Build(_steps);
         _layout = FlowGraphLayout.Build(_steps, _structure, FlowGraphLayout.Metrics.Scaled(S));
         _hover = _hoverEdge = _dropEdge = -1;
+        NotifyViewState();
     }
 
     // ───────────────────────────── Khung nhìn ─────────────────────────────
@@ -1510,12 +1546,26 @@ internal sealed class FlowDesigner : Control
 
     // ───────────────────────────── Chọn thao tác ─────────────────────────────
 
-    private void OpenPicker(GraphEdge edge, Point clientAnchor)
+    private void OpenPicker(GraphEdge edge, Point clientAnchor) => ShowPicker(edge, this, PointToScreen(clientAnchor));
+
+    private void ShowPicker(GraphEdge edge, Control owner, Point screen)
     {
         if (AddRequested == null) return;
         var picker = new NodePicker(this, edge.NeedsElse ? "Thêm bước vào nhánh \"sai\"" : edge.Kind == GraphEdgeKind.Stub ? "Thêm bước vào cuối" : "Thêm bước vào đây");
         picker.Picked += type => BeginInvoke(new MethodInvoker(() => AddViaEdge(type, edge)));
-        picker.ShowAt(this, PointToScreen(clientAnchor));
+        picker.ShowAt(owner, screen);
+    }
+
+    /// <summary>Tab ở cách nhìn khác: chọn thao tác để chèn sau bước (khối) đang chọn, hộp chọn mở tại <paramref name="screen"/>.</summary>
+    internal void OpenPickerAfterSelected(Control owner, Point screen) => ShowPicker(EdgeAfterSelected(), owner, screen);
+
+    /// <summary>Dây ngay sau bước (hoặc cả khối Nếu / Lặp) đang chọn; chưa chọn gì → dây cuối flow.</summary>
+    private GraphEdge EdgeAfterSelected()
+    {
+        if (_selected < 0) return StubEdge;
+        int index = BlockRange(_selected).End + 1;
+        return _layout.Edges.FirstOrDefault(x => x.InsertIndex == index && !x.NeedsElse && x.Kind != GraphEdgeKind.LoopBack)
+               ?? _layout.Edges.FirstOrDefault(x => x.InsertIndex == index && !x.NeedsElse) ?? StubEdge;
     }
 
     private void OpenPicker(GraphEdge edge, PointF clientAnchor) => OpenPicker(edge, Point.Round(clientAnchor));
@@ -1523,13 +1573,7 @@ internal sealed class FlowDesigner : Control
     /// <summary>Tab: chọn thao tác để chèn ngay sau bước (hoặc khối) đang chọn; chưa chọn gì thì thêm vào cuối.</summary>
     private void OpenPickerAfterSelected()
     {
-        var edge = StubEdge;
-        if (_selected >= 0)
-        {
-            int index = BlockRange(_selected).End + 1;
-            edge = _layout.Edges.FirstOrDefault(x => x.InsertIndex == index && !x.NeedsElse && x.Kind != GraphEdgeKind.LoopBack)
-                ?? _layout.Edges.FirstOrDefault(x => x.InsertIndex == index && !x.NeedsElse) ?? edge;
-        }
+        var edge = EdgeAfterSelected();
         var p = ToScreenPoint(edge.Mid);
         if (!ClientRectangle.Contains(Point.Round(p))) p = new PointF(ClientSize.Width / 3f, ClientSize.Height / 4f);
         OpenPicker(edge, new PointF(p.X + S(14), p.Y));
@@ -1622,6 +1666,30 @@ internal sealed class FlowDesigner : Control
         for (int k = i + delta; k >= 0 && k < _steps.Count; k += delta)
             if (_layout.IsVisible(k)) return k;
         return _selected;
+    }
+
+    /// <summary>
+    /// Phím tắt sửa flow dùng chung với cách nhìn khác (Delete, Space, F9, Ctrl+C/V/D, Ctrl+↑/↓, Tab, Enter) — không gồm di chuyển
+    /// vùng chọn / thu phóng (mỗi cách nhìn tự xử lý). True nếu đã xử lý.
+    /// </summary>
+    internal bool HandleEditKey(KeyEventArgs e)
+    {
+        switch (e.KeyCode)
+        {
+            case Keys.Up or Keys.Left when e.Control: MoveSelected(-1); return true;
+            case Keys.Down or Keys.Right when e.Control: MoveSelected(1); return true;
+            case Keys.Delete: DeleteSelected(); return true;
+            case Keys.Space: ToggleSelected(); return true;
+            case Keys.F9: ToggleBreakpoint(); return true;
+            case Keys.C when e.Control: CopySelected(); return true;
+            case Keys.V when e.Control: Paste(); return true;
+            case Keys.D when e.Control: DuplicateSelected(); return true;
+            case Keys.Tab when !e.Control && !e.Alt && !e.Shift: OpenPickerAfterSelected(); return true;
+            case Keys.Enter:
+                if (_selected >= 0 && !StepVisuals.IsMarker(_steps[_selected].Type)) EditRequested?.Invoke(_selected);
+                return true;
+            default: return false;
+        }
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
