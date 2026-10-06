@@ -179,11 +179,12 @@ internal static class HelpContent
             - **Lịch sử chạy**: mọi lần chạy, kết quả, bước lỗi, ảnh chụp màn hình lúc lỗi, thống kê theo ngày.
             - Kênh thông báo (Telegram, email SMTP, webhook Teams/Slack) khai báo trong **Cài đặt → Thông báo**, có nút *Gửi thử*.
             ## Điều khiển & tạo công việc qua Telegram
-            Bật **Nhận lệnh điều khiển** trong **Cài đặt → Thông báo**, rồi nhắn cho bot (chỉ đúng chat id đã cấu hình):
+            Bật **Nhận lệnh điều khiển** trong **Cài đặt → Thông báo**, rồi nhắn cho bot trong chat riêng (chỉ đúng chat id đã cấu hình, không nhận trong nhóm):
             - `/list` · `/run 3` · `/stop` · `/status` · `/history` · `/screenshot`
             - `/new <mô tả>`: AI dựng công việc mới, nói giờ chạy thì đặt lịch luôn (vd `/new 8h sáng các ngày làm việc mở D:\bao-cao.xlsx, lưu rồi báo tôi`). Bot gửi bản nháp để xem trước.
             - Nhắn thêm để sửa bản nháp → `/ok` lưu (nhóm *Telegram*) · `/ok chay` lưu và chạy ngay · `/huy` bỏ.
-            > Cần khóa Claude trong **Cài đặt → Tích hợp**. Xem kỹ bản nháp trước khi `/ok chay`, nhất là các bước click / gõ phím.
+            - Công việc lưu bằng `/ok` (và công việc bị sửa qua Telegram) ở trạng thái **chờ duyệt**: chỉ chạy sau khi bạn xem và bấm **✔ Duyệt…** trên máy — `/ok chay` cũng chờ duyệt (xem *An toàn, bảo mật & dữ liệu*).
+            > Cần khóa Claude trong **Cài đặt → Tích hợp**.
             """,
             new HelpAction("Lịch sử chạy", CmdHistory), new HelpAction("Cài đặt", CmdSettings)),
 
@@ -490,6 +491,36 @@ internal static class HelpContent
             > Mở báo cáo của lần chạy lỗi để xem ảnh chụp tab trình duyệt ngay lúc lỗi.
             """,
             new HelpAction("Lịch sử chạy", CmdHistory)),
+
+        new("security", "Khác", "An toàn, bảo mật & dữ liệu",
+            "Duyệt công việc từ xa, che bí mật, dữ liệu từ ngoài vào lệnh, sao lưu dữ liệu, giới hạn thời gian chạy, cập nhật an toàn.",
+            """
+            ## Công việc từ nơi khác phải duyệt trước khi chạy
+            - Công việc tạo / sửa qua **Telegram**, **nhập từ file** `.json` hoặc từ **thư mục kịch bản** ở trạng thái *chờ duyệt*: không chạy theo bất kỳ cách nào (lịch, kích hoạt, phím tắt, Telegram `/run`, shortcut, được công việc khác gọi) cho tới khi bạn duyệt trên máy.
+            - Chuột phải công việc → **✔ Duyệt…** (hoặc nút **✔ Duyệt…** trong trình soạn): xem lịch, kích hoạt, biến và từng bước. Bước cần xem kỹ có dấu ⚠; bước gọi công việc khác ghi **tên thật** của công việc sẽ chạy.
+            - Trong lúc xem công việc chờ duyệt, ScheduleApp không mở đường dẫn mạng (`\\máy\thư mục`) có trong đó — mở là Windows tự gửi thông tin đăng nhập tới máy đó.
+            - Nhập thư mục kịch bản: thay đổi **biến môi trường** được hỏi riêng (liệt kê từng biến, mặc định *Không*), vì biến môi trường ghi đè biến của mọi kịch bản chạy với môi trường đó.
+            - Bot Telegram chỉ nhận lệnh trong **chat riêng** với đúng chat id ở **Cài đặt → Thông báo**, không nhận trong nhóm.
+            ## Bí mật
+            - Mật khẩu, token, khóa API, URL webhook, header của kết nối API lưu **mã hóa** (chỉ tài khoản Windows này giải mã được).
+            - Giá trị bí mật được thay bằng `***` trong nhật ký, lịch sử, kết quả, báo cáo kiểm thử, thông báo và khi gửi flow cho AI. Biến tên kiểu `matKhau`, `password`, `token` được che ngay lúc gán (vd token lấy từ API đăng nhập).
+            - Xác thực của kết nối API chỉ gửi tới đúng máy chủ (và cổng) của kết nối, không qua `http://` (trừ đăng nhập Windows tới máy trong mạng nội bộ); API chuyển hướng sang máy khác thì bỏ xác thực và không gửi lại nội dung.
+            - Email SMTP bắt buộc SSL/TLS. Máy chủ chuyển tiếp nội bộ cũ (cổng 25): tick **Cho phép gửi không mã hóa** ở **Cài đặt → Thông báo**. Webhook bắt buộc `https://`.
+            - Ảnh chụp màn hình lúc lỗi mặc định **không** gửi kèm Telegram / email (ảnh cả màn hình có thể lộ thông tin khác) — bật lại ở **Cài đặt → Thông báo** nếu cần.
+            ## Dữ liệu từ ngoài đưa vào lệnh
+            - Bước **Chạy lệnh**: đưa dữ liệu không tin cậy (tên file, nội dung email, ô Excel…) vào lệnh bằng `{{biến:cmd}}` — tự bọc dấu nháy, không thể thoát ra thành lệnh khác. Vd `move {{tep:cmd}} D:\luu`.
+            - Kích hoạt **Có email mới**: nhập người gửi (`ketoan@congty.vn` hoặc `@congty.vn`) và tick **Chỉ nhận email đã xác thực** — tên hiển thị thì ai cũng đặt được. File đính kèm lưu xuống được đánh dấu "tải từ Internet" để Windows / Office cảnh báo khi mở.
+            - Ghi CSV: giá trị bắt đầu bằng `=` `+` `-` `@` được thêm dấu `'` để Excel không chạy nó như công thức.
+            ## Chạy ổn định, không mất dữ liệu
+            - **Dừng nếu chạy quá … phút** (tab *Lỗi · thông báo* của công việc): flow bị treo được dừng, không chặn các công việc khác trong hàng đợi.
+            - Công việc, cài đặt, bí mật, lịch sử chạy được ghi an toàn: bản trước giữ ở file `.bak`; file hỏng được giữ nguyên thành `.broken-…` và ScheduleApp tự dùng bản `.bak`.
+            - Lỗi bất ngờ được ghi ra `logs\crash-….txt` (đã che bí mật) — gửi file này khi cần hỗ trợ. Mỗi file nhật ký tối đa 20 MB, tự xóa sau 30 ngày.
+            ## Cập nhật
+            - Bản mới chỉ tải qua `https://`, phải khớp mã SHA-256, đúng số phiên bản và mới hơn bản đang dùng; bản đang dùng có chữ ký số thì bản mới phải cùng người ký.
+            - Bản mới không khởi động được → tự quay về bản đang dùng (cả dữ liệu) và bỏ qua bản lỗi đó.
+            ! Không duyệt công việc mà bạn không rõ nguồn gốc — chỉ một bước *Gõ phím* cũng có thể mở hộp Run và chạy lệnh bất kỳ.
+            """,
+            new HelpAction("Cài đặt", CmdSettings)),
 
         new("shortcuts", "Khác", "Phím tắt",
             "Các phím tắt trong màn hình chính, trình soạn công việc và khi chạy flow.",

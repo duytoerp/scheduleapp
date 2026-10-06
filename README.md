@@ -55,6 +55,18 @@ Tick **Khởi động cùng Windows** để app tự chạy (ẩn ở khay) khi 
 
 **Tự vừa màn hình từng máy:** cửa sổ lớn (cửa sổ chính, trình soạn công việc, lịch sử, hướng dẫn, AI…) chiếm cùng một tỉ lệ màn hình trên mọi máy — laptop 1366×768 không bị tràn, màn 2K/4K không bị bé; mọi hộp thoại tự thu cho vừa khi màn hình nhỏ; chữ và nút theo độ phóng (DPI) của từng màn hình, kéo sang màn hình khác tự đổi. Vị trí / kích thước cửa sổ chính, trình soạn, lịch sử được nhớ theo tỉ lệ màn hình (không theo pixel) nên chép dữ liệu sang máy có độ phân giải khác vẫn đúng.
 
+## An toàn, bảo mật & dữ liệu
+
+**Công việc từ nơi khác phải duyệt.** Công việc tạo / sửa qua Telegram, nhập từ file `.json` hoặc từ thư mục kịch bản ở trạng thái *chờ duyệt*: không chạy theo bất kỳ cách nào (lịch, kích hoạt, phím tắt, `/run`, shortcut, được công việc khác gọi) cho tới khi bạn chuột phải → **✔ Duyệt…** và xem từng bước (bước cần xem kỹ có ⚠, bước gọi công việc khác ghi tên thật của công việc sẽ chạy). Lúc xem công việc chờ duyệt, ScheduleApp không mở đường dẫn mạng có trong đó. Nhập thư mục kịch bản: thay đổi biến môi trường được hỏi riêng (mặc định *Không*). Bot Telegram chỉ nhận lệnh trong chat riêng với đúng chat id.
+
+**Bí mật.** Mật khẩu, token, khóa API, URL webhook, header kết nối API lưu mã hóa (DPAPI); giá trị bí mật thành `***` trong nhật ký, lịch sử, báo cáo, thông báo và khi gửi flow cho AI — biến tên kiểu `matKhau` / `token` được che ngay lúc gán. Xác thực của kết nối API chỉ gửi tới đúng máy chủ và cổng, không qua `http://` (trừ đăng nhập Windows tới máy nội bộ), chuyển hướng sang máy khác thì bỏ xác thực. SMTP bắt buộc SSL/TLS (máy chủ nội bộ cũ: tick *Cho phép gửi không mã hóa*), webhook bắt buộc `https://`. Ảnh chụp lỗi mặc định không gửi kèm Telegram / email.
+
+**Dữ liệu từ ngoài vào lệnh.** Bước *Chạy lệnh* dùng `{{biến:cmd}}` cho dữ liệu không tin cậy (vd `move {{tep:cmd}} D:\luu`) — tự bọc dấu nháy, không thoát ra thành lệnh khác. Kích hoạt *Có email mới*: nhập người gửi và tick *Chỉ nhận email đã xác thực* (DMARC/DKIM); file đính kèm được đánh dấu "tải từ Internet". Ghi CSV: giá trị bắt đầu bằng `= + - @` được thêm `'` để Excel không chạy như công thức.
+
+**Chạy ổn định, không mất dữ liệu.** *Dừng nếu chạy quá … phút* (tab *Lỗi · thông báo*) dừng flow treo, không chặn hàng đợi. Công việc / cài đặt / bí mật / lịch sử ghi an toàn với bản `.bak`; file hỏng được giữ nguyên thành `.broken-…` và tự dùng bản `.bak`. Lỗi bất ngờ ghi ra `logs\crash-….txt` (đã che bí mật). Nhật ký tối đa 20 MB mỗi file, tự xóa sau 30 ngày. Lịch chạy so giờ theo UTC: đổi giờ mùa hè, đổi múi giờ, đồng hồ bị chỉnh lùi / tới không làm chạy lặp hay chạy bù nhầm.
+
+**Cập nhật.** Bản mới chỉ tải qua `https://`, phải khớp SHA-256, đúng số phiên bản và mới hơn; bản đang dùng có chữ ký số thì bản mới phải cùng người ký. Bản mới không khởi động được → tự quay về bản cũ (cả dữ liệu) và bỏ qua bản đó.
+
 ## Ví dụ mẫu
 
 Nút **Mẫu có sẵn…** mở kho mẫu nhúng trong ứng dụng; ba file trong [Samples/](Samples/) cũng nhập được bằng **Thêm → Nhập công việc…**. Mẫu có lịch hoặc trình kích hoạt được tắt sẵn — xem lại rồi tick để bật.
