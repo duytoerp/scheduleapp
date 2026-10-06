@@ -49,7 +49,7 @@ internal static class BrowserProfiles
     };
 
     /// <summary>Thư mục dữ liệu của hồ sơ (trống = hồ sơ mặc định của ScheduleApp). Có thể chuyển hồ sơ cũ (chép qua ổ mạng) — không gọi trên luồng giao diện.</summary>
-    public static string Dir(string browser, string profile) => Locate(DirName(browser, profile), Root, LegacyRoot);
+    public static string Dir(string browser, string profile, CancellationToken ct = default) => Locate(DirName(browser, profile), Root, LegacyRoot, ct);
 
     /// <summary>Hồ sơ đã có (ở chỗ mới hoặc chỗ cũ chưa chuyển) — chỉ kiểm tra, không chuyển hồ sơ, gọi trên luồng giao diện được.</summary>
     public static bool Exists(string browser, string profile) => Exists(DirName(browser, profile), Root, LegacyRoot);
@@ -68,9 +68,9 @@ internal static class BrowserProfiles
 
     /// <summary>
     /// Thư mục hồ sơ <paramref name="name"/> trong <paramref name="root"/>; bản cũ còn ở <paramref name="legacyRoot"/> được chuyển sang ở lần dùng đầu tiên.
-    /// Trình duyệt đang mở hồ sơ đó → tạm dùng chỗ cũ, lần sau thử lại; lỗi ổ đĩa → dùng chỗ cũ tới hết phiên.
+    /// Trình duyệt đang mở hồ sơ đó → tạm dùng chỗ cũ, lần sau thử lại; lỗi ổ đĩa → dùng chỗ cũ tới hết phiên; hủy (dừng flow) → bỏ bản chép dở, lần sau chép lại.
     /// </summary>
-    internal static string Locate(string name, string root, string legacyRoot)
+    internal static string Locate(string name, string root, string legacyRoot, CancellationToken ct = default)
     {
         EnsureRoot(root);
         var target = Path.Combine(root, name);
@@ -81,9 +81,10 @@ internal static class BrowserProfiles
             if (FailedMoves.Contains(legacy)) return legacy;
         }
         if (InUse(legacy)) return legacy;
+        ct.ThrowIfCancellationRequested();
         try
         {
-            MoveProfile(legacy, target);
+            MoveProfile(legacy, target, ct);
             Log.Info($"Đã chuyển hồ sơ trình duyệt \"{name}\" sang {root} (chỉ tài khoản Windows này đọc được).");
             return target;
         }
@@ -95,22 +96,25 @@ internal static class BrowserProfiles
         }
     }
 
-    /// <summary>Chuyển thư mục hồ sơ: cùng ổ đĩa → đổi chỗ; khác ổ (vd %AppData% chuyển hướng lên ổ mạng) → chép rồi xóa bản cũ.</summary>
-    internal static void MoveProfile(string source, string target)
+    /// <summary>
+    /// Chuyển thư mục hồ sơ: cùng ổ đĩa → đổi chỗ; khác ổ (vd %AppData% chuyển hướng lên ổ mạng) → chép (bỏ bộ nhớ đệm) rồi xóa bản cũ.
+    /// </summary>
+    internal static void MoveProfile(string source, string target, CancellationToken ct = default)
     {
         if (string.Equals(Path.GetPathRoot(Path.GetFullPath(source)), Path.GetPathRoot(Path.GetFullPath(target)), StringComparison.OrdinalIgnoreCase))
             System.IO.Directory.Move(source, target);
         else
-            CopyThenDelete(source, target);
+            CopyThenDelete(source, target, ct);
         RestrictToCurrentUser(target);
     }
 
-    internal static void CopyThenDelete(string source, string target)
+    internal static void CopyThenDelete(string source, string target, CancellationToken ct = default)
     {
         var tmp = target + ".tmp-" + Guid.NewGuid().ToString("N")[..8];
         try
         {
-            CopyAll(source, tmp);
+            CopyAll(source, tmp, "", ct);
+            ct.ThrowIfCancellationRequested();
             System.IO.Directory.Move(tmp, target);
         }
         catch
@@ -126,16 +130,35 @@ internal static class BrowserProfiles
         }
     }
 
-    private static void CopyAll(string src, string dst)
+    /// <summary>
+    /// Chép cả thư mục dữ liệu (User Data) trừ bộ nhớ đệm và phiên đang mở (<see cref="SkipDirs"/>, <see cref="SkipFiles"/>) — các mục này
+    /// nằm ngay trong thư mục dữ liệu hoặc trong thư mục hồ sơ ("Default\Cache", "Default\Service Worker\CacheStorage"…).
+    /// </summary>
+    private static void CopyAll(string src, string dst, string relative, CancellationToken ct)
     {
         System.IO.Directory.CreateDirectory(dst);
+        bool profileLevel = relative.Length == 0 || !relative.Contains(Path.DirectorySeparatorChar);
         foreach (var file in System.IO.Directory.GetFiles(src))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (profileLevel && SkipFiles.Contains(Path.GetFileName(file))) continue;
             File.Copy(file, Path.Combine(dst, Path.GetFileName(file)));
+        }
         foreach (var dir in System.IO.Directory.GetDirectories(src))
         {
+            var rel = Path.Combine(relative, Path.GetFileName(dir));
+            if (IsSkippedDir(rel)) continue;
             if ((File.GetAttributes(dir) & FileAttributes.ReparsePoint) != 0) continue;
-            CopyAll(dir, Path.Combine(dst, Path.GetFileName(dir)));
+            CopyAll(dir, Path.Combine(dst, Path.GetFileName(dir)), rel, ct);
         }
+    }
+
+    /// <summary>Thư mục <paramref name="relative"/> (tính từ User Data) là bộ nhớ đệm: tên trong <see cref="SkipDirs"/> ngay trong User Data hoặc trong một thư mục hồ sơ.</summary>
+    private static bool IsSkippedDir(string relative)
+    {
+        if (SkipDirs.Contains(relative)) return true;
+        int sep = relative.IndexOf(Path.DirectorySeparatorChar);
+        return sep > 0 && SkipDirs.Contains(relative[(sep + 1)..]);
     }
 
     private static readonly HashSet<string> PreparedRoots = new(StringComparer.OrdinalIgnoreCase);

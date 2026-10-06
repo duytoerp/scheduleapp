@@ -159,6 +159,21 @@ public class BrowserAndRecorderSafetyTests
         Assert.False(BrowserClient.UsesProfile($"evil.exe --x=\"--user-data-dir={Path.GetDirectoryName(dir)}\"", dir));
     }
 
+    [Fact]
+    public void FixedPortOfOldVersionIsReadFromCommandLine()
+    {
+        // Trình duyệt do phiên bản cũ mở với cổng cố định (không có DevToolsActivePort) → đọc cổng từ dòng lệnh để dùng tiếp.
+        Assert.Equal(9222, BrowserClient.CommandLinePort("\"C:\\Chrome\\chrome.exe\" --remote-debugging-port=9222 --user-data-dir=C:\\p"));
+        Assert.Equal(9333, BrowserClient.CommandLinePort("chrome.exe \"--remote-debugging-port=9333\" --no-first-run"));
+        Assert.Equal(9222, BrowserClient.CommandLinePort("chrome.exe --remote-debugging-port=9222 --REMOTE-DEBUGGING-PORT=9222"));
+        Assert.Null(BrowserClient.CommandLinePort("chrome.exe --remote-debugging-port=0 --user-data-dir=C:\\p"));   // cổng ngẫu nhiên → DevToolsActivePort
+        Assert.Null(BrowserClient.CommandLinePort("chrome.exe --user-data-dir=C:\\p"));
+        Assert.Null(BrowserClient.CommandLinePort("chrome.exe --remote-debugging-port=9222 --remote-debugging-port=9333"));
+        Assert.Null(BrowserClient.CommandLinePort("chrome.exe --remote-debugging-port=70000"));
+        Assert.Null(BrowserClient.CommandLinePort("chrome.exe --remote-debugging-port=9222x"));
+        Assert.Null(BrowserClient.CommandLinePort("chrome.exe --x--remote-debugging-port=9222"));
+    }
+
     // ───────────────────────────── URL & tham số dòng lệnh ─────────────────────────────
 
     [Theory]
@@ -172,6 +187,10 @@ public class BrowserAndRecorderSafetyTests
     [InlineData("-x", "https://-x")]
     [InlineData("https://x/\" --renderer-cmd-prefix=calc \"", "https://x/%22%20--renderer-cmd-prefix=calc%20%22")]
     [InlineData("https://cty.crm5.dynamics.com/main.aspx?pagetype=entitylist&etn=account", "https://cty.crm5.dynamics.com/main.aspx?pagetype=entitylist&etn=account")]
+    [InlineData("file://localhost/C:/a.html", "file://localhost/C:/a.html")]
+    [InlineData("chrome://downloads", "chrome://downloads")]
+    [InlineData("edge://settings/privacy", "edge://settings/privacy")]
+    [InlineData("about:version", "about:version")]
     public void UrlIsNormalizedToSafeForm(string input, string expected)
     {
         var url = BrowserClient.NormalizeUrl(input);
@@ -184,8 +203,9 @@ public class BrowserAndRecorderSafetyTests
     [InlineData("javascript:alert(document.cookie)")]
     [InlineData("JavaScript:alert(1)")]
     [InlineData("data:text/html,<script>alert(1)</script>")]
-    [InlineData("chrome://settings")]
-    [InlineData("edge://flags")]
+    [InlineData("chrome:javascript:alert(1)")]
+    [InlineData("edge://settings/ --renderer-cmd-prefix=calc")]
+    [InlineData("chrome-extension://abc/x.html")]
     [InlineData("view-source:https://x")]
     [InlineData("vbscript:msgbox")]
     [InlineData("ms-settings:privacy")]
@@ -196,6 +216,20 @@ public class BrowserAndRecorderSafetyTests
     {
         var ex = Assert.Throws<InvalidOperationException>(() => BrowserClient.NormalizeUrl(input));
         Assert.False(string.IsNullOrWhiteSpace(ex.Message));
+    }
+
+    [Theory]
+    [InlineData("file://may-chu/chia-se/a.html")]
+    [InlineData("file:////may-chu/chia-se/a.html")]
+    [InlineData("file://///may-chu/chia-se/a.html")]
+    [InlineData(@"file:\\may-chu\chia-se\a.html")]
+    [InlineData("file:///%5C%5Cmay-chu/chia-se/a.html")]
+    [InlineData("FILE://10.0.0.5/c$/a.html")]
+    public void NetworkFileUrlsAreRejected(string input)
+    {
+        // Mở thư mục mạng (SMB) làm Windows tự gửi thông tin đăng nhập (NTLM) tới máy đó.
+        var ex = Assert.Throws<InvalidOperationException>(() => BrowserClient.NormalizeUrl(input));
+        Assert.Contains("thư mục mạng", ex.Message);
     }
 
     [Fact]
@@ -359,17 +393,59 @@ public class BrowserAndRecorderSafetyTests
         Directory.CreateDirectory(Path.Combine(source, "Default", "Network"));
         File.WriteAllText(Path.Combine(source, "Default", "Network", "Cookies"), "cookie");
         File.WriteAllText(Path.Combine(source, "Local State"), "{}");
+        // Bộ nhớ đệm (tự tạo lại, chiếm phần lớn dung lượng) và phiên đang mở không cần chép qua ổ mạng.
+        foreach (var cache in (string[])[@"Default\Cache\Cache_Data", @"Default\Code Cache\js", @"Default\Service Worker\CacheStorage\x",
+                     @"Default\Service Worker\ScriptCache", @"Default\Sessions", "GrShaderCache", "Crashpad"])
+        {
+            Directory.CreateDirectory(Path.Combine(source, cache));
+            File.WriteAllText(Path.Combine(source, cache, "f_000001"), "rac");
+        }
+        File.WriteAllText(Path.Combine(source, "Default", "Current Session"), "tab");
+        File.WriteAllText(Path.Combine(source, "Default", "Service Worker", "Database"), "sw");
         var target = Path.Combine(TestSupport.NewDir(), "browser-chrome-Cu");
 
         BrowserProfiles.CopyThenDelete(source, target);
         Assert.False(Directory.Exists(source));
         Assert.Equal("cookie", File.ReadAllText(Path.Combine(target, "Default", "Network", "Cookies")));
+        Assert.Equal("sw", File.ReadAllText(Path.Combine(target, "Default", "Service Worker", "Database")));
+        foreach (var skipped in (string[])[@"Default\Cache", @"Default\Code Cache", @"Default\Service Worker\CacheStorage",
+                     @"Default\Service Worker\ScriptCache", @"Default\Sessions", "GrShaderCache", "Crashpad"])
+            Assert.False(Directory.Exists(Path.Combine(target, skipped)), skipped);
+        Assert.False(File.Exists(Path.Combine(target, "Default", "Current Session")));
         Assert.Empty(Directory.GetDirectories(Path.GetDirectoryName(target)!, "*.tmp-*"));
+    }
+
+    [Fact]
+    public void ProfileMoveCanBeCancelled()
+    {
+        var legacyRoot = TestSupport.NewDir();
+        var root = Path.Combine(TestSupport.NewDir(), "Local", "BrowserProfiles");
+        var legacy = Path.Combine(legacyRoot, "browser-chrome-Huy");
+        Directory.CreateDirectory(Path.Combine(legacy, "Default"));
+        File.WriteAllText(Path.Combine(legacy, "Default", "Cookies"), "cookie");
+        var target = Path.Combine(root, "browser-chrome-Huy");
+
+        // Dừng flow lúc đang chép → bỏ bản chép dở, giữ nguyên hồ sơ cũ.
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        Assert.ThrowsAny<OperationCanceledException>(() => BrowserProfiles.CopyThenDelete(legacy, target, cts.Token));
+        Assert.True(File.Exists(Path.Combine(legacy, "Default", "Cookies")));
+        Assert.False(Directory.Exists(target));
+        Assert.Empty(Directory.GetDirectories(root, "*.tmp-*"));
+
+        // Hủy không bị nhớ là "chuyển lỗi": lần dùng sau vẫn chuyển được.
+        Assert.ThrowsAny<OperationCanceledException>(() => BrowserProfiles.Locate("browser-chrome-Huy", root, legacyRoot, cts.Token));
+        Assert.Equal(target, BrowserProfiles.Locate("browser-chrome-Huy", root, legacyRoot));
+        Assert.Equal("cookie", File.ReadAllText(Path.Combine(target, "Default", "Cookies")));
     }
 
     // ───────────────────────────── Ô mật khẩu khi ghi macro ─────────────────────────────
 
-    private static List<ActionStep> Record(Func<IntPtr, FieldKind> field, Func<Task<bool?>> probe, params string[] keys)
+    /// <summary>Kết quả hỏi UI Automation (đã xong ngay): null = không xác định được.</summary>
+    private static Task<FieldProbe?> P(bool? isPassword, string element = "o1") =>
+        Task.FromResult(isPassword is bool b ? new FieldProbe(b, element) : null);
+
+    private static List<ActionStep> Record(Func<IntPtr, FieldKind> field, Func<Task<FieldProbe?>> probe, params string[] keys)
     {
         using var recorder = new MacroRecorder { FocusedField = field, PasswordProbe = probe };
         long tick = Environment.TickCount64;
@@ -377,45 +453,91 @@ public class BrowserAndRecorderSafetyTests
         return recorder.Stop();
     }
 
-    private static string Typed(Func<IntPtr, FieldKind> field, Func<Task<bool?>> probe) =>
+    private static string Typed(Func<IntPtr, FieldKind> field, Func<Task<FieldProbe?>> probe) =>
         Assert.Single(Record(field, probe, "S", "3", "c", "!")).Text;
 
     [Fact]
     public void PasswordDecidedSynchronouslyNeverStoresLiteral()
     {
         int probes = 0;
-        Task<bool?> Probe(bool? result) { probes++; return Task.FromResult(result); }
+        Task<FieldProbe?> Probe(bool? result) { probes++; return P(result); }
 
         // Ô Edit có ES_PASSWORD → biết ngay, không cần hỏi UI Automation.
         Assert.Equal(PasswordPlaceholder, Typed(_ => FieldKind.Password, () => Probe(false)));
         Assert.Equal("S3c!", Typed(_ => FieldKind.Text, () => Probe(true)));
         Assert.Equal(0, probes);
 
-        // Chưa rõ → chỉ khi UI Automation trả lời chắc chắn "không phải mật khẩu" mới lưu chữ thật.
+        // Chưa rõ → chỉ khi UI Automation đã trả lời chắc chắn "không phải mật khẩu" mới lưu chữ thật.
         Assert.Equal("S3c!", Typed(_ => FieldKind.Unknown, () => Probe(false)));
         Assert.Equal(PasswordPlaceholder, Typed(_ => FieldKind.Unknown, () => Probe(true)));
         Assert.Equal(PasswordPlaceholder, Typed(_ => FieldKind.Unknown, () => Probe(null)));
-        Assert.Equal(PasswordPlaceholder, Typed(_ => FieldKind.Unknown, () => Task.FromException<bool?>(new InvalidOperationException())));
+        Assert.Equal(PasswordPlaceholder, Typed(_ => FieldKind.Unknown, () => Task.FromException<FieldProbe?>(new InvalidOperationException())));
         Assert.Equal(PasswordPlaceholder, Typed(_ => FieldKind.Unknown, () => throw new COMException()));
-        Assert.Equal(3, probes);   // một lần cho mỗi đoạn gõ, không phải mỗi phím
+        Assert.Equal(3, probes);   // một lần cho mỗi đoạn gõ ngắn, không phải mỗi phím
     }
 
     [Fact]
-    public void PendingPasswordCheckIsResolvedBeforeCommit()
+    public async Task LateProbeResultNeverRevealsText()
     {
-        // Kết quả tới chậm (sau khi bấm dừng) vẫn được chờ.
-        var late = new TaskCompletionSource<bool?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _ = Task.Delay(300).ContinueWith(_ => late.SetResult(false));
-        Assert.Equal("S3c!", Typed(_ => FieldKind.Unknown, () => late.Task));
+        // Kết quả tới sau khi đoạn gõ đã thành bước (người dùng đã Tab / Enter / click sang ô khác) có thể là của ô khác → không dùng,
+        // dù nó nói "không phải mật khẩu": chữ gõ giữ nguyên {{secret:MatKhau}}, không bao giờ bị thay lại bằng chữ thật.
+        var late = new TaskCompletionSource<FieldProbe?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var steps = Record(_ => FieldKind.Unknown, () => late.Task, "S", "3", "c", "!");
+        late.SetResult(new FieldProbe(false, "o-khac"));
+        await Task.Delay(300);
+        Assert.Equal(PasswordPlaceholder, Assert.Single(steps).Text);
 
-        var latePassword = new TaskCompletionSource<bool?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _ = Task.Delay(300).ContinueWith(_ => latePassword.SetResult(true));
-        Assert.Equal(PasswordPlaceholder, Typed(_ => FieldKind.Unknown, () => latePassword.Task));
-
-        // Không bao giờ có kết quả → hết thời gian chờ thì giữ bí mật, không lưu chữ thật.
+        // Không bao giờ có kết quả → dừng ghi ngay, giữ bí mật.
         var sw = Stopwatch.StartNew();
-        Assert.Equal(PasswordPlaceholder, Typed(_ => FieldKind.Unknown, () => new TaskCompletionSource<bool?>().Task));
-        Assert.InRange(sw.ElapsedMilliseconds, 0, 15_000);
+        Assert.Equal(PasswordPlaceholder, Typed(_ => FieldKind.Unknown, () => new TaskCompletionSource<FieldProbe?>().Task));
+        Assert.InRange(sw.ElapsedMilliseconds, 0, 3_000);
+    }
+
+    [Fact]
+    public void ProbesSeeingTwoElementsSplitTheStepAndKeepTheSecret()
+    {
+        // Trang web tự nhảy tiêu điểm sang ô kế tiếp trong lúc gõ (cả hai đều là ô "chưa rõ"): hai lần hỏi thấy hai phần tử khác nhau
+        // → tách bước; đoạn gõ có hai phần tử không biết chữ nào vào ô nào → giữ bí mật.
+        var answers = new Queue<Task<FieldProbe?>>([P(false, "ten"), P(false, "mat-khau-moi"), P(false, "ghi-chu")]);
+        using var recorder = new MacroRecorder { FocusedField = _ => FieldKind.Unknown, PasswordProbe = () => answers.Dequeue() };
+        long t = Environment.TickCount64;
+        recorder.AppendText("x", IntPtr.Zero, t);
+        recorder.AppendText("y", IntPtr.Zero, t + 400);   // gõ lâu → hỏi lại, lần này thấy phần tử khác
+        recorder.AppendText("z", IntPtr.Zero, t + 800);   // đã biết tiêu điểm đổi → bước mới
+        var typed = recorder.Stop().Where(s => s.Type == StepType.TypeText).Select(s => s.Text).ToList();
+        Assert.Equal([PasswordPlaceholder, "z"], typed);
+    }
+
+    [Fact]
+    public void StaleAnswerAboutThePreviousFieldKeepsTheSecret()
+    {
+        // Sau Tab, UI Automation của trình duyệt còn trả lời về ô tên đăng nhập (không phải mật khẩu) trong khi chữ đang vào ô mật khẩu
+        // → phần tử trùng với đoạn gõ trước → không tin, giữ bí mật. Ô thật sự mới thì được lưu chữ thường.
+        var answers = new Queue<Task<FieldProbe?>>([P(false, "ten"), P(false, "ten"), P(false, "tim-kiem")]);
+        using var recorder = new MacroRecorder { FocusedField = _ => FieldKind.Unknown, PasswordProbe = () => answers.Dequeue() };
+        long t = Environment.TickCount64;
+        recorder.AppendText("an", IntPtr.Zero, t);
+        recorder.FlushTyped();                           // Tab
+        recorder.AppendText("Pw!", IntPtr.Zero, t + 100);
+        recorder.FlushTyped();                           // Enter
+        recorder.AppendText("hoa don", IntPtr.Zero, t + 200);
+        var typed = recorder.Stop().Where(s => s.Type == StepType.TypeText).Select(s => s.Text).ToList();
+        Assert.Equal(["an", PasswordPlaceholder, "hoa don"], typed);
+    }
+
+    [Fact]
+    public void PlainTextNeedsOneConsistentNonPasswordAnswer()
+    {
+        static Task<FieldProbe?> Pending() => new TaskCompletionSource<FieldProbe?>().Task;
+        Assert.Equal("a", PlainTextElement([P(false, "a")], null));
+        Assert.Equal("a", PlainTextElement([P(false, "a"), Pending()], null));          // lần chưa xong bị bỏ qua
+        Assert.Null(PlainTextElement([Pending()], null));                               // chưa có câu trả lời nào
+        Assert.Null(PlainTextElement([P(false, "a"), P(true, "a")], null));
+        Assert.Null(PlainTextElement([P(false, "a"), P(false, "b")], null));
+        Assert.Null(PlainTextElement([P(false, "a"), P(null)], null));
+        Assert.Null(PlainTextElement([P(false, "a")], [P(false, "a")]));                // trùng ô của đoạn trước
+        Assert.Null(PlainTextElement([P(false, "b")], [Pending()]));                     // đoạn trước không biết là ô nào
+        Assert.Equal("b", PlainTextElement([P(false, "b")], [P(false, "a")]));
     }
 
     [Fact]
@@ -423,7 +545,7 @@ public class BrowserAndRecorderSafetyTests
     {
         // Gõ tên đăng nhập rồi tiêu điểm chuyển sang ô mật khẩu (không qua Tab / click) → hai bước, chỉ bước đầu có chữ thật.
         var fields = new Queue<FieldKind>([FieldKind.Text, FieldKind.Text, FieldKind.Password, FieldKind.Password, FieldKind.Text]);
-        var steps = Record(_ => fields.Dequeue(), () => Task.FromResult<bool?>(false), "a", "n", "p", "w", "x");
+        var steps = Record(_ => fields.Dequeue(), () => P(false), "a", "n", "p", "w", "x");
         Assert.Equal(new[] { "an", PasswordPlaceholder, "x" }, steps.Where(s => s.Type == StepType.TypeText).Select(s => s.Text));
         Assert.DoesNotContain(steps, s => s.Text.Contains("pw"));
     }
@@ -432,10 +554,10 @@ public class BrowserAndRecorderSafetyTests
     public void MovingFromTextIntoUnknownFieldStartsNewStep()
     {
         // Ô Edit thường rồi tiêu điểm tự chuyển sang ô chưa rõ (ô mật khẩu WPF / trang web, không qua Tab / click):
-        // phần gõ sau không được gộp vào bước chữ thường, mà thành bước riêng chờ UI Automation trả lời.
+        // phần gõ sau không được gộp vào bước chữ thường, mà thành bước riêng hỏi UI Automation.
         int probes = 0;
         var fields = new Queue<FieldKind>([FieldKind.Text, FieldKind.Text, FieldKind.Unknown, FieldKind.Unknown, FieldKind.Unknown]);
-        var steps = Record(_ => fields.Dequeue(), () => { probes++; return Task.FromResult<bool?>(true); }, "a", "n", "p", "w", "d");
+        var steps = Record(_ => fields.Dequeue(), () => { probes++; return P(true); }, "a", "n", "p", "w", "d");
         Assert.Equal(new[] { "an", PasswordPlaceholder }, steps.Where(s => s.Type == StepType.TypeText).Select(s => s.Text));
         Assert.DoesNotContain(steps, s => s.Text.Contains("pwd"));
         Assert.Equal(1, probes);

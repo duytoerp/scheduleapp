@@ -84,9 +84,9 @@ internal sealed class MacroRecorder : IDisposable
         Unhook();
         _pressed?.Shot?.Dispose();
         _pressed = null;
-        // Chữ đang gõ dở thành bước trước khi chờ, để lần kiểm tra ô mật khẩu của nó cũng được chờ.
+        // Chữ đang gõ dở thành bước ngay (ô mật khẩu quyết định theo kết quả đã có lúc này, không chờ thêm).
         FlushTyped();
-        // Chờ các lần nhận diện phần tử / chọn hình mẫu / kiểm tra ô mật khẩu còn dở (chạy nền, không cần luồng UI).
+        // Chờ các lần nhận diện phần tử / chọn hình mẫu còn dở (chạy nền, không cần luồng UI).
         try { Task.WaitAll([.. _conversions], 5000); } catch (AggregateException) { }
         _stopped = true;
         // Lần nhận diện nào đang ghi dở vào bước thì chờ nó ghi xong (các lần sau đó bị bỏ qua).
@@ -434,14 +434,20 @@ internal sealed class MacroRecorder : IDisposable
         // Biết ô đang nhập có phải ô mật khẩu không trước khi giữ ký tự; đổi loại ô (kể cả sang ô chưa rõ như ô mật khẩu WPF / trang web)
         // → bước gõ mới, để chữ gõ vào ô chưa rõ không bị gộp vào bước chữ thường đang ghi dở.
         var field = FocusedField(fg);
-        if (_typed.Length > 0 && (target != _typedTarget || field != _typedField)) FlushTyped();
+        // Ô chưa rõ: các lần hỏi UI Automation đã xong thấy hai ô khác nhau (trang web tự nhảy sang ô kế tiếp…) → cũng là đổi ô.
+        if (_typed.Length > 0 && (target != _typedTarget || field != _typedField || FocusMovedWhileTyping())) FlushTyped();
         if (_typed.Length == 0)
         {
             _typedTarget = target;
             _typedStart = now;
             _typedField = field;
-            // Chưa rõ (trình duyệt, WPF, UWP…) → hỏi UI Automation ở nền; chữ chỉ nằm trong bộ nhớ tới khi có kết quả.
-            _typedProbe = field == FieldKind.Unknown ? StartProbe() : null;
+            // Chưa rõ (trình duyệt, WPF, UWP…) → hỏi UI Automation ở nền; chữ chỉ nằm trong bộ nhớ tới khi kết thúc đoạn gõ.
+            if (field == FieldKind.Unknown) StartProbe(now);
+        }
+        else if (field == FieldKind.Unknown && now - _lastProbeTick >= ProbeIntervalMs && _typedProbes.All(p => p.IsCompleted))
+        {
+            // Gõ lâu trong ô chưa rõ → hỏi lại để biết tiêu điểm vẫn ở đúng ô đó.
+            StartProbe(now);
         }
         _typed.Append(text);
         _typedEnd = now;
@@ -457,14 +463,27 @@ internal sealed class MacroRecorder : IDisposable
 
     private const long ES_PASSWORD = 0x20;
 
+    /// <summary>Gõ liên tục trong ô chưa rõ → cứ chừng này mili giây hỏi lại UI Automation một lần.</summary>
+    private const int ProbeIntervalMs = 300;
+
+    /// <summary>Chờ trước khi hỏi UI Automation: ứng dụng (nhất là trình duyệt) cập nhật tiêu điểm sau Tab / click chậm hơn phím tới hook.</summary>
+    private const int ProbeDelayMs = 100;
+
+    /// <summary>Kết quả hỏi UI Automation: phần tử có tiêu điểm có phải ô mật khẩu, kèm mã nhận diện (RuntimeId) của chính phần tử đó.</summary>
+    internal sealed record FieldProbe(bool IsPassword, string ElementId);
+
     private FieldKind _typedField;
-    private Task<bool?>? _typedProbe;
+    private readonly List<Task<FieldProbe?>> _typedProbes = [];
+    private long _lastProbeTick;
+
+    /// <summary>Các lần hỏi của đoạn gõ trước nếu đó là ô chưa rõ (null = đoạn trước là ô Edit đã biết loại / chưa có đoạn nào).</summary>
+    private List<Task<FieldProbe?>>? _previousProbes;
 
     /// <summary>Kiểm tra ngay (đồng bộ, trong hook) ô đang có tiêu điểm của cửa sổ <c>fg</c>.</summary>
     internal Func<IntPtr, FieldKind> FocusedField { get; set; } = FocusedFieldOf;
 
     /// <summary>Kiểm tra nền bằng UI Automation phần tử đang có tiêu điểm có phải ô mật khẩu (null = không xác định được).</summary>
-    internal Func<Task<bool?>> PasswordProbe { get; set; } = ProbeFocusedElement;
+    internal Func<Task<FieldProbe?>> PasswordProbe { get; set; } = ProbeFocusedElement;
 
     /// <summary>
     /// Ô Edit của Win32 / WinForms / Delphi (kể cả RichEdit): có kiểu ES_PASSWORD → mật khẩu, không có → chữ thường;
@@ -498,53 +517,69 @@ internal sealed class MacroRecorder : IDisposable
         return thread != 0 && GetGUIThreadInfo(thread, ref info) ? FieldOf(info.hwndFocus) : FieldKind.Unknown;
     }
 
-    private static Task<bool?> ProbeFocusedElement() => Task.Run<bool?>(() =>
+    private static Task<FieldProbe?> ProbeFocusedElement() => Task.Run<FieldProbe?>(async () =>
     {
-        try { return System.Windows.Automation.AutomationElement.FocusedElement?.Current.IsPassword; }
+        await Task.Delay(ProbeDelayMs);
+        try
+        {
+            var element = System.Windows.Automation.AutomationElement.FocusedElement;
+            var id = element?.GetRuntimeId();
+            return element != null && id is { Length: > 0 } ? new FieldProbe(element.Current.IsPassword, string.Join(".", id)) : null;
+        }
         catch (Exception ex) { Debug.WriteLine(ex); return null; }
     });
 
-    private Task<bool?>? StartProbe()
+    private void StartProbe(long now)
     {
-        try { return PasswordProbe(); }
-        catch (Exception ex) { Debug.WriteLine(ex); return null; }
+        _lastProbeTick = now;
+        Task<FieldProbe?> probe;
+        try { probe = PasswordProbe(); }
+        catch (Exception ex) { Debug.WriteLine(ex); probe = Task.FromResult<FieldProbe?>(null); }
+        _typedProbes.Add(probe);
     }
 
-    private void FlushTyped()
+    /// <summary>Các lần hỏi đã xong trong đoạn gõ thấy hai phần tử khác nhau → tiêu điểm đã rời ô đang gõ.</summary>
+    private bool FocusMovedWhileTyping() =>
+        _typedField == FieldKind.Unknown &&
+        _typedProbes.Where(p => p.IsCompletedSuccessfully && p.Result != null).Select(p => p.Result!.ElementId).Distinct().Skip(1).Any();
+
+    internal void FlushTyped()
     {
         if (_typed.Length == 0) return;
         var text = _typed.ToString();
         _typed.Clear();
-        var (field, probe) = (_typedField, _typedProbe);
+        var field = _typedField;
+        List<Task<FieldProbe?>> probes = [.. _typedProbes];
         _typedField = FieldKind.Unknown;
-        _typedProbe = null;
+        _typedProbes.Clear();
+        // Ô chưa rõ: chỉ dùng kết quả đã có ngay lúc này — kết quả tới sau (người dùng đã Tab / click sang ô khác) có thể là của ô khác.
+        bool plain = field == FieldKind.Text || field == FieldKind.Unknown && PlainTextElement(probes, _previousProbes) != null;
+        _previousProbes = field == FieldKind.Unknown ? probes : null;
         // Ô mật khẩu — hoặc chưa biết chắc — không lưu chữ thật vào jobs.json, dùng bí mật mã hóa thay thế.
-        var step = new ActionStep { Type = StepType.TypeText, Target = _typedTarget, Text = field == FieldKind.Text ? text : PasswordPlaceholder };
-        Add(step, _typedStart, _typedEnd);
-        if (field == FieldKind.Unknown && probe != null) ResolveTyped(step, text, probe);
+        Add(new ActionStep { Type = StepType.TypeText, Target = _typedTarget, Text = plain ? text : PasswordPlaceholder }, _typedStart, _typedEnd);
     }
 
     /// <summary>
-    /// Kiểm tra nền xong: chỉ khi chắc chắn không phải ô mật khẩu mới đưa chữ thật vào bước.
-    /// Lỗi, không xác định hoặc chưa xong khi dừng ghi → giữ {{secret:MatKhau}}.
+    /// Ô chưa rõ chỉ được coi là ô chữ thường (trả về mã phần tử) khi: có ít nhất một lần hỏi đã xong trước lúc kết thúc đoạn gõ,
+    /// mọi lần đã xong đều trả lời "không phải mật khẩu" về cùng một phần tử, và phần tử đó không phải phần tử mà các lần hỏi của
+    /// đoạn gõ ô chưa rõ ngay trước (<paramref name="previous"/>, kể cả lần xong muộn) đã thấy — UI Automation chưa kịp cập nhật tiêu điểm
+    /// sau Tab / click sẽ còn trả lời về ô cũ; đoạn trước không có kết quả nào → không biết ô cũ là ô nào, giữ bí mật.
+    /// Lần hỏi chưa xong bị bỏ qua: kết quả tới sau không bao giờ làm lộ chữ đã thay bằng {{secret:MatKhau}}.
     /// </summary>
-    private void ResolveTyped(ActionStep step, string text, Task<bool?> probe)
+    internal static string? PlainTextElement(IReadOnlyList<Task<FieldProbe?>> probes, IReadOnlyList<Task<FieldProbe?>>? previous)
     {
-        if (probe.IsCompleted)
+        string? id = null;
+        foreach (var probe in probes)
         {
-            if (IsPlainText(probe)) step.Text = text;
-            return;
+            if (!probe.IsCompleted) continue;
+            if (!probe.IsCompletedSuccessfully || probe.Result is not { IsPassword: false } r || r.ElementId.Length == 0) return null;
+            if (id != null && id != r.ElementId) return null;
+            id = r.ElementId;
         }
-        _conversions.Add(probe.ContinueWith(t =>
-        {
-            lock (step)
-            {
-                if (!_stopped && IsPlainText(t)) step.Text = text;
-            }
-        }, TaskScheduler.Default));
+        if (id == null || previous == null) return id;
+        var seenBefore = previous.Where(p => p.IsCompletedSuccessfully && p.Result != null).Select(p => p.Result!.ElementId).ToList();
+        return seenBefore.Count > 0 && !seenBefore.Contains(id) ? id : null;
     }
-
-    private static bool IsPlainText(Task<bool?> probe) => probe.IsCompletedSuccessfully && probe.Result == false;
 
     private void AddKey(string name, IntPtr fg, long now)
     {

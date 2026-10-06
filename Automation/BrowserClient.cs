@@ -122,7 +122,8 @@ internal static partial class BrowserClient
     private static async Task LaunchAsync(string browser, string url, string profile, bool headless, CancellationToken ct)
     {
         profile = BrowserProfiles.SafeName(profile);
-        var dir = BrowserProfiles.Dir(browser, profile);
+        // Lần đầu có thể phải chuyển hồ sơ cũ (chép qua ổ mạng) → chạy nền, dừng flow là hủy được.
+        var dir = await Task.Run(() => BrowserProfiles.Dir(browser, profile, ct), ct);
         var label = BrowserProfiles.DisplayName(browser) + (profile.Length == 0 ? "" : $" · hồ sơ \"{profile}\"");
 
         if (Current() is { } current)
@@ -153,7 +154,8 @@ internal static partial class BrowserClient
             }
             // Mở thêm lần nữa chỉ tạo cửa sổ mới trong phiên cũ (không có cổng điều khiển).
             throw new InvalidOperationException(
-                $"{label} đang mở nhưng không ở chế độ điều khiển. Hãy đóng cửa sổ trình duyệt đó rồi chạy lại.");
+                $"{label} đang mở nhưng không ở chế độ điều khiển. Hãy đóng cửa sổ trình duyệt đó rồi chạy lại " +
+                "(trình duyệt chạy ẩn không có cửa sổ: đóng trong Trình quản lý tác vụ — Task Manager).");
         }
 
         var exe = ResolveBrowser(browser);
@@ -169,18 +171,23 @@ internal static partial class BrowserClient
         LastLaunched = process;
 
         var sw = Stopwatch.StartNew();
+        long exitedAt = -1;
         while (true)
         {
-            if (ReadActivePort(dir) is int port)
+            // Tiến trình vừa mở đã thoát nhưng trình duyệt có thể vẫn chạy: Chrome / Edge có bản cập nhật chờ (new_chrome.exe) tự mở lại
+            // bản mới, trình mở bản portable chạy trình duyệt thật là tiến trình khác → nhận tiến trình đang lắng nghe cổng ghi trong
+            // DevToolsActivePort nếu dòng lệnh của nó mở đúng thư mục hồ sơ này.
+            bool exited = process.HasExited;
+            var session = exited ? TryReattach(dir) : ReadActivePort(dir) is int port ? new Session(port, dir, process) : null;
+            if (session != null && await IsAvailableAsync(session, ct, throwIfForeign: true))
             {
-                var session = new Session(port, dir, process);
-                if (await IsAvailableAsync(session, ct, throwIfForeign: true))
-                {
-                    _session = session;
-                    break;
-                }
+                _session = session;
+                LastLaunched = session.Process;
+                break;
             }
-            if (process.HasExited)
+            if (exited && exitedAt < 0) exitedAt = sw.ElapsedMilliseconds;
+            // Thoát hẳn (không tiến trình nào giữ hồ sơ sau vài giây) hoặc hết thời gian chờ → báo lỗi.
+            if (exited && (!BrowserProfiles.InUse(dir) && sw.ElapsedMilliseconds - exitedAt > 5_000 || sw.ElapsedMilliseconds > 20_000))
                 throw new InvalidOperationException($"{label} đóng ngay sau khi mở (mã {process.ExitCode}). Nếu {label} đang chạy với hồ sơ này, hãy đóng hết rồi thử lại.");
             if (sw.ElapsedMilliseconds > 20_000)
                 throw new TimeoutException($"Trình duyệt không mở cổng điều khiển. Nếu {label} đang chạy, hãy đóng hết rồi thử lại.");
@@ -303,7 +310,7 @@ internal static partial class BrowserClient
 
     // ───────────────────────────── Địa chỉ trang ─────────────────────────────
 
-    private static readonly HashSet<string> AllowedSchemes = new(StringComparer.OrdinalIgnoreCase) { "http", "https", "file", "about" };
+    private static readonly HashSet<string> AllowedSchemes = new(StringComparer.OrdinalIgnoreCase) { "http", "https", "file", "about", "chrome", "edge" };
 
     /// <summary>Giao thức ở đầu địa chỉ ("javascript:", "data:", "http:"…) — "localhost:8080" là tên máy kèm cổng, không phải giao thức.</summary>
     [GeneratedRegex(@"^([a-zA-Z][a-zA-Z0-9+.\-]*):(?!\d)")]
@@ -312,8 +319,13 @@ internal static partial class BrowserClient
     [GeneratedRegex(@"^about:[a-zA-Z0-9\-]+$")]
     private static partial Regex AboutPattern();
 
+    /// <summary>Trang có sẵn của trình duyệt: chrome://downloads, edge://settings/privacy…</summary>
+    [GeneratedRegex(@"^(chrome|edge)://[a-zA-Z0-9\-]+(/[^\s]*)?$", RegexOptions.IgnoreCase)]
+    private static partial Regex BrowserPagePattern();
+
     /// <summary>
-    /// Địa chỉ mở / chuyển trang: chỉ http, https, file và about: (vd about:blank); không ghi giao thức → https://.
+    /// Địa chỉ mở / chuyển trang: chỉ http, https, file trên máy này, about: (vd about:blank) và trang có sẵn của trình duyệt
+    /// (chrome://, edge://); không ghi giao thức → https://.
     /// Khoảng trắng và dấu nháy được mã hóa %XX, ký tự điều khiển bị từ chối — kết quả luôn bắt đầu bằng giao thức, không bao giờ bằng "-".
     /// </summary>
     internal static string NormalizeUrl(string url)
@@ -321,10 +333,16 @@ internal static partial class BrowserClient
         url = url.Trim();
         if (url.Any(char.IsControl)) throw new InvalidOperationException("Địa chỉ URL có ký tự điều khiển (xuống dòng, tab…) — hãy nhập lại.");
         var scheme = SchemePattern().Match(url);
+        var name = scheme.Groups[1].Value.ToLowerInvariant();
         if (!scheme.Success) url = "https://" + url;
-        else if (!AllowedSchemes.Contains(scheme.Groups[1].Value) ||
-                 scheme.Groups[1].Value.Equals("about", StringComparison.OrdinalIgnoreCase) && !AboutPattern().IsMatch(url))
-            throw new InvalidOperationException($"Không mở được địa chỉ \"{Short(url)}\": chỉ hỗ trợ http://, https://, file:// và about:blank.");
+        else if (!AllowedSchemes.Contains(name) ||
+                 name == "about" && !AboutPattern().IsMatch(url) ||
+                 name is "chrome" or "edge" && !BrowserPagePattern().IsMatch(url))
+            throw new InvalidOperationException(
+                $"Không mở được địa chỉ \"{Short(url)}\": chỉ hỗ trợ http://, https://, file://, about:blank và trang của trình duyệt (chrome://, edge://).");
+        else if (name == "file" && !IsLocalFileUrl(url))
+            // file://máy/thư mục mở thư mục chia sẻ qua mạng (SMB) — Windows tự gửi thông tin đăng nhập (NTLM) tới máy đó.
+            throw new InvalidOperationException($"Không mở được địa chỉ \"{Short(url)}\": chỉ mở file trên máy này (file:///C:/…), không mở thư mục mạng.");
 
         var sb = new StringBuilder(url.Length);
         foreach (var c in url)
@@ -334,6 +352,18 @@ internal static partial class BrowserClient
         }
         return sb.ToString();
     }
+
+    /// <summary>Địa chỉ file:// trỏ tới ổ đĩa của máy này: không có tên máy (hoặc localhost) và đường dẫn không phải \\máy\thư mục.</summary>
+    private static bool IsLocalFileUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || !uri.IsFile) return false;
+        if (uri.Host.Length > 0 && !uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return false;
+        // Phần đường dẫn (đã giải mã %5C…) phải bắt đầu bằng ổ đĩa của máy này: C:/…
+        return LocalDrivePath().IsMatch(Uri.UnescapeDataString(uri.AbsolutePath).TrimStart('/'));
+    }
+
+    [GeneratedRegex(@"^[a-zA-Z]:([\\/]|$)")]
+    private static partial Regex LocalDrivePath();
 
     // ───────────────────────────── Xác minh cổng điều khiển ─────────────────────────────
 
@@ -434,23 +464,57 @@ internal static partial class BrowserClient
         }
     }
 
+    [GeneratedRegex("""(?:^|[\s"])--remote-debugging-port=(?<p>\d{1,5})(?=[\s"]|$)""", RegexOptions.IgnoreCase)]
+    private static partial Regex DebugPortPattern();
+
+    /// <summary>Cổng cố định trong dòng lệnh trình duyệt (--remote-debugging-port=N, N &gt; 0); cổng 0 (ngẫu nhiên), không có hoặc nhiều giá trị khác nhau → null.</summary>
+    internal static int? CommandLinePort(string commandLine)
+    {
+        var ports = DebugPortPattern().Matches(commandLine)
+            .Select(m => int.TryParse(m.Groups["p"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out int p) ? p : -1).Distinct().ToList();
+        return ports.Count == 1 && ports[0] is > 0 and <= 65535 ? ports[0] : null;
+    }
+
     /// <summary>
     /// Trình duyệt do ScheduleApp mở trong lần chạy trước vẫn giữ hồ sơ <paramref name="dir"/>: chỉ dùng tiếp khi đúng một tiến trình lắng nghe
     /// cổng ghi trong DevToolsActivePort và dòng lệnh của nó mở chính thư mục hồ sơ này.
     /// </summary>
     private static Session? TryReattach(string dir)
     {
-        if (!BrowserProfiles.InUse(dir) || ReadActivePort(dir) is not int port) return null;
+        if (!BrowserProfiles.InUse(dir)) return null;
         try
         {
-            var owners = ProcessNet.TcpListeners().Where(l => l.Port == port && ReachesLoopback(l.Address)).Select(l => l.Pid).Distinct().ToList();
-            if (owners.Count != 1 || ProcessNet.CommandLine(owners[0]) is not { } commandLine || !UsesProfile(commandLine, dir)) return null;
-            return new Session(port, dir, Process.GetProcessById(owners[0]));
+            var listeners = ProcessNet.TcpListeners().Where(l => ReachesLoopback(l.Address)).ToList();
+            if (ReadActivePort(dir) is int port)
+            {
+                var owners = listeners.Where(l => l.Port == port).Select(l => l.Pid).Distinct().ToList();
+                if (owners.Count != 1 || ProcessNet.CommandLine(owners[0]) is not { } commandLine || !UsesProfile(commandLine, dir)) return null;
+                return new Session(port, dir, Process.GetProcessById(owners[0]));
+            }
+            return ReattachFixedPort(dir, listeners);
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception)
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Trình duyệt do phiên bản cũ của ScheduleApp mở với cổng cố định (vd 9222) không có file DevToolsActivePort: dùng tiếp khi tiến trình
+    /// lắng nghe đúng cổng ghi trong dòng lệnh của chính nó (--remote-debugging-port=N) và dòng lệnh mở đúng thư mục hồ sơ này, không chương trình
+    /// lạ nào cùng lắng nghe cổng đó. Trình duyệt này đóng thì lần sau mở lại bằng cổng ngẫu nhiên như thường.
+    /// </summary>
+    private static Session? ReattachFixedPort(string dir, List<ProcessNet.Listener> listeners)
+    {
+        foreach (var pid in listeners.Select(l => l.Pid).Distinct())
+        {
+            if (ProcessNet.CommandLine(pid) is not { } commandLine || !UsesProfile(commandLine, dir) || CommandLinePort(commandLine) is not int port) continue;
+            if (!listeners.Any(l => l.Pid == pid && l.Port == port)) continue;
+            if (CheckOwner(port, listeners, ProcessNet.ParentMap(), pid).Result != Ownership.Trusted) return null;
+            Log.Info($"      Dùng tiếp trình duyệt điều khiển do phiên bản trước mở ở cổng {port} ({Path.GetFileName(dir)}).");
+            return new Session(port, dir, Process.GetProcessById(pid));
+        }
+        return null;
     }
 
     /// <summary>Trình duyệt điều khiển hiện tại; chưa có thì tìm trình duyệt ScheduleApp mở từ trước còn giữ hồ sơ.</summary>
