@@ -116,7 +116,17 @@ public static class Log
                 _file = Name(part);
                 _fileSize = File.Exists(_file) ? new FileInfo(_file).Length : 0;
             }
-            File.AppendAllText(_file, text);
+            try
+            {
+                File.AppendAllText(_file, text);
+            }
+            catch (DirectoryNotFoundException)
+            {
+                // Thư mục logs bị xóa trong lúc app đang chạy → tạo lại ngay, không mất nhật ký tới hết ngày.
+                Directory.CreateDirectory(dir);
+                _fileSize = 0;
+                File.AppendAllText(_file, text);
+            }
             _fileSize += System.Text.Encoding.UTF8.GetByteCount(text);
         }
     }

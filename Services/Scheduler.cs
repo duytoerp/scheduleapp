@@ -43,6 +43,24 @@ public sealed class Scheduler : IDisposable
     /// <summary>Đồng hồ UTC (kiểm thử giả lập đồng hồ bị chỉnh lùi / tới).</summary>
     internal Func<DateTime> UtcClock { get; set; } = () => DateTime.UtcNow;
 
+    /// <summary>
+    /// Bộ đếm thời gian thực (mili giây, tính cả lúc máy ngủ, không đổi khi chỉnh đồng hồ) — so với <see cref="UtcClock"/> để biết
+    /// đồng hồ vừa bị chỉnh (lệch nhau) hay thời gian trôi thật (máy ngủ dậy: cả hai cùng tăng).
+    /// </summary>
+    internal Func<long> MonoClock { get; set; } = () => Environment.TickCount64;
+
+    /// <summary>Đồng hồ nhảy hơn chừng này so với thời gian thực mới coi là bị chỉnh (đồng bộ giờ thường chỉ chỉnh vài giây).</summary>
+    private static readonly TimeSpan ClockStepTolerance = TimeSpan.FromSeconds(30);
+
+    private DateTime? _lastTickUtc;
+    private long _lastTickMono;
+
+    /// <summary>
+    /// Giờ đồng hồ treo tường của lần chạy theo lịch gần nhất của từng công việc — đồng hồ bị chỉnh lùi / đổi sang múi giờ phía tây
+    /// không làm chạy lại đúng lần vừa chạy.
+    /// </summary>
+    private readonly Dictionary<Job, DateTime> _firedLocal = new(ReferenceEqualityComparer.Instance);
+
     public Scheduler(List<Job> jobs, FlowRunner runner)
     {
         _jobs = jobs;
@@ -65,8 +83,19 @@ public sealed class Scheduler : IDisposable
     public static DateTime? NextFor(Job job, DateTime after) =>
         job.Schedule.NextOccurrence(after, job.SkipHolidays ? SettingsStore.IsHoliday : null);
 
-    private DateTime? NextUtcFor(Job job, DateTime afterUtc) =>
-        job.Schedule.NextOccurrenceUtc(afterUtc, job.SkipHolidays ? SettingsStore.IsHoliday : null, CurrentZone);
+    private DateTime? NextUtcFor(Job job, DateTime afterUtc)
+    {
+        // "Một lần" đã chạy vào (hoặc sau) giờ hẹn → không chạy nữa (kể cả khi giờ hẹn nằm trong giờ lặp lại lúc lùi đồng hồ).
+        if (job.Schedule.Type == ScheduleType.Once && job.LastRun is DateTime last && last >= job.Schedule.StartAt.AddSeconds(-1)) return null;
+        // Lần chạy theo lịch vừa rồi (giờ đồng hồ treo tường) còn ở "tương lai" của đồng hồ hiện tại (đồng hồ bị chỉnh lùi, đổi múi giờ
+        // về phía tây) → tính từ sau lần đó, không chạy lại. Chỉ xét trong 1 ngày (chỉnh lùi nhiều ngày thì theo đồng hồ mới).
+        if (_firedLocal.TryGetValue(job, out var fired))
+        {
+            var firedUtc = ScheduleConfig.LocalToUtc(fired, CurrentZone);
+            if (firedUtc > afterUtc && firedUtc - afterUtc <= TimeSpan.FromDays(1)) afterUtc = firedUtc;
+        }
+        return job.Schedule.NextOccurrenceUtc(afterUtc, job.SkipHolidays ? SettingsStore.IsHoliday : null, CurrentZone);
+    }
 
     private DateTime ToLocal(DateTime utc) => ScheduleConfig.UtcToLocal(utc, CurrentZone);
 
@@ -132,6 +161,18 @@ public sealed class Scheduler : IDisposable
         var nowUtc = UtcClock();
         var now = DateTime.Now;
         bool changed = false;
+
+        // Đồng hồ vừa bị chỉnh (lệch với thời gian thực từ nhịp trước) — có khi không kèm sự kiện đổi giờ của Windows.
+        var mono = MonoClock();
+        var step = _lastTickUtc is DateTime prevUtc ? (nowUtc - prevUtc) - TimeSpan.FromMilliseconds(mono - _lastTickMono) : TimeSpan.Zero;
+        _lastTickUtc = nowUtc;
+        _lastTickMono = mono;
+        bool steppedForward = step > ClockStepTolerance;
+        if (step.Duration() > ClockStepTolerance)
+        {
+            Log.Info($"🕒 Đồng hồ máy vừa được chỉnh {(step > TimeSpan.Zero ? "tới" : "lùi")} {Describe(step.Duration())}.");
+            clockChanged = true;
+        }
         if (clockChanged) Log.Info("🕒 Giờ hệ thống hoặc múi giờ vừa thay đổi — tính lại lịch chạy.");
         if (resumed) Log.Info("💤 Máy vừa thức dậy — kiểm tra lại lịch chạy.");
 
@@ -148,8 +189,17 @@ public sealed class Scheduler : IDisposable
 
             if (nowUtc < next) continue;
 
-            if (nowUtc - next > MissedTolerance) HandleMissed(job, ToLocal(next));
-            else _ = _runner.EnqueueAsync(job, "theo lịch");
+            if (nowUtc - next > MissedTolerance)
+            {
+                // Qua giờ chỉ vì đồng hồ vừa được chỉnh tới (máy vẫn bật, thời gian thực chưa tới) → không phải lỡ lịch, không chạy bù.
+                if (steppedForward) Log.Info($"[{job.Name}] Bỏ qua lần {ToLocal(next):HH:mm dd/MM} — đồng hồ vừa được chỉnh tới, không phải lỡ lịch.");
+                else HandleMissed(job, ToLocal(next));
+            }
+            else
+            {
+                _firedLocal[job] = ToLocal(next);
+                _ = _runner.EnqueueAsync(job, "theo lịch");
+            }
 
             SetNext(job, NextUtcFor(job, nowUtc));
             job.Reminded = false;
@@ -172,6 +222,7 @@ public sealed class Scheduler : IDisposable
         {
             _lastAliveSaved = now;
             SettingsStore.Current.LastAlive = now;
+            SettingsStore.Current.LastAliveUtc = nowUtc;
             SettingsStore.Save();
         }
 
@@ -187,6 +238,12 @@ public sealed class Scheduler : IDisposable
             Changed?.Invoke();
         }
     }
+
+    /// <summary>"3 ngày 2 giờ", "5 phút", "45 giây".</summary>
+    private static string Describe(TimeSpan t) =>
+        t.TotalDays >= 1 ? $"{(int)t.TotalDays} ngày {t.Hours} giờ"
+        : t.TotalHours >= 1 ? $"{(int)t.TotalHours} giờ {t.Minutes} phút"
+        : t.TotalMinutes >= 1 ? $"{(int)t.TotalMinutes} phút" : $"{t.Seconds} giây";
 
     private void HandleMissed(Job job, DateTime missedAt)
     {
@@ -212,10 +269,12 @@ public sealed class Scheduler : IDisposable
     /// </summary>
     private void CatchUpSinceLastAlive()
     {
-        if (SettingsStore.Current.LastAlive is not DateTime lastAlive) return;
+        // Ưu tiên mốc UTC (đổi múi giờ giữa hai lần mở app không làm lệch); bản cũ chỉ có giờ địa phương.
+        var aliveUtc = SettingsStore.Current.LastAliveUtc is DateTime u ? DateTime.SpecifyKind(u, DateTimeKind.Utc)
+            : SettingsStore.Current.LastAlive is DateTime lastAlive ? ScheduleConfig.LocalToUtc(lastAlive, CurrentZone) : (DateTime?)null;
+        if (aliveUtc == null) return;
         var nowUtc = UtcClock();
-        var aliveUtc = ScheduleConfig.LocalToUtc(lastAlive, CurrentZone);
-        var fromUtc = aliveUtc < nowUtc - CatchUpWindow ? nowUtc - CatchUpWindow : aliveUtc;
+        var fromUtc = aliveUtc.Value < nowUtc - CatchUpWindow ? nowUtc - CatchUpWindow : aliveUtc.Value;
 
         foreach (var job in _jobs)
         {

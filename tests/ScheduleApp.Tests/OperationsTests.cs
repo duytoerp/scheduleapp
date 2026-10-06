@@ -209,8 +209,11 @@ public class OperationsTests
         Assert.Equal(new DateTime(2026, 11, 2, 1, 30, 0), ScheduleConfig.UtcToLocal(weekly.NextOccurrenceUtc(secondPass, null, zone)!.Value, zone));
         var monthly = new ScheduleConfig { Type = ScheduleType.Monthly, MonthlyMode = MonthlyMode.DayOfMonth, DayOfMonth = 1, StartAt = new DateTime(2026, 1, 1, 1, 30, 0) };
         Assert.Equal(new DateTime(2026, 12, 1, 1, 30, 0), ScheduleConfig.UtcToLocal(monthly.NextOccurrenceUtc(secondPass, null, zone)!.Value, zone));
+        // "Một lần" lúc 01:30 tạo / sửa trong lần 01:xx thứ hai: lần đầu đã qua → chạy ở lần thứ hai (trước đây không bao giờ chạy).
+        // Đã chạy thật ở lần đầu thì Scheduler không tính lại nhờ Job.LastRun (xem OnceRunInFirstPassDoesNotRunAgain).
         var once = new ScheduleConfig { Type = ScheduleType.Once, StartAt = new DateTime(2026, 11, 1, 1, 30, 0) };
-        Assert.Null(once.NextOccurrenceUtc(secondPass, null, zone));
+        Assert.Equal(new DateTime(2026, 11, 1, 6, 30, 0), once.NextOccurrenceUtc(secondPass, null, zone));
+        Assert.Null(once.NextOccurrenceUtc(new DateTime(2026, 11, 1, 6, 40, 0, DateTimeKind.Utc), null, zone));
         Assert.Equal(new DateTime(2026, 11, 1, 5, 30, 0), once.NextOccurrenceUtc(new DateTime(2026, 11, 1, 5, 0, 0, DateTimeKind.Utc), null, zone));
     }
 

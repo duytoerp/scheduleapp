@@ -118,7 +118,6 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         RefreshList();
         RefreshTests();
         Log.Info($"ScheduleApp {UpdateService.Current} khởi động — {_jobs.Count} công việc. Dữ liệu: {JobStore.DataDir}");
-        _ = Task.Run(ErrorScreenshots.Cleanup);
         // Đã nạp dữ liệu và vòng lặp giao diện đã chạy: báo script cập nhật bản mới mở được (script mới xóa bản cũ .old);
         // lần trước phải quay về bản cũ thì nhắc ở khay — không chặn lịch chạy.
         BeginInvoke(new MethodInvoker(() =>
@@ -753,20 +752,23 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
 
     private Job? SelectedJob() => _list.SelectedItems.Count > 0 ? _list.SelectedItems[0].Tag as Job : null;
 
-    private void SaveJobs()
+    /// <summary>Lưu danh sách công việc; false nếu không lưu được (đã ghi nhật ký).</summary>
+    private bool SaveJobs()
     {
-        try { JobStore.Save(_jobs); }
-        catch (Exception ex) { Log.Error("Không lưu được danh sách công việc: " + ex.Message); }
+        try { JobStore.Save(_jobs); return true; }
+        catch (Exception ex) { Log.Error("Không lưu được danh sách công việc: " + ex.Message); return false; }
     }
 
     /// <summary>Lưu, tính lại lịch, đăng ký lại trình kích hoạt và vẽ lại danh sách sau khi công việc thay đổi.</summary>
-    private void JobsChanged(Job? recalc = null)
+    /// <returns>false nếu không lưu được danh sách công việc.</returns>
+    private bool JobsChanged(Job? recalc = null)
     {
         if (recalc != null) _scheduler.Recalculate(recalc);
         _triggers.Reload();
-        SaveJobs();
+        bool saved = SaveJobs();
         RefreshList();
         RefreshTests();
+        return saved;
     }
 
     // ───────────────────────────── Thao tác ─────────────────────────────
@@ -908,8 +910,8 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         if (MessageBox.Show(this, $"Xóa công việc \"{job.Name}\"?{warning}", "Xác nhận xóa",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
         _jobs.Remove(job);
-        JobsChanged();
-        JobVersions.Delete(job.Id);
+        // Chỉ xóa các phiên bản cũ khi đã lưu được: jobs.json đang bị khóa thì công việc còn trong file, mở lại vẫn có lịch sử phiên bản.
+        if (JobsChanged()) JobVersions.Delete(job.Id);
         Log.Info($"Đã xóa công việc \"{job.Name}\".");
     }
 
@@ -1412,6 +1414,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         _tray.Visible = false;
         _tray.Dispose();
         SettingsStore.Current.LastAlive = DateTime.Now;
+        SettingsStore.Current.LastAliveUtc = DateTime.UtcNow;
         SettingsStore.Save();
         SaveJobs();
         base.OnFormClosed(e);

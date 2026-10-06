@@ -61,8 +61,11 @@ public sealed class AppSettings
     /// </summary>
     public List<string> TrustedLoginHosts { get; set; } = [];
 
-    /// <summary>Lần cuối ScheduleApp còn chạy — dùng để phát hiện lịch bị lỡ khi app tắt.</summary>
+    /// <summary>Lần cuối ScheduleApp còn chạy (giờ địa phương, để hiển thị / bản cũ) — dùng để phát hiện lịch bị lỡ khi app tắt.</summary>
     public DateTime? LastAlive { get; set; }
+
+    /// <summary>Như <see cref="LastAlive"/> nhưng theo UTC — đổi múi giờ giữa hai lần mở app vẫn tính đúng lịch bị lỡ.</summary>
+    public DateTime? LastAliveUtc { get; set; }
 
     /// <summary>Môi trường kiểm thử (Dev / Test / UAT…): mỗi môi trường là một bộ biến ghi đè biến của kịch bản.</summary>
     public List<TestEnvironment> Environments { get; set; } = [];

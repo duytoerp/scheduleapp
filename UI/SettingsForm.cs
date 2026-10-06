@@ -532,6 +532,7 @@ internal sealed class SettingsForm : BaseForm
         _s.Ai = ReadAi();
         _s.Inbox = ReadInbox();
         _s.LastAlive = SettingsStore.Current.LastAlive;
+        _s.LastAliveUtc = SettingsStore.Current.LastAliveUtc;
         SettingsStore.Replace(_s);
         Log.Info("Đã lưu cài đặt.");
         DialogResult = DialogResult.OK;

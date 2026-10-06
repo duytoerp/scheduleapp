@@ -34,6 +34,10 @@ public static class CommandServer
 
     internal static async Task ListenAsync(Action<string> handle, CancellationToken ct, string pipeName)
     {
+        // Lỗi lặp lại (vd tài khoản khác đã chiếm tên kênh, hoặc cùng tài khoản đang mở ScheduleApp ở phiên Windows khác):
+        // chờ lâu dần tới 1 phút, mỗi kiểu lỗi chỉ ghi nhật ký một lần — không ghi mỗi 500 ms suốt ngày.
+        var delay = TimeSpan.FromMilliseconds(500);
+        string? lastError = null;
         while (!ct.IsCancellationRequested)
         {
             try
@@ -43,16 +47,23 @@ public static class CommandServer
                 await server.WaitForConnectionAsync(ct);
                 using var reader = new StreamReader(server, Encoding.UTF8);
                 var line = await reader.ReadLineAsync(ct);
+                delay = TimeSpan.FromMilliseconds(500);
+                lastError = null;
                 if (!string.IsNullOrWhiteSpace(line)) handle(line.Trim());
             }
             catch (OperationCanceledException)
             {
                 return;
             }
-            catch (IOException ex)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                Log.Warn("Lỗi kênh lệnh: " + ex.Message);
-                await Task.Delay(500, CancellationToken.None);
+                var kind = ex.GetType().Name;
+                if (kind != lastError)
+                    Log.Warn("Lỗi kênh lệnh (lệnh từ shortcut / dòng lệnh có thể không tới được ScheduleApp đang mở): " + ex.Message);
+                lastError = kind;
+                try { await Task.Delay(delay, ct); }
+                catch (OperationCanceledException) { return; }
+                delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, TimeSpan.FromMinutes(1).Ticks));
             }
         }
     }

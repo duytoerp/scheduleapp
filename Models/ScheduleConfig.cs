@@ -30,6 +30,7 @@ public sealed class ScheduleConfig
     /// Once: thời điểm chạy. Daily/Weekly/Monthly: ngày bắt đầu + giờ chạy trong ngày.
     /// Interval: mốc bắt đầu lặp.
     /// </summary>
+    [System.Text.Json.Serialization.JsonConverter(typeof(WallClockDateTimeConverter))]
     public DateTime StartAt { get; set; } = DateTime.Today.AddHours(8);
 
     /// <summary>Weekly: các ngày chạy. Interval (khi bật khung giờ): các ngày được phép chạy.</summary>
@@ -113,29 +114,57 @@ public sealed class ScheduleConfig
             if (NextRaw(after, isHoliday) is not DateTime local) return null;
             var utc = LocalToUtc(local, zone);
             if (utc > afterUtc) return utc;
+            // "Một lần" đặt trong giờ lặp lại (vừa lùi đồng hồ) mà lần đầu của giờ đó đã qua → chạy ở lần thứ hai
+            // (công việc "một lần" đã chạy ở lần đầu thì Scheduler không tính lại — xem Job.LastRun).
+            if (Type == ScheduleType.Once && zone.IsAmbiguousTime(local) &&
+                zone.GetAmbiguousTimeOffsets(local).Select(o => DateTime.SpecifyKind(local - o, DateTimeKind.Utc)).Max() is var later && later > afterUtc)
+                return later;
             // Đang ở lần thứ hai của giờ lặp lại mà giờ chạy đã qua ở lần đầu → coi như đã chạy, tính từ sau giờ đó.
             after = local;
         }
         return null;
     }
 
-    /// <summary>Lặp theo phút: lưới thời gian tính bằng UTC (đổi giờ mùa hè không làm khoảng cách lệch), khung giờ/ngày xét theo giờ địa phương.</summary>
+    /// <summary>
+    /// Lặp theo phút: lưới thời gian tính bằng UTC (đổi giờ mùa hè không làm khoảng cách lệch), khung giờ/ngày xét theo giờ địa phương.
+    /// Có khung giờ, hoặc lặp từ 1 ngày trở lên → lưới theo giờ đồng hồ treo tường (<see cref="NextIntervalLocal"/>): "8:00, 10:00, 12:00…"
+    /// vẫn đúng 8:00, 10:00 sau khi đổi giờ mùa hè, không lệch thành 9:00, 11:00.
+    /// </summary>
     private DateTime? NextIntervalUtc(DateTime afterUtc, TimeZoneInfo zone)
     {
-        var start = LocalToUtc(TrimToSecond(StartAt), zone);
         var step = TimeSpan.FromMinutes(Math.Max(1, IntervalMinutes));
-        var candidate = afterUtc < start ? start : GridAfter(start, step, afterUtc);
-        if (!UseTimeWindow || WindowEnd <= WindowStart) return candidate;
-        if (Days.Count == 0) return null;
+        if ((UseTimeWindow && WindowEnd > WindowStart) || step >= TimeSpan.FromDays(1)) return NextIntervalLocal(afterUtc, zone, step);
+        var start = LocalToUtc(TrimToSecond(StartAt), zone);
+        return afterUtc < start ? start : GridAfter(start, step, afterUtc);
+    }
 
-        for (int guard = 0; guard < 30; guard++)
+    /// <summary>
+    /// Lưới lặp theo giờ đồng hồ treo tường (không tính giờ mùa hè), neo ở <see cref="StartAt"/>; khung giờ / ngày xét theo giờ địa phương.
+    /// Giờ không tồn tại (đồng hồ nhảy tới) → lúc vừa nhảy tới; giờ lặp lại → lần đầu (lần sau trùng giờ thì sang điểm lưới kế).
+    /// </summary>
+    private DateTime? NextIntervalLocal(DateTime afterUtc, TimeZoneInfo zone, TimeSpan step)
+    {
+        bool window = UseTimeWindow && WindowEnd > WindowStart;
+        if (window && Days.Count == 0) return null;
+        var start = TrimToSecond(StartAt);
+        var afterLocal = UtcToLocal(afterUtc, zone);
+        var candidate = afterLocal < start ? start : GridAfter(start, step, afterLocal);
+        for (int guard = 0; guard < 400; guard++)
         {
-            var local = UtcToLocal(candidate, zone);
-            var t = local.TimeOfDay;
-            bool dayOk = Days.Contains(local.DayOfWeek);
-            if (dayOk && t >= WindowStart && t < WindowEnd) return candidate;
-            var target = LocalToUtc(dayOk && t < WindowStart ? local.Date + WindowStart : local.Date.AddDays(1) + WindowStart, zone);
-            candidate = target <= start ? start : GridAtOrAfter(start, step, target);
+            if (window)
+            {
+                var t = candidate.TimeOfDay;
+                bool dayOk = Days.Contains(candidate.DayOfWeek);
+                if (!(dayOk && t >= WindowStart && t < WindowEnd))
+                {
+                    var target = dayOk && t < WindowStart ? candidate.Date + WindowStart : candidate.Date.AddDays(1) + WindowStart;
+                    candidate = target <= start ? start : GridAtOrAfter(start, step, target);
+                    continue;
+                }
+            }
+            var utc = LocalToUtc(candidate, zone);
+            if (utc > afterUtc) return utc;
+            candidate = GridAfter(start, step, candidate);
         }
         return null;
     }
@@ -298,4 +327,22 @@ public sealed class ScheduleConfig
     };
 
     private static DateTime TrimToSecond(DateTime d) => new(d.Year, d.Month, d.Day, d.Hour, d.Minute, d.Second);
+}
+
+/// <summary>
+/// Lưu giờ "đồng hồ treo tường" (vd 08:00) không kèm múi giờ: "lúc 08:00" vẫn là 08:00 khi mở app ở múi giờ khác.
+/// File cũ ghi kèm độ lệch ("…T08:00:00+07:00") được đọc theo đúng giờ đã ghi (08:00), không đổi sang múi giờ hiện tại.
+/// </summary>
+public sealed class WallClockDateTimeConverter : System.Text.Json.Serialization.JsonConverter<DateTime>
+{
+    public override DateTime Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert, System.Text.Json.JsonSerializerOptions options)
+    {
+        var text = reader.GetString() ?? "";
+        if (DateTimeOffset.TryParse(text, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var dto))
+            return DateTime.SpecifyKind(dto.DateTime, DateTimeKind.Unspecified);
+        return DateTime.SpecifyKind(DateTime.Parse(text, System.Globalization.CultureInfo.InvariantCulture), DateTimeKind.Unspecified);
+    }
+
+    public override void Write(System.Text.Json.Utf8JsonWriter writer, DateTime value, System.Text.Json.JsonSerializerOptions options) =>
+        writer.WriteStringValue(DateTime.SpecifyKind(value, DateTimeKind.Unspecified).ToString("yyyy-MM-dd'T'HH:mm:ss.FFFFFFF", System.Globalization.CultureInfo.InvariantCulture));
 }
