@@ -78,8 +78,8 @@ public class MinimizeWindowTests
         var job = JobStore.ImportJson(json).Single(j => j.Name.StartsWith("15 · 15:30"));
 
         Assert.Equal(ScheduleType.Daily, job.Schedule.Type);
-        // Mẫu lưu giờ Việt Nam (+07:00); đọc ra theo múi giờ của máy chạy test.
-        Assert.Equal(DateTimeOffset.Parse("2026-10-04T15:30:00+07:00").LocalDateTime.TimeOfDay, job.Schedule.StartAt.TimeOfDay);
+        // Giờ hẹn là giờ đồng hồ: mẫu ghi 15:30 (kèm +07:00 kiểu cũ) thì máy ở múi giờ nào cũng chạy lúc 15:30.
+        Assert.Equal(new TimeSpan(15, 30, 0), job.Schedule.StartAt.TimeOfDay);
         Assert.Equal(
             [StepType.MinimizeWindow, StepType.PlayMedia, StepType.Wait, StepType.PlayMedia, StepType.Label,
              StepType.If, StepType.FocusWindow, StepType.EndIf],
