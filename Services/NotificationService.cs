@@ -24,14 +24,21 @@ public static class NotificationService
             NotifyMode.OnError => !r.Ok,
             _ => false
         };
-        if (!send || !AnyChannelEnabled) return;
+        var s = SettingsStore.Current;
+        send &= AnyChannelEnabled;
+        // Chạy bằng lệnh Telegram (/run, nút Chạy lại): luôn báo kết quả về chat đã ra lệnh, dù công việc không bật thông báo.
+        bool reply = r.Trigger == TelegramBot.Trigger && TelegramBot.CanStart(s.Telegram, out _, out _, out _);
+        if (!send && !reply) return;
 
         var title = $"{(r.Ok ? "✅" : "❌")} {job.Name}";
         var body = $"{r.Message}\n" +
                    (r.FailedStep > 0 ? $"Bước lỗi: {r.FailedStep}\n" : "") +
                    $"Kích hoạt: {r.Trigger} · Bắt đầu {r.Start:HH:mm:ss dd/MM/yyyy} · {r.Duration.TotalSeconds:0} giây\n" +
                    $"Máy: {Environment.MachineName}";
-        await SendAsync(title, body, r.Screenshot);
+        var keyboard = TelegramBot.ResultKeyboard(r);
+        if (send) await SendAsync(title, body, r.Screenshot, keyboard: keyboard);
+        if (reply && !(send && s.Telegram.Enabled))
+            await Guard("Telegram", () => SendTelegramAsync(s.Telegram, Log.Redact(title), Log.Redact(body), r.Screenshot, keyboard: keyboard));
     }
 
     public static bool AnyChannelEnabled
@@ -46,13 +53,15 @@ public static class NotificationService
     /// <summary>Gửi qua mọi kênh đang bật. Lỗi được ghi log và trả về (không ném ra ngoài). Bí mật trong tiêu đề / nội dung bị che.</summary>
     /// <param name="screenshot">Ảnh đính kèm: ảnh lỗi chỉ gửi ở kênh có bật "Kèm ảnh chụp màn hình lỗi".</param>
     /// <param name="requested">Ảnh do bước "Gửi thông báo" yêu cầu rõ ("Gửi kèm ảnh chụp màn hình hiện tại") — gửi ở mọi kênh hỗ trợ ảnh.</param>
-    public static async Task<List<string>> SendAsync(string title, string body, string? screenshot, bool requested = false)
+    /// <param name="keyboard">Nút bấm dưới tin Telegram (vd Chạy lại / Màn hình / Lịch sử) — kênh khác bỏ qua.</param>
+    public static async Task<List<string>> SendAsync(string title, string body, string? screenshot, bool requested = false,
+        System.Text.Json.Nodes.JsonObject? keyboard = null)
     {
         var s = SettingsStore.Current;
         title = Log.Redact(title);
         body = Log.Redact(body);
         var tasks = new List<Task<string?>>();
-        if (s.Telegram.Enabled) tasks.Add(Guard("Telegram", () => SendTelegramAsync(s.Telegram, title, body, screenshot, requested)));
+        if (s.Telegram.Enabled) tasks.Add(Guard("Telegram", () => SendTelegramAsync(s.Telegram, title, body, screenshot, requested, keyboard)));
         if (s.Email.Enabled) tasks.Add(Guard("Email", () => SendEmailAsync(s.Email, title, body, screenshot, requested)));
         if (s.Webhook.Enabled) tasks.Add(Guard("Webhook", () => SendWebhookAsync(s.Webhook, title, body)));
         var results = await Task.WhenAll(tasks);
@@ -74,33 +83,26 @@ public static class NotificationService
         }
     }
 
-    public static async Task SendTelegramAsync(TelegramSettings t, string title, string body, string? screenshot, bool requested = false)
+    /// <summary>Gửi một tin Telegram (có ảnh nếu được phép); mạng chập chờn / bị giới hạn tốc độ thì tự thử lại (<see cref="TelegramApi"/>).</summary>
+    public static async Task SendTelegramAsync(TelegramSettings t, string title, string body, string? screenshot, bool requested = false,
+        System.Text.Json.Nodes.JsonObject? keyboard = null)
     {
         var token = Credentials.Reveal(t.BotToken, "token bot Telegram");
         if (token.Length == 0 || t.ChatId.Trim().Length == 0) throw new InvalidOperationException("Chưa nhập token bot hoặc chat id.");
-        var api = $"https://api.telegram.org/bot{token}";
+        var api = $"{TelegramBot.ApiBase}/bot{token}";
         var text = Log.Redact($"{title}\n{body}");
-
-        HttpResponseMessage resp;
-        if ((requested || t.SendScreenshot) && screenshot != null && File.Exists(screenshot))
+        try
         {
-            using var form = new MultipartFormDataContent
-            {
-                { new StringContent(t.ChatId.Trim()), "chat_id" },
-                { new StringContent(text.Length > 1000 ? text[..1000] + "…" : text), "caption" }
-            };
-            var file = new ByteArrayContent(await File.ReadAllBytesAsync(screenshot));
-            file.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
-            form.Add(file, "photo", Path.GetFileName(screenshot));
-            resp = await Http.PostAsync($"{api}/sendPhoto", form);
+            if ((requested || t.SendScreenshot) && screenshot != null && File.Exists(screenshot))
+                await TelegramApi.SendPhotoAsync(Http, api, t.ChatId.Trim(), await File.ReadAllBytesAsync(screenshot), Path.GetFileName(screenshot), "image/png", text, keyboard);
+            else
+                await TelegramApi.SendMessageAsync(Http, api, t.ChatId.Trim(), text, keyboard);
         }
-        else
+        catch (HttpRequestException ex)
         {
-            resp = await Http.PostAsJsonAsync($"{api}/sendMessage", new { chat_id = t.ChatId.Trim(), text });
+            // Thông điệp lỗi không bao giờ chứa token (địa chỉ API có token).
+            throw new HttpRequestException(ex.Message.Replace(token, "***"));
         }
-        using (resp)
-            if (!resp.IsSuccessStatusCode)
-                throw new HttpRequestException($"Telegram trả về {(int)resp.StatusCode}: {await ErrorText(resp)}");
     }
 
     public static async Task SendEmailAsync(EmailSettings e, string title, string body, string? screenshot, bool requested = false)

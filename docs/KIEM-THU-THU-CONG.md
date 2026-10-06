@@ -44,6 +44,10 @@ $env:SCHEDULEAPP_DATA_DIR = "$env:TEMP\ScheduleAppManual"; .\publish\ScheduleApp
 
 - [ ] Cài đặt → Thông báo: nhập token + chat id → *Gửi thử* nhận được tin.
 - [ ] Bật *Nhận lệnh điều khiển* → nhắn `/list`, `/run 1`, `/status`, `/history`, `/screenshot` → trả lời đúng; nhắn từ tài khoản Telegram khác → bị bỏ qua (nhật ký ghi "chat lạ").
+- [ ] Gõ `/` → hiện menu lệnh tiếng Việt. `/list` → mỗi công việc có nút ▶, bấm → chạy, chạy xong bot báo ✅/❌ kèm nút 🔁 Chạy lại · 📷 Màn hình (khi lỗi) · 📜 Lịch sử (công việc tắt thông báo vẫn báo).
+- [ ] Đang chạy flow dài → `/status` ghi bước N/M + nút ⏸ Tạm dừng → bấm → flow dừng trước bước kế, thanh gỡ lỗi hiện trên máy → `/status` có nút ▶ Chạy tiếp / ⏭ Một bước / ■ Dừng → bấm thử từng nút.
+- [ ] `/new …` → bản nháp có nút ✔ Lưu · ▶ Lưu và chạy · ✖ Bỏ; nhắn sửa một lần rồi bấm ✔ Lưu ở tin xem trước **cũ** → bot báo "Bản nháp đã thay đổi", không lưu.
+- [ ] Rút mạng vài giây lúc flow kết thúc → cắm lại → vẫn nhận được tin báo kết quả (tự gửi lại).
 
 ## 7. Gọi API / AI (cần tài khoản)
 

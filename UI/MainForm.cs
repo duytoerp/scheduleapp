@@ -23,6 +23,9 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
     private readonly TelegramBot _bot;
     private readonly RunOverlay _overlay = new();
     private DebugToolbar? _debugBar;
+
+    /// <summary>Tiến độ flow đang chạy gần nhất (null khi không chạy) — cho /status trên Telegram. Ghi từ luồng nền.</summary>
+    private volatile RunProgress? _lastProgress;
     private UpdateInfo? _pendingUpdate;
 
     private readonly ListView _list = new()
@@ -523,6 +526,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         // Khung trạng thái ở góc phải dưới màn hình: bước đang chạy, Tạm dừng / Bước tiếp / Chạy tiếp / Dừng.
         _runner.Progress += p =>
         {
+            _lastProgress = p.Ok == null ? p : null;   // cho /status trên Telegram
             if (IsDisposed) return;
             BeginInvoke(new MethodInvoker(() =>
             {
@@ -1127,12 +1131,44 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
             : jobs.FirstOrDefault(j => j.Name.Equals(nameOrNumber, StringComparison.CurrentCultureIgnoreCase))
               ?? (jobs.Where(j => j.Name.Contains(nameOrNumber, StringComparison.CurrentCultureIgnoreCase)).ToList() is { Count: 1 } one ? one[0] : null);
         if (job == null) return $"Không tìm thấy công việc \"{nameOrNumber}\" (hoặc có nhiều công việc trùng tên) — xem /list.";
+        return RunFromTelegram(job);
+    });
+
+    string IRemoteHost.RunById(Guid id) => OnUi(() =>
+        _jobs.FirstOrDefault(j => j.Id == id) is { } job ? RunFromTelegram(job) : "Không còn công việc này (đã bị xóa?) — xem /list.");
+
+    /// <summary>Chạy theo lệnh / nút Telegram — chạy xong bot luôn báo kết quả về chat (NotificationService.SendForRunAsync).</summary>
+    private string RunFromTelegram(Job job)
+    {
         if (job.NeedsApproval) return "🔒 " + JobApproval.RefusalMessage(job);
         if (job.Steps.Count(s => s.Enabled) == 0) return $"\"{job.Name}\" chưa có bước nào được bật.";
-        RunJob(job, "Telegram");
-        return $"▶ Đã đưa \"{job.Name}\" vào hàng đợi. Kết quả sẽ có trong /history" +
-               (NotificationService.AnyChannelEnabled && job.NotifyMode != NotifyMode.Never ? " và thông báo." : ".");
+        bool queued = _runner.IsBusy;
+        RunJob(job, TelegramBot.Trigger);
+        return $"▶ {(queued ? "Đã đưa vào hàng đợi" : "Bắt đầu chạy")} \"{job.Name}\" — chạy xong sẽ báo kết quả ở đây.";
+    }
+
+    IReadOnlyList<(int Number, string Name, Guid Id)> IRemoteHost.RunnableJobs() => OnUi(() =>
+        (IReadOnlyList<(int, string, Guid)>)[.. OrderedJobs().Select((j, i) => (Number: i + 1, Job: j))
+            .Where(x => !x.Job.NeedsApproval && x.Job.Enabled && x.Job.Steps.Any(s => s.Enabled))
+            .Select(x => (x.Number, x.Job.Name, x.Job.Id))]);
+
+    string IRemoteHost.Pause() => OnUi(() =>
+    {
+        if (_debugBar != null) return "⏸ Flow đang tạm dừng rồi — /tiep để chạy tiếp, /buoc chạy một bước, /stop dừng.";
+        if (!_runner.RequestPause()) return "Không có flow nào đang chạy.";
+        _overlay.MarkPauseRequested();
+        return "⏸ Đã yêu cầu tạm dừng — flow sẽ dừng trước bước kế tiếp. /tiep để chạy tiếp, /stop để dừng.";
     });
+
+    string IRemoteHost.Resume(bool oneStep) => OnUi(() =>
+    {
+        if (_debugBar is not { } bar) return _runner.IsBusy ? "Flow đang chạy, không tạm dừng." : "Không có flow nào đang chạy.";
+        bar.Finish(oneStep ? DebugCommand.Step : DebugCommand.Continue);
+        return oneStep ? "⏭ Chạy một bước rồi dừng lại." : "▶ Chạy tiếp.";
+    });
+
+    RemoteRunState IRemoteHost.RunState() => OnUi(() =>
+        _debugBar != null ? RemoteRunState.Paused : _runner.IsBusy ? RemoteRunState.Running : RemoteRunState.Idle);
 
     string IRemoteHost.Stop() => OnUi(() =>
     {
@@ -1178,8 +1214,8 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         }
         else if (run)
         {
-            RunJob(job, "Telegram");
-            lines.Add("▶ Đã đưa vào hàng đợi chạy — kết quả trong /history.");
+            RunJob(job, TelegramBot.Trigger);
+            lines.Add("▶ Đã đưa vào hàng đợi chạy — chạy xong sẽ báo kết quả ở đây.");
         }
         lines.Add("Xem / sửa chi tiết trên máy: mở công việc trong ScheduleApp.");
         return string.Join("\n", lines);
@@ -1187,7 +1223,16 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
 
     string IRemoteHost.Status() => OnUi(() =>
     {
-        var lines = new List<string> { $"💻 {Environment.MachineName} — ScheduleApp {UpdateService.Current}", _runner.IsBusy ? "⏳ " + _status.Text : "✅ Rảnh" };
+        var lines = new List<string> { $"💻 {Environment.MachineName} — ScheduleApp {UpdateService.Current}" };
+        if (!_runner.IsBusy) lines.Add("✅ Rảnh");
+        else if (_lastProgress is { } p && p.Total > 0)
+        {
+            var elapsed = DateTime.Now - p.Started;
+            lines.Add($"{(_debugBar != null ? "⏸ Đang tạm dừng" : "▶ Đang chạy")} \"{p.JobName}\" — bước {Math.Max(1, p.Step + 1)}/{p.Total}" +
+                      $" (đã chạy {(int)elapsed.TotalMinutes}:{elapsed.Seconds:00})");
+            if (p.StepText.Length > 0) lines.Add("   " + Log.Redact(p.StepText));
+        }
+        else lines.Add("⏳ " + _status.Text);
         var next = _jobs.Where(j => j.Enabled && j.NextRun != null).OrderBy(j => j.NextRun).Take(5).ToList();
         if (next.Count > 0) lines.Add("Sắp chạy:\n" + string.Join("\n", next.Select(j => $"  {j.NextRun:HH:mm dd/MM} {j.Name}")));
         return string.Join("\n", lines);

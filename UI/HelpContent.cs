@@ -108,6 +108,7 @@ internal static class HelpContent
             - Nút giống hệt nhau lặp lại (vd *Sửa* ở mỗi dòng): hình mẫu lấy rộng ra cả phần bên cạnh để phân biệt; vẫn còn chỗ giống thì chọn chỗ gần vị trí lúc ghi nhất.
             - Bấm vào vùng trống, ít chi tiết → giữ tọa độ như cũ.
             - Mở bước để xem hình mẫu (dấu chữ thập đỏ là điểm sẽ click), **✂ Chụp hình mẫu** lại, **✕ Bỏ hình mẫu**, chỉnh *Độ khớp* hoặc bấm **Thử tìm trên màn hình**.
+            - **Ảnh lúc ghi**: mỗi click / kéo thả còn lưu ảnh **cả cửa sổ ứng dụng** lúc nhấn chuột, vòng đỏ là chỗ đã click — mở bước để xem, bấm vào ảnh (hoặc **Xem lớn…**) để xem to, **Bỏ ảnh** để xóa khỏi bước. Ảnh chỉ để xem lại, không ảnh hưởng cách chạy; không gửi cho AI, không đi kèm khi xuất công việc ra file. Tắt bằng ô *Lưu ảnh cả cửa sổ lúc click* trên thanh "Đang ghi".
             ## Phím tắt và chuột trên sơ đồ
             - Kéo nền (hoặc chuột giữa) để cuộn · lăn chuột cuộn dọc, `Shift` + lăn cuộn ngang · bản đồ thu nhỏ góc phải dưới
             - `Ctrl` + lăn chuột thu phóng · `1` vừa khung · `0` về 100% · nút ⊕ ⊖ góc trái dưới
@@ -185,10 +186,13 @@ internal static class HelpContent
             - **Lịch sử chạy**: mọi lần chạy, kết quả, bước lỗi, ảnh chụp màn hình lúc lỗi, thống kê theo ngày.
             - Kênh thông báo (Telegram, email SMTP, webhook Teams/Slack) khai báo trong **Cài đặt → Thông báo**, có nút *Gửi thử*.
             ## Điều khiển & tạo công việc qua Telegram
-            Bật **Nhận lệnh điều khiển** trong **Cài đặt → Thông báo**, rồi nhắn cho bot trong chat riêng (chỉ đúng chat id đã cấu hình, không nhận trong nhóm):
-            - `/list` · `/run 3` · `/stop` · `/status` · `/history` · `/screenshot`
+            Bật **Nhận lệnh điều khiển** trong **Cài đặt → Thông báo**, rồi nhắn cho bot trong chat riêng (chỉ đúng chat id đã cấu hình, không nhận trong nhóm). Gõ `/` trong Telegram để hiện menu lệnh.
+            - `/list` (bấm **▶** cạnh công việc để chạy) · `/run 3` · `/stop` · `/status` · `/history` · `/screenshot`
+            - Chạy bằng `/run` / nút ▶: chạy xong bot **luôn báo kết quả** về chat, kèm nút 🔁 Chạy lại · 📷 Màn hình (khi lỗi) · 📜 Lịch sử.
+            - `/status` cho biết đang ở bước mấy / tổng số bước, kèm nút ⏸ Tạm dừng / ■ Dừng. `/pause` tạm dừng trước bước kế tiếp, `/tiep` chạy tiếp, `/buoc` chạy một bước.
+            - Mạng chập chờn / Telegram giới hạn tốc độ: tin tự gửi lại, không mất thông báo.
             - `/new <mô tả>`: AI dựng công việc mới, nói giờ chạy thì đặt lịch luôn (vd `/new 8h sáng các ngày làm việc mở D:\bao-cao.xlsx, lưu rồi báo tôi`). Bot gửi bản nháp để xem trước.
-            - Nhắn thêm để sửa bản nháp → `/ok` lưu (nhóm *Telegram*) · `/ok chay` lưu và chạy ngay · `/huy` bỏ.
+            - Nhắn thêm để sửa bản nháp → `/ok` lưu (nhóm *Telegram*) · `/ok chay` lưu và chạy ngay · `/huy` bỏ — hoặc bấm nút **✔ Lưu · ▶ Lưu và chạy · ✖ Bỏ** dưới bản nháp (nút ở bản nháp cũ không lưu nhầm bản đã sửa).
             - Công việc lưu bằng `/ok` (và công việc bị sửa qua Telegram) ở trạng thái **chờ duyệt**: chỉ chạy sau khi bạn xem và bấm **✔ Duyệt…** trên máy — `/ok chay` cũng chờ duyệt (xem *An toàn, bảo mật & dữ liệu*).
             > Cần khóa Claude trong **Cài đặt → Tích hợp**.
             """,

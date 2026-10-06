@@ -3,9 +3,12 @@
 > Cập nhật mỗi khi bắt đầu / xong một việc. Một phiên làm việc giữ toàn bộ file (không còn nhóm agent).
 > Trạng thái: ⏳ đang làm · ✅ xong · ⛔ bị chặn · 💤 chờ người dùng
 
-**Cập nhật lần cuối:** 2026-10-06 · phiên `918ad934`: thêm cách nhìn Danh sách + Cây cho flow; commit + push `main`
+**Cập nhật lần cuối:** 2026-10-06 · phiên `918ad934`: bản 2.2.2 đã phát hành; thêm Ảnh lúc ghi (cả cửa sổ) + nâng cấp Telegram 1–5, commit + push `main`
 
 ## Đang làm
+- ✅ **Ảnh lúc ghi** (2026-10-06): mỗi click / kéo thả khi ghi lưu thêm ảnh cả cửa sổ (DWM extended frame bounds) → JPEG ≤ 1600 px trong `recorded-shots\`, bước giữ tên file (`ContextShot`, `ContextClickX/Y`); form sửa bước có dòng "Ảnh lúc ghi" + Xem lớn / Bỏ ảnh; không gửi cho AI (giữ qua `_ref`); dọn ảnh không còn dùng sau 14 ngày (quét jobs.json + versions); thanh "Đang ghi" có ô bật/tắt và không lọt vào ảnh chụp. Chưa thử ghi trên ứng dụng thật.
+- ✅ **Telegram 1–5** (2026-10-06): `/run` / nút luôn báo kết quả (`TelegramBot.Trigger`); nút bấm (▶ ở /list, Chạy lại / Màn hình / Lịch sử, Tạm dừng / Chạy tiếp / Một bước / Dừng, Lưu / Bỏ bản nháp có số phiên bản); setMyCommands; /status bước N/M + /pause /tiep /buoc; `TelegramApi` gửi lại khi 5xx / mạng lỗi (2 s, 5 s) và 429 (retry_after ≤ 60 s). Test Release **563 đạt, 0 lỗi, 17 bỏ qua**. Chưa thử trên Telegram thật. Đề xuất còn lại (chưa làm): báo cáo cuối ngày, bật/tắt công việc từ xa, báo khi máy khởi động lại, `/screenshot <màn hình>`, một bot nhiều máy.
+- ✅ **Bản 2.2.2** đã phát hành (tag `v2.2.2`): B2 + tài liệu bảo mật + Danh sách / Cây.
 - ✅ **Cách nhìn flow: Sơ đồ / Danh sách / Cây** (2026-10-06): `UI/FlowListView.cs` dùng chung vùng chọn, menu, phím tắt với `FlowDesigner`; nút ở đầu khung flow, nhớ trong `AppSettings.FlowView` ("graph" / "list" / "tree"). Danh sách = thụt lề, ▾ / ▸ thu khối (`9a7505e`). Cây = đường nối kiểu thư mục, ⊞ / ⊟, "Không thì" là nút con của Nếu (thu được), ẩn Hết Nếu / Hết lặp đã ghép đúng. Thả xuống khoảng trống dưới cùng = cuối flow. Test Release **544 đạt, 0 lỗi, 17 bỏ qua**. Chưa phát hành (bản sau 2.2.1).
 - ✅ **Review + sửa lại B2, B3, B4a, B4b, B5b** (2026-10-05 → 06, phiên `918ad934`) — xong cả 5. Ánh xạ suy từ thứ tự commit: B2 = `962819d` · B3 = `7d661ae` · B4a = `9f7d619` · B4b = `5adf95c` · B5b = `64fe6d1`. Bản 2.2.1 (tag `v2.2.1`) đã phát hành, có B3 / B4a / B4b / B5b + tự vừa màn hình; B2 sau bản đó. Toàn bộ test Release sau B5b: **526 đạt, 0 lỗi, 17 bỏ qua**.
   - ✅ **Bảo mật CI + bộ cài** — `e8a18f7`: ci.yml `permissions: contents: read`; release.yml tên tag qua biến môi trường + kiểm dạng v1.2.3; ghim action theo mã commit; ghim Inno Setup 6.7.1; bộ cài chỉ chạy bộ cài .NET có chữ ký Microsoft (đã thử lệnh PowerShell: file Microsoft → 0, file chưa ký → 1). **Chưa kiểm:** bộ cài chưa biên dịch thử (máy không có Inno Setup — CI job `installer` sẽ kiểm khi push).
@@ -33,7 +36,7 @@
 - Test gần nhất: **263 đạt, 0 lỗi, 16 bỏ qua** (toàn bộ, chạy thật).
 
 ## Tiếp theo
-1. 💤 Ra bản 2.2.2 (B2 + tài liệu bảo mật + Danh sách / Cây) khi người dùng yêu cầu.
+1. 💤 Ra bản 2.2.3 (Ảnh lúc ghi + Telegram) khi người dùng yêu cầu.
 2. Tùy chọn: bước phát video có "Esc = dừng bình thường" (review #23).
 3. Nâng cấp đề xuất (rà soát 2026-10-05, chưa sửa):
    - Nên sửa sớm: settings.json / secrets.json hỏng → giữ bản `.broken-*`, không ghi đè; bắt lỗi toàn cục + ghi crash log; bộ cài kiểm .NET 10 Desktop Runtime (hoặc publish self-contained); trình phát không giành phím khi ở màn hình khác; giới hạn thời gian chạy mỗi công việc (nhắc việc / bước treo chặn hàng đợi).

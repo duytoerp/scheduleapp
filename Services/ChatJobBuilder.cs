@@ -17,6 +17,11 @@ public sealed class ChatJobBuilder(IRemoteHost host)
     private int _busy;
 
     public bool HasDraft => _draft != null;
+
+    /// <summary>Tăng mỗi lần có bản nháp mới / bản sửa — nút Lưu / Bỏ ở tin xem trước mang số này để không lưu nhầm bản nháp đã đổi.</summary>
+    public int DraftVersion { get; private set; }
+
+    private const string StaleDraft = "Bản nháp đã thay đổi sau tin này — dùng nút ở tin xem trước mới nhất (hoặc /ok, /huy).";
     public bool IsBusy => Volatile.Read(ref _busy) != 0;
 
     /// <summary>Bản nháp mới từ mô tả (thay bản nháp cũ nếu có).</summary>
@@ -41,6 +46,7 @@ public sealed class ChatJobBuilder(IRemoteHost host)
                 _draft = null;
             }
             _draft = await _generator!.SendAsync(text, FlowGenerator.Mode.Replace, ct);
+            DraftVersion++;
             // Bước phát video / nhạc: tính luôn thời lượng (hiện trong bản nháp, lưu cùng công việc). Không mở đường dẫn mạng
             // trong bản nháp nhận từ xa (Windows sẽ tự đăng nhập tới máy chủ lạ).
             try
@@ -66,10 +72,12 @@ public sealed class ChatJobBuilder(IRemoteHost host)
     /// Lưu bản nháp thành công việc mới; <paramref name="run"/> = chạy ngay. Mặc định công việc chờ duyệt trên máy (không chạy theo lịch,
     /// kích hoạt hay /run cho tới khi duyệt) — trừ khi Cài đặt cho phép chạy ngay không cần duyệt.
     /// </summary>
-    public string Save(bool run)
+    /// <param name="version">Số phiên bản ở nút bấm (null = lệnh /ok gõ tay, lưu bản nháp hiện tại).</param>
+    public string Save(bool run, int? version = null)
     {
         if (IsBusy) return "⏳ Đang dựng bản nháp, chờ xong rồi /ok.";
         if (_draft is not { } draft) return "Chưa có bản nháp nào — tạo bằng /new <mô tả>.";
+        if (version != null && version != DraftVersion) return StaleDraft;
         if (draft.Steps.Count == 0) return "Bản nháp chưa có bước nào — nhắn yêu cầu để sửa, hoặc /huy.";
         var job = ToJob(draft);
         if (!SettingsStore.Current.Telegram.RunWithoutApproval) JobApproval.Require(job, JobApproval.TelegramReason());
@@ -82,10 +90,11 @@ public sealed class ChatJobBuilder(IRemoteHost host)
         return reply;
     }
 
-    public string Cancel()
+    public string Cancel(int? version = null)
     {
         if (IsBusy) return "⏳ Đang dựng bản nháp, chờ xong rồi /huy.";
         if (_draft == null && _generator == null) return "Không có bản nháp nào.";
+        if (version != null && (_draft == null || version != DraftVersion)) return StaleDraft;
         _draft = null;
         _generator = null;
         return "Đã bỏ bản nháp.";

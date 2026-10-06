@@ -90,6 +90,31 @@ public class TelegramJobTests
         }
     }
 
+    [Fact]
+    public async Task DraftButtonsOnlyActOnTheDraftTheyWereSentWith()
+    {
+        await WithFakeClaude(async _ =>
+        {
+            var host = new FakeHost();
+            var builder = new ChatJobBuilder(host);
+            await builder.CreateAsync("8h sáng mở file báo cáo", CancellationToken.None);
+            int first = builder.DraftVersion;
+            await builder.ReviseAsync("chỉ thứ 2 và thứ 6", CancellationToken.None);
+            Assert.Equal(first + 1, builder.DraftVersion);
+
+            // Nút Lưu / Bỏ ở tin xem trước cũ → không đụng tới bản nháp đã sửa.
+            Assert.Contains("Bản nháp đã thay đổi", builder.Save(run: true, version: first));
+            Assert.Contains("Bản nháp đã thay đổi", builder.Cancel(version: first));
+            Assert.True(builder.HasDraft);
+            Assert.Empty(host.Added);
+
+            Assert.StartsWith("✅ Đã lưu", builder.Save(run: false, version: builder.DraftVersion));
+            var (job, _) = Assert.Single(host.Added);
+            Assert.Equal(ScheduleType.Weekly, job.Schedule.Type);              // đúng bản đã sửa
+            Assert.Contains("Chưa có bản nháp", builder.Save(run: false, version: builder.DraftVersion));
+        });
+    }
+
     private static string ToolUse(string id, string input) => $$"""
         {"id":"msg_{{id}}","type":"message","role":"assistant","model":"claude-opus-5-5",
          "content":[{"type":"tool_use","id":"{{id}}","name":"build_flow","input":{{input}} }],

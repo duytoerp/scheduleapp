@@ -281,20 +281,25 @@ Nội dung yêu cầu (và ảnh nếu bật) được gửi tới Anthropic đ�
 
 ## Điều khiển từ xa qua Telegram
 
-**⚙ Cài đặt → Thông báo → Nhận lệnh điều khiển**: nhắn cho bot từ điện thoại (chỉ đúng chat id đã cấu hình mới điều khiển được; lệnh gửi lúc máy tắt bị bỏ qua):
+**⚙ Cài đặt → Thông báo → Nhận lệnh điều khiển**: nhắn cho bot từ điện thoại (chỉ đúng chat id đã cấu hình mới điều khiển được; lệnh gửi lúc máy tắt bị bỏ qua). Gõ `/` trong Telegram để hiện menu lệnh có mô tả.
 
 | Lệnh | Tác dụng |
 |---|---|
-| `/list` | Danh sách công việc kèm số thứ tự và lần chạy tới |
-| `/run 3` · `/run Báo cáo` | Chạy công việc theo số thứ tự hoặc tên |
+| `/list` | Danh sách công việc kèm số thứ tự và lần chạy tới — mỗi công việc chạy được có nút **▶** để chạy ngay |
+| `/run 3` · `/run Báo cáo` | Chạy công việc theo số thứ tự hoặc tên — **chạy xong bot báo kết quả** (✅/❌, thời gian, bước lỗi), dù công việc không bật thông báo |
+| `/status` | Đang chạy gì, **tới bước mấy / tổng số bước**, đã chạy bao lâu, 5 lịch sắp tới — kèm nút ⏸ Tạm dừng / ■ Dừng (đang tạm dừng: ▶ Chạy tiếp / ⏭ Một bước / ■ Dừng) |
+| `/pause` · `/tiep` · `/buoc` | Tạm dừng flow trước bước kế tiếp · chạy tiếp · chạy một bước rồi dừng lại (như khung trạng thái trên máy) |
 | `/stop` | Dừng flow đang chạy |
-| `/status` | Đang chạy gì, 5 lịch sắp tới |
 | `/history 10` | 10 lần chạy gần nhất |
 | `/screenshot` | Chụp màn hình máy tính gửi về điện thoại |
-| `/new <mô tả>` | Tạo công việc mới bằng AI (cần khóa Claude trong ⚙ Cài đặt → Tích hợp) — trả về bản nháp để xem trước |
+| `/new <mô tả>` | Tạo công việc mới bằng AI (cần khóa Claude trong ⚙ Cài đặt → Tích hợp) — trả về bản nháp để xem trước, có nút **✔ Lưu · ▶ Lưu và chạy · ✖ Bỏ** |
 | *(nhắn thường)* · `/sua <yêu cầu>` | Sửa bản nháp đang có, vd "dùng Edge thay Chrome", "chỉ chạy thứ 2 và thứ 6" |
 | `/ok` · `/ok chay` | Lưu bản nháp thành công việc (nhóm *Telegram*) · lưu và chạy ngay |
 | `/huy` | Bỏ bản nháp |
+
+**Nút bấm dưới tin báo kết quả:** 🔁 **Chạy lại** · 📷 **Màn hình** (khi lỗi) · 📜 **Lịch sử** — có khi đã bật nhận lệnh và chat id là chat riêng. Nút chỉ có tác dụng khi chính bạn bấm trong chat riêng với bot; nút **Lưu / Bỏ** ở tin xem trước cũ không lưu nhầm bản nháp đã sửa sau đó. Công việc chờ duyệt không có nút ▶ và bấm Chạy lại cũng bị từ chối như `/run`.
+
+**Không mất tin khi mạng chập chờn:** thông báo và câu trả lời của bot tự gửi lại sau 2 rồi 5 giây khi mạng / máy chủ Telegram lỗi, và chờ đúng thời gian Telegram yêu cầu khi bị giới hạn tốc độ (gửi quá nhiều tin). Vẫn không được thì ghi vào nhật ký.
 
 **Tạo công việc từ điện thoại:** `/new 8h sáng các ngày làm việc mở D:\bao-cao.xlsx, làm mới dữ liệu, lưu rồi báo cho tôi` → bot báo "⏳ Đang dựng…" (20–60 giây) rồi gửi bản nháp: tên, **lịch chạy** (AI đặt luôn khi bạn nói giờ chạy — hằng ngày, các thứ trong tuần, mỗi N phút trong khung giờ, ngày cuối tháng, một lần lúc…), kích hoạt (phím tắt, khi có email / file mới…), danh sách bước, biến và những việc cần kiểm tra. Nhắn thêm để sửa — AI nhớ cả hội thoại — rồi `/ok`. Không nói giờ chạy → công việc chạy thủ công bằng `/run`. Công việc tên trùng được thêm số để `/run` theo tên không nhầm; mở trên máy để xem / sửa chi tiết như công việc thường. Các bản nháp do AI dựng nên xem kỹ trước khi `/ok chay`, nhất là bước click / gõ phím trên máy.
 
@@ -435,6 +440,7 @@ Trong trình soạn công việc bấm **● Ghi thao tác…** → các cửa s
   3. Hình mẫu tự co giãn khi màn hình đổi mức scale; độ khớp mặc định 80%.
 
   Thẻ bước hiện ảnh thu nhỏ của hình mẫu. Trong form soạn bước: xem hình (dấu chữ thập đỏ = điểm sẽ click), chụp lại, bỏ hình, chỉnh độ khớp / thời gian chờ, **Thử tìm trên màn hình**. Tắt bằng ô *Chụp hình chỗ được click* trên thanh "Đang ghi". Bấm vào vùng trống / ít chi tiết vẫn ghi theo tọa độ.
+- **Ảnh lúc ghi (cả cửa sổ):** mỗi click / kéo thả còn lưu ảnh cả cửa sổ ứng dụng lúc nhấn chuột (khung nhìn thấy của cửa sổ, không phải cả màn hình; thanh "Đang ghi" không lọt vào ảnh). Form soạn bước có dòng **Ảnh lúc ghi** với vòng đỏ tại chỗ đã click, bấm để **Xem lớn**, **Bỏ ảnh** để xóa khỏi bước. Ảnh chỉ để xem lại, không dùng khi chạy. Lưu thành file JPEG (cạnh dài tối đa 1600 px) trong `%AppData%\ScheduleApp\recorded-shots`, bước chỉ giữ tên file — `jobs.json` không phình, ảnh không gửi cho AI và không đi kèm khi xuất công việc. Ảnh không còn bước nào dùng (kể cả trong phiên bản cũ) được tự xóa sau 14 ngày. Tắt bằng ô *Lưu ảnh cả cửa sổ lúc click* trên thanh "Đang ghi".
 - Nhấn giữ rồi kéo → *Kéo thả chuột*; lăn bánh xe → *Cuộn chuột* (các lần cuộn liên tiếp được gộp).
 - Chuyển sang cửa sổ khác → tự chèn *Chờ cửa sổ xuất hiện* trước thao tác đầu tiên trên cửa sổ đó.
 - Chữ gõ liên tiếp → một bước *Gõ văn bản* (Backspace sửa chữ được tính luôn; hỗ trợ Unikey/EVKey). Gõ vào **ô mật khẩu** → lưu thành `{{secret:MatKhau}}` thay vì mật khẩu thật (thêm bí mật "MatKhau" trong 🔑 Bí mật).
