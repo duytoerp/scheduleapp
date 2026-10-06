@@ -7,6 +7,9 @@ namespace ScheduleApp.UI;
 /// <summary>Lịch sử chạy: lọc theo công việc / kết quả, xem ảnh chụp lỗi, mở nhật ký ngày tương ứng.</summary>
 internal sealed class HistoryForm : BaseForm
 {
+    protected override SizeF ScreenShare => new(0.72f, 0.8f);
+    protected override string? LayoutKey => "History";
+
     private readonly IReadOnlyList<Job> _jobs;
     private readonly ComboBox _cboJob = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
     private readonly CheckBox _chkErrors = new() { Text = "Chỉ lần lỗi", AutoSize = true, Margin = new Padding(12, 6, 3, 3) };

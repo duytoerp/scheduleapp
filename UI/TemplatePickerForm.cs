@@ -7,6 +7,8 @@ namespace ScheduleApp.UI;
 /// <summary>Kho mẫu có sẵn (nhúng trong ứng dụng): chọn một mẫu để tạo công việc mới rồi chỉnh sửa.</summary>
 internal sealed class TemplatePickerForm : BaseForm
 {
+    protected override SizeF ScreenShare => new(0.62f, 0.7f);
+
     private readonly ListView _list = new() { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, MultiSelect = false, HideSelection = false };
     private readonly TextBox _detail = new() { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BackColor = Color.White, BorderStyle = BorderStyle.None };
     private readonly List<Job> _templates;

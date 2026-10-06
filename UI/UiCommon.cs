@@ -17,7 +17,30 @@ internal class BaseForm : Form
     {
         Theme.Apply(this);
         base.OnLoad(e);
+        // Đã scale theo DPI của màn hình → đặt kích thước theo tỉ lệ màn hình, thu cho vừa nếu màn hình nhỏ.
+        WindowFit.Apply(this, ScreenShare, LayoutKey);
     }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        base.OnFormClosing(e);
+        RememberLayout();
+    }
+
+    /// <summary>Nhớ vị trí / kích thước hiện tại (theo tỉ lệ màn hình) nếu cửa sổ có <see cref="LayoutKey"/>.</summary>
+    protected void RememberLayout()
+    {
+        if (LayoutKey is { } key) WindowFit.Remember(this, key);
+    }
+
+    /// <summary>
+    /// Tỉ lệ cửa sổ so với vùng làm việc của màn hình (vd 0.8 × 0.85) — cửa sổ lớn trông giống nhau trên mọi máy.
+    /// Rỗng = giữ kích thước thiết kế (đã scale theo DPI), chỉ thu lại khi màn hình nhỏ hơn.
+    /// </summary>
+    protected virtual SizeF ScreenShare => SizeF.Empty;
+
+    /// <summary>Tên để nhớ vị trí / kích thước cửa sổ giữa các lần mở (null = không nhớ).</summary>
+    protected virtual string? LayoutKey => null;
 
     /// <summary>Chủ đề hướng dẫn mở khi nhấn F1 ở cửa sổ này.</summary>
     protected virtual string HelpTopicId => HelpContent.Start;

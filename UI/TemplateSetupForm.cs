@@ -12,6 +12,8 @@ namespace ScheduleApp.UI;
 /// </summary>
 internal sealed class TemplateSetupForm : BaseForm
 {
+    protected override SizeF ScreenShare => new(0.56f, 0.7f);
+
     private readonly List<Item> _items;
     private readonly Action? _openSettings;
     private readonly Dictionary<Item, TextBox> _inputs = [];

@@ -253,6 +253,9 @@ internal sealed class HelpView : UserControl
 /// <summary>Cửa sổ hướng dẫn mở bằng F1 từ các hộp thoại — không chặn hộp thoại, để vừa đọc vừa làm.</summary>
 internal sealed class HelpWindow : BaseForm
 {
+    protected override SizeF ScreenShare => new(0.62f, 0.8f);
+    protected override string? LayoutKey => "Help";
+
     private static HelpWindow? _instance;
     private readonly HelpView _view = new(null, showHeader: false);
 

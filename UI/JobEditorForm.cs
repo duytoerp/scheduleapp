@@ -10,6 +10,9 @@ namespace ScheduleApp.UI;
 /// <summary>Soạn một công việc: tên, lịch chạy, kích hoạt, biến, xử lý lỗi và danh sách bước (flow).</summary>
 internal sealed class JobEditorForm : BaseForm
 {
+    protected override SizeF ScreenShare => new(0.8f, 0.88f);
+    protected override string? LayoutKey => "JobEditor";
+
     private static readonly CultureInfo Vi = new("vi-VN");
     private static readonly DayOfWeek[] WeekOrder =
         [DayOfWeek.Monday, DayOfWeek.Tuesday, DayOfWeek.Wednesday, DayOfWeek.Thursday, DayOfWeek.Friday, DayOfWeek.Saturday, DayOfWeek.Sunday];

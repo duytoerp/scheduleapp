@@ -10,6 +10,9 @@ namespace ScheduleApp.UI;
 /// </summary>
 internal sealed class AiFlowForm : BaseForm
 {
+    protected override SizeF ScreenShare => new(0.66f, 0.82f);
+    protected override string? LayoutKey => "AiFlow";
+
     private readonly FlowGenerator.Context _context;
     private FlowGenerator? _generator;
     private CancellationTokenSource? _cts;

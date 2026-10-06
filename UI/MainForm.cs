@@ -9,6 +9,9 @@ namespace ScheduleApp.UI;
 
 internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHost, ITestHost, IHelpHost
 {
+    protected override SizeF ScreenShare => new(0.78f, 0.82f);
+    protected override string? LayoutKey => "Main";
+
     private const int StopHotkeyId = 0x5AFE;
     private const int MaxLogChars = 200_000;
 
@@ -1382,6 +1385,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         {
             // Nút X chỉ ẩn xuống khay để lịch vẫn chạy.
             e.Cancel = true;
+            RememberLayout();
             Hide();
             if (!_trayTipShown)
             {

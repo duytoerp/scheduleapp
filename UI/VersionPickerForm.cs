@@ -6,6 +6,8 @@ namespace ScheduleApp.UI;
 /// <summary>Danh sách phiên bản cũ của một công việc: xem các bước của từng bản và chọn bản để khôi phục.</summary>
 internal sealed class VersionPickerForm : BaseForm
 {
+    protected override SizeF ScreenShare => new(0.58f, 0.66f);
+
     private readonly List<JobVersions.Version> _versions;
     private readonly ListView _list = new() { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, MultiSelect = false, HideSelection = false };
     private readonly TextBox _detail = new() { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, BackColor = Color.White };

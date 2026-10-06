@@ -73,6 +73,9 @@ public sealed class AppSettings
     /// <summary>Thư mục kịch bản kiểm thử dùng cho Xuất / Nhập (vd thư mục trong repo git).</summary>
     public string TestFolder { get; set; } = "";
 
+    /// <summary>Vị trí / kích thước cửa sổ đã nhớ (cửa sổ chính, trình soạn công việc…) — theo tỉ lệ màn hình, không theo pixel.</summary>
+    public Dictionary<string, WindowLayout> Windows { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// Phiên bản cấu trúc settings.json — để chuyển đổi cài đặt cũ đúng một lần (xem SettingsStore.Upgrade).
     /// File cũ không có mục này → 0. Mặc định 0 cả khi tạo mới: file chưa có cũng đi qua bước chuyển đổi (không đổi gì).
@@ -84,6 +87,21 @@ public sealed class AppSettings
 /// Môi trường kiểm thử: tên + các biến (vd d365Url, tài khoản test) dùng chung cho mọi kịch bản khi chạy ở môi trường này.
 /// Giá trị lưu chữ thường (còn xuất ra thư mục kiểm thử) — mật khẩu ghi dạng {{secret:Tên}}, được thay khi chạy.
 /// </summary>
+/// <summary>
+/// Vị trí / kích thước cửa sổ theo tỉ lệ vùng làm việc của màn hình (0–1) — mở lại trên màn hình / máy có độ phân giải khác vẫn
+/// chiếm đúng phần đó của màn hình.
+/// </summary>
+public sealed class WindowLayout
+{
+    /// <summary>Tên màn hình (\\.\DISPLAY1…); không còn màn hình đó thì dùng màn hình chính.</summary>
+    public string Screen { get; set; } = "";
+    public double X { get; set; }
+    public double Y { get; set; }
+    public double W { get; set; }
+    public double H { get; set; }
+    public bool Maximized { get; set; }
+}
+
 public sealed class TestEnvironment
 {
     public string Name { get; set; } = "";
