@@ -14,7 +14,7 @@
     <AssemblyName>ScheduleApp</AssemblyName>
     <RootNamespace>ScheduleApp</RootNamespace>
     <Product>ScheduleApp</Product>
-    <Version>2.2.0</Version>
+    <Version>2.2.1</Version>
     <!-- Project kiểm thử và bộ cài nằm trong cùng thư mục — không biên dịch vào ứng dụng -->
     <DefaultItemExcludes>$(DefaultItemExcludes);tests/**;installer/**;publish/**</DefaultItemExcludes>
   </PropertyGroup>
