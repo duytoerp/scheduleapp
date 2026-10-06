@@ -76,7 +76,7 @@ public sealed class AppSettings
     /// <summary>Thư mục kịch bản kiểm thử dùng cho Xuất / Nhập (vd thư mục trong repo git).</summary>
     public string TestFolder { get; set; } = "";
 
-    /// <summary>Cách nhìn flow trong trình soạn công việc: "graph" (sơ đồ) hoặc "list" (danh sách thụt lề).</summary>
+    /// <summary>Cách nhìn flow trong trình soạn công việc: "graph" (sơ đồ), "list" (danh sách thụt lề) hoặc "tree" (cây).</summary>
     public string FlowView { get; set; } = "graph";
 
     /// <summary>Vị trí / kích thước cửa sổ đã nhớ (cửa sổ chính, trình soạn công việc…) — theo tỉ lệ màn hình, không theo pixel.</summary>

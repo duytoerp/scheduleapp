@@ -5,7 +5,9 @@ namespace ScheduleApp.UI;
 /// <summary>
 /// Cách nhìn "Danh sách" của flow: mỗi bước một dòng (số thứ tự, biểu tượng, mô tả đầy đủ), bước trong Nếu / Lặp thụt vào,
 /// bấm ▾ / ▸ để thu gọn / mở khối. Dùng chung dữ liệu, vùng chọn, trạng thái chạy, menu chuột phải và phím tắt với sơ đồ
-/// (<see cref="FlowDesigner"/>) — chuyển qua lại giữa hai cách nhìn vẫn giữ bước đang chọn.
+/// (<see cref="FlowDesigner"/>) — chuyển qua lại giữa các cách nhìn vẫn giữ bước đang chọn.
+/// <para>Chế độ <see cref="Tree"/> ("Cây"): đường nối kiểu cây thư mục, nút ⊞ / ⊟; "Không thì" là nút con của Nếu chứa nhánh sai;
+/// ẩn dòng Hết Nếu / Hết lặp (cấu trúc đã thể hiện bằng nhánh cây).</para>
 /// </summary>
 internal sealed class FlowListView : Panel
 {
@@ -16,6 +18,7 @@ internal sealed class FlowListView : Panel
     private static readonly Color DoneColor = Color.FromArgb(34, 154, 68);
     private static readonly Color FailColor = Color.FromArgb(196, 43, 28);
     private static readonly Color GuideColor = Color.FromArgb(222, 226, 232);
+    private static readonly Color TreeLineColor = Color.FromArgb(176, 182, 190);
     private static readonly Color Muted = Color.FromArgb(110, 114, 122);
     private static readonly Color Disabled = Color.FromArgb(160, 164, 170);
 
@@ -26,6 +29,11 @@ internal sealed class FlowListView : Panel
     /// <summary>Khối Nếu / Lặp đang thu gọn — nhớ theo chính bước đó (thêm / xóa bước khác không làm lệch).</summary>
     private readonly HashSet<ActionStep> _collapsed = new(ReferenceEqualityComparer.Instance);
     private List<int> _rows = [];
+    private int[] _treeDepth = [];
+    /// <summary>Chế độ cây, theo từng dòng: bit k = kẻ đường dọc đi qua ở cột k; dòng là con cuối của nút cha.</summary>
+    private ulong[] _rowLines = [];
+    private bool[] _rowLast = [];
+    private bool _tree;
     private int _hoverRow = -1;
     private int _dropRow = -1;
     private bool _dropAfter;
@@ -69,6 +77,20 @@ internal sealed class FlowListView : Panel
     /// <summary>Vị trí các bước đang hiện (bỏ phần bên trong khối đã thu gọn).</summary>
     internal IReadOnlyList<int> Rows => _rows;
 
+    /// <summary>Hiện dạng cây thay vì danh sách thụt lề.</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal bool Tree
+    {
+        get => _tree;
+        set
+        {
+            if (_tree == value) return;
+            _tree = value;
+            Rebuild();
+            RevealSelected();
+        }
+    }
+
     internal static List<int> VisibleRows(IReadOnlyList<ActionStep> steps, FlowStructure fs, Func<ActionStep, bool> collapsed)
     {
         var rows = new List<int>(steps.Count);
@@ -84,16 +106,116 @@ internal sealed class FlowListView : Panel
     internal static int InnerCount(IReadOnlyList<ActionStep> steps, FlowStructure fs, int head) =>
         fs.Match[head] > head ? Enumerable.Range(head + 1, fs.Match[head] - head - 1).Count(k => !StepVisuals.IsMarker(steps[k].Type)) : 0;
 
+    /// <summary>"Không thì" ghép đúng với một Nếu (ở dạng cây là nút con của Nếu, chứa nhánh sai).</summary>
+    private static bool IsBranch(IReadOnlyList<ActionStep> steps, FlowStructure fs, int i) =>
+        steps[i].Type == StepType.Else && !fs.Invalid[i] && fs.Match[i] > i;
+
+    /// <summary>Hết Nếu / Hết lặp đã ghép đúng — dạng cây không hiện (cấu trúc thấy qua nhánh cây).</summary>
+    private static bool IsHiddenEnd(IReadOnlyList<ActionStep> steps, FlowStructure fs, int i) =>
+        steps[i].Type is StepType.EndIf or StepType.EndLoop && !fs.Invalid[i] && fs.Match[i] >= 0 && fs.Match[i] < i;
+
+    /// <summary>Dòng của dạng cây: bỏ Hết Nếu / Hết lặp, bỏ phần bên trong Nếu / Lặp / Không thì đang thu gọn.</summary>
+    internal static List<int> TreeRows(IReadOnlyList<ActionStep> steps, FlowStructure fs, Func<ActionStep, bool> collapsed)
+    {
+        var rows = new List<int>(steps.Count);
+        for (int i = 0; i < steps.Count; i++)
+        {
+            if (IsHiddenEnd(steps, fs, i)) continue;
+            rows.Add(i);
+            if (!collapsed(steps[i])) continue;
+            if (steps[i].Type is StepType.If or StepType.Loop && fs.Match[i] > i) i = fs.Match[i];
+            else if (IsBranch(steps, fs, i)) i = fs.Match[i] - 1;   // tới ngay trước Hết Nếu (dòng ẩn)
+        }
+        return rows;
+    }
+
+    /// <summary>Độ sâu ở dạng cây: như danh sách, thêm một bậc cho "Không thì" (con của Nếu) và mọi bước trong nhánh sai.</summary>
+    internal static int[] TreeDepths(IReadOnlyList<ActionStep> steps, FlowStructure fs)
+    {
+        var depth = new int[steps.Count];
+        var extra = new int[steps.Count + 1];
+        for (int i = 0; i < steps.Count; i++)
+            if (IsBranch(steps, fs, i))
+            {
+                extra[i + 1]++;
+                extra[fs.Match[i]]--;
+            }
+        int add = 0;
+        for (int i = 0; i < steps.Count; i++)
+        {
+            add += extra[i];
+            depth[i] = fs.Depth[i] + add + (IsBranch(steps, fs, i) ? 1 : 0);
+        }
+        return depth;
+    }
+
     private bool IsCollapsed(ActionStep s) => _collapsed.Contains(s);
+
+    /// <summary>Dòng này thu gọn / mở được: đầu khối Nếu / Lặp, ở dạng cây thêm "Không thì".</summary>
+    private bool IsHead(int i)
+    {
+        var steps = _designer.Steps;
+        var fs = _designer.Structure;
+        return steps[i].Type is StepType.If or StepType.Loop && fs.Match[i] > i || _tree && IsBranch(steps, fs, i);
+    }
+
+    /// <summary>Bước cuối thuộc khối bắt đầu ở <paramref name="head"/> (Hết Nếu / Hết lặp; với "Không thì" là bước ngay trước Hết Nếu).</summary>
+    private int BlockEnd(int head) =>
+        _designer.Steps[head].Type == StepType.Else ? _designer.Structure.Match[head] - 1 : _designer.Structure.Match[head];
+
+    private int DepthOf(int i) => _tree && i < _treeDepth.Length ? _treeDepth[i] : _designer.Structure.Depth[i];
+
+    /// <summary>Dạng cây không có dòng Hết Nếu / Hết lặp → bước đó (đang chọn / đang chạy) hiện ở dòng đầu khối.</summary>
+    private int ShownAs(int index)
+    {
+        if (!_tree || index < 0 || index >= _designer.StepCount) return index;
+        return IsHiddenEnd(_designer.Steps, _designer.Structure, index) ? _designer.Structure.Match[index] : index;
+    }
 
     private void Rebuild()
     {
         var steps = _designer.Steps;
         _collapsed.RemoveWhere(s => !steps.Contains(s));
-        _rows = VisibleRows(steps, _designer.Structure, IsCollapsed);
-        AutoScrollMinSize = new Size(0, _rows.Count * RowHeight + S(8));
+        ComputeRows();
         if (_designer.RunningIndex >= 0) RevealStep(_designer.RunningIndex);
         Invalidate();
+    }
+
+    private void ComputeRows()
+    {
+        var steps = _designer.Steps;
+        var fs = _designer.Structure;
+        if (_tree)
+        {
+            _treeDepth = TreeDepths(steps, fs);
+            _rows = TreeRows(steps, fs, IsCollapsed);
+            ComputeTreeLines();
+        }
+        else _rows = VisibleRows(steps, fs, IsCollapsed);
+        AutoScrollMinSize = new Size(0, _rows.Count * RowHeight + S(8));
+    }
+
+    /// <summary>
+    /// Đường nối cây, quét ngược từ dòng cuối: cột k có đường dọc đi qua dòng nếu phía dưới còn nút ở độ sâu k + 1
+    /// trước khi gặp nút nông hơn hoặc bằng k; dòng là con cuối nếu phía dưới không còn anh em.
+    /// </summary>
+    private void ComputeTreeLines()
+    {
+        _rowLines = new ulong[_rows.Count];
+        _rowLast = new bool[_rows.Count];
+        ulong pending = 0;
+        for (int row = _rows.Count - 1; row >= 0; row--)
+        {
+            int d = Math.Min(DepthOf(_rows[row]), 63);
+            ulong shallower = (1UL << d) - 1;   // các cột < d
+            _rowLines[row] = pending & shallower;
+            pending &= shallower;               // nút ở độ sâu d cắt đường của các cột ≥ d
+            if (d > 0)
+            {
+                _rowLast[row] = (pending & (1UL << (d - 1))) == 0;
+                pending |= 1UL << (d - 1);
+            }
+        }
     }
 
     /// <summary>Bước nằm trong khối đang thu gọn → mở các khối đó (vd bước đang chạy / bước lỗi / bước vừa chọn).</summary>
@@ -102,14 +224,11 @@ internal sealed class FlowListView : Panel
         var steps = _designer.Steps;
         var fs = _designer.Structure;
         if (index < 0 || index >= steps.Count) return;
+        index = ShownAs(index);
         bool opened = false;
         for (int h = 0; h < index; h++)
-            if (steps[h].Type is StepType.If or StepType.Loop && fs.Match[h] >= index && _collapsed.Remove(steps[h])) opened = true;
-        if (opened)
-        {
-            _rows = VisibleRows(steps, fs, IsCollapsed);
-            AutoScrollMinSize = new Size(0, _rows.Count * RowHeight + S(8));
-        }
+            if (IsHead(h) && BlockEnd(h) >= index && _collapsed.Remove(steps[h])) opened = true;
+        if (opened) ComputeRows();
         ScrollToRow(_rows.IndexOf(index));
     }
 
@@ -133,27 +252,26 @@ internal sealed class FlowListView : Panel
 
     private int IndentX(int depth) => S(46) + depth * S(22);
 
-    /// <summary>Ô ▾ / ▸ của khối Nếu / Lặp ở dòng này (rỗng nếu không phải đầu khối).</summary>
+    /// <summary>Ô ▾ / ▸ (dạng cây: ⊞ / ⊟) của khối ở dòng này (rỗng nếu không phải đầu khối).</summary>
     private Rectangle ToggleRect(int row)
     {
         int i = _rows[row];
-        var steps = _designer.Steps;
-        if (steps[i].Type is not (StepType.If or StepType.Loop) || _designer.Structure.Match[i] <= i) return Rectangle.Empty;
+        if (!IsHead(i)) return Rectangle.Empty;
         var r = RowRect(row);
-        return new Rectangle(IndentX(_designer.Structure.Depth[i]) - S(2), r.Y, S(18), r.Height);
+        return new Rectangle(IndentX(DepthOf(i)) - S(2), r.Y, S(18), r.Height);
     }
 
     internal void ToggleBlock(int index, bool? expand = null)
     {
         var steps = _designer.Steps;
-        if (index < 0 || index >= steps.Count || steps[index].Type is not (StepType.If or StepType.Loop)) return;
+        if (index < 0 || index >= steps.Count || !IsHead(index)) return;
         bool collapsed = IsCollapsed(steps[index]);
         bool open = expand ?? collapsed;
         if (open) _collapsed.Remove(steps[index]);
         else _collapsed.Add(steps[index]);
         // Bước đang chọn bị giấu vào khối vừa thu → chọn đầu khối.
         int sel = _designer.SelectedIndex;
-        if (!open && sel > index && sel <= _designer.Structure.Match[index]) _designer.SelectStep(index);
+        if (!open && sel > index && sel <= BlockEnd(index) && ShownAs(sel) != index) _designer.SelectStep(index);
         Rebuild();
     }
 
@@ -175,12 +293,16 @@ internal sealed class FlowListView : Panel
         int last = Math.Min(_rows.Count - 1, (e.ClipRectangle.Bottom - AutoScrollPosition.Y) / RowHeight);
         for (int row = first; row <= last; row++) DrawRow(g, row, steps, fs);
 
-        if (_dropRow >= 0)
+        if (_dropRow >= 0 && _dropRow <= _rows.Count)
         {
-            var r = RowRect(_dropRow);
-            int y = _dropAfter ? r.Bottom - 1 : r.Top;
+            // _dropRow == _rows.Count: thả xuống khoảng trống dưới cùng → cuối flow.
+            bool end = _dropRow == _rows.Count;
+            var r = RowRect(end ? _rows.Count - 1 : _dropRow);
+            int y = _dropAfter || end ? r.Bottom - 1 : r.Top;
+            int i = end ? -1 : _rows[_dropRow];
+            int depth = end ? 0 : DepthOf(i) + (_dropAfter && IsHead(i) && !IsCollapsed(steps[i]) ? 1 : 0);
             using var pen = new Pen(RunColor, S(2));
-            g.DrawLine(pen, IndentX(fs.Depth[_rows[_dropRow]]), y, ClientSize.Width - S(8), y);
+            g.DrawLine(pen, IndentX(depth), y, ClientSize.Width - S(8), y);
         }
     }
 
@@ -189,7 +311,7 @@ internal sealed class FlowListView : Panel
         int i = _rows[row];
         var s = steps[i];
         var r = RowRect(row);
-        bool selected = i == _designer.SelectedIndex, running = i == _designer.RunningIndex, failed = i == _designer.FailedIndex;
+        bool selected = i == ShownAs(_designer.SelectedIndex), running = i == ShownAs(_designer.RunningIndex), failed = i == ShownAs(_designer.FailedIndex);
         var back = failed ? FailBack : running ? RunBack : selected ? Theme.AccentSoft : row == _hoverRow ? HoverBack : BackColor;
         using (var b = new SolidBrush(back)) g.FillRectangle(b, r);
         if (running || failed || selected)
@@ -207,19 +329,21 @@ internal sealed class FlowListView : Panel
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.Default;
         }
 
-        // Đường dọc nối các bước cùng khối.
-        int depth = fs.Depth[i];
-        using (var guide = new Pen(GuideColor))
-            for (int k = 0; k < depth; k++)
-            {
-                int gx = IndentX(k) + S(7);
-                g.DrawLine(guide, gx, r.Top, gx, r.Bottom);
-            }
-
+        int depth = DepthOf(i);
         int x = IndentX(depth);
-        bool head = s.Type is StepType.If or StepType.Loop && fs.Match[i] > i;
+        bool head = IsHead(i);
         bool collapsed = head && IsCollapsed(s);
-        if (head)
+        if (_tree) DrawTreeLines(g, row, r, depth, head && !collapsed);
+        else
+            using (var guide = new Pen(GuideColor))   // đường dọc nối các bước cùng khối
+                for (int k = 0; k < depth; k++)
+                {
+                    int gx = IndentX(k) + S(7);
+                    g.DrawLine(guide, gx, r.Top, gx, r.Bottom);
+                }
+
+        if (head && _tree) DrawTreeToggle(g, x + S(7), r.Y + r.Height / 2, collapsed);
+        else if (head)
             TextRenderer.DrawText(g, collapsed ? "▸" : "▾", _bold, new Rectangle(x - S(2), r.Y, S(18), r.Height), Muted,
                 OneLine | TextFormatFlags.HorizontalCenter);
         x += S(18);
@@ -227,8 +351,18 @@ internal sealed class FlowListView : Panel
         var textColor = fs.Invalid[i] ? FailColor : s.Enabled ? Theme.Text : Disabled;
         if (StepVisuals.IsMarker(s.Type))
         {
+            var labelRect = new Rectangle(x, r.Y, r.Right - x - S(8), r.Height);
+            if (_tree && IsBranch(steps, fs, i))
+            {
+                // Dạng cây: "Không thì" là nhánh con của Nếu.
+                string hidden = collapsed
+                    ? $"   … {Enumerable.Range(i + 1, Math.Max(0, BlockEnd(i) - i)).Count(k => !StepVisuals.IsMarker(steps[k].Type))} bước"
+                    : "";
+                TextRenderer.DrawText(g, "Không thì (nhánh sai)" + hidden, _bold, labelRect, Muted, OneLine);
+                return;
+            }
             var label = s.Type switch { StepType.Else => "Không thì", StepType.EndIf => "Hết Nếu", _ => "Hết lặp" };
-            TextRenderer.DrawText(g, label, _small, new Rectangle(x, r.Y, r.Right - x - S(8), r.Height), fs.Invalid[i] ? FailColor : Muted, OneLine);
+            TextRenderer.DrawText(g, label, _small, labelRect, fs.Invalid[i] ? FailColor : Muted, OneLine);
             return;
         }
 
@@ -245,6 +379,44 @@ internal sealed class FlowListView : Panel
                 failed ? FailColor : running ? RunColor : _designer.IsDone(i) ? DoneColor : Muted, OneLine | TextFormatFlags.Right);
 
         TextRenderer.DrawText(g, s.Describe(), head ? _bold : _text, new Rectangle(x, r.Y, r.Right - x - statusWidth - S(8), r.Height), textColor, OneLine);
+    }
+
+    /// <summary>Đường chấm nối cây: cột cha (├ / └), các cột tổ tiên còn anh em phía dưới (│), xuống con nếu nút đang mở.</summary>
+    private void DrawTreeLines(Graphics g, int row, Rectangle r, int depth, bool open)
+    {
+        using var pen = new Pen(TreeLineColor) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dot };
+        int mid = r.Y + r.Height / 2;
+        ulong lines = row < _rowLines.Length ? _rowLines[row] : 0;
+        for (int k = 0; k < depth - 1 && k < 64; k++)
+            if ((lines & (1UL << k)) != 0)
+            {
+                int gx = IndentX(k) + S(7);
+                g.DrawLine(pen, gx, r.Top, gx, r.Bottom);
+            }
+        if (depth > 0)
+        {
+            int px = IndentX(depth - 1) + S(7);
+            bool last = row < _rowLast.Length && _rowLast[row];
+            g.DrawLine(pen, px, r.Top, px, last ? mid : r.Bottom);
+            g.DrawLine(pen, px, mid, IndentX(depth) + (IsHead(_rows[row]) ? S(2) : S(14)), mid);
+        }
+        if (open && row + 1 < _rows.Count && DepthOf(_rows[row + 1]) > depth)
+        {
+            int cx = IndentX(depth) + S(7);
+            g.DrawLine(pen, cx, mid, cx, r.Bottom);
+        }
+    }
+
+    /// <summary>Ô vuông ⊞ / ⊟ kiểu cây thư mục.</summary>
+    private void DrawTreeToggle(Graphics g, int cx, int cy, bool collapsed)
+    {
+        int h = S(5);
+        var box = new Rectangle(cx - h, cy - h, 2 * h, 2 * h);
+        g.FillRectangle(Brushes.White, box);
+        using (var border = new Pen(Muted)) g.DrawRectangle(border, box);
+        using var sign = new Pen(Theme.Text);
+        g.DrawLine(sign, cx - h + S(2), cy, cx + h - S(2), cy);
+        if (collapsed) g.DrawLine(sign, cx, cy - h + S(2), cx, cy + h - S(2));
     }
 
     // ───────────────────────────── Chuột & bàn phím ─────────────────────────────
@@ -295,7 +467,7 @@ internal sealed class FlowListView : Panel
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
-        int row = _rows.IndexOf(_designer.SelectedIndex);
+        int row = _rows.IndexOf(ShownAs(_designer.SelectedIndex));
         bool handled = true;
         switch (e.KeyCode)
         {
@@ -308,9 +480,9 @@ internal sealed class FlowListView : Panel
             case Keys.Left when !e.Control:
             {
                 // Thu khối đang mở; đang ở bước bên trong → về đầu khối chứa nó.
-                int i = _designer.SelectedIndex;
+                int i = ShownAs(_designer.SelectedIndex);
                 if (i < 0) break;
-                if (_designer.Steps[i].Type is StepType.If or StepType.Loop && !IsCollapsed(_designer.Steps[i])) ToggleBlock(i, expand: false);
+                if (IsHead(i) && !IsCollapsed(_designer.Steps[i])) ToggleBlock(i, expand: false);
                 else if (ParentHead(i) is int h and >= 0) _designer.SelectStep(h);
                 break;
             }
@@ -341,13 +513,11 @@ internal sealed class FlowListView : Panel
         _designer.SelectStep(_rows[Math.Clamp(row, 0, _rows.Count - 1)]);
     }
 
-    /// <summary>Đầu khối Nếu / Lặp gần nhất chứa bước <paramref name="index"/> (-1 nếu ở ngoài cùng).</summary>
+    /// <summary>Đầu khối gần nhất chứa bước <paramref name="index"/> (Nếu / Lặp; dạng cây thêm "Không thì"); -1 nếu ở ngoài cùng.</summary>
     private int ParentHead(int index)
     {
-        var steps = _designer.Steps;
-        var fs = _designer.Structure;
         for (int h = index - 1; h >= 0; h--)
-            if (steps[h].Type is StepType.If or StepType.Loop && fs.Match[h] > index) return h;
+            if (IsHead(h) && BlockEnd(h) >= index) return h;
         return -1;
     }
 
@@ -384,7 +554,7 @@ internal sealed class FlowListView : Panel
         var p = PointToClient(new Point(e.X, e.Y));
         int row = RowAt(p);
         bool after = row < 0 || p.Y - RowRect(row).Top > RowHeight / 2;
-        if (row < 0) row = _rows.Count - 1;
+        if (row < 0) row = _rows.Count;   // khoảng trống dưới cùng → cuối flow
         if (row != _dropRow || after != _dropAfter)
         {
             _dropRow = row;
@@ -417,8 +587,7 @@ internal sealed class FlowListView : Panel
         if (row < 0 || row >= _rows.Count) return _designer.StepCount;
         int i = _rows[row];
         if (!after) return i;
-        var s = _designer.Steps[i];
-        if (s.Type is StepType.If or StepType.Loop && IsCollapsed(s) && _designer.Structure.Match[i] > i) return _designer.Structure.Match[i] + 1;
+        if (IsHead(i) && IsCollapsed(_designer.Steps[i])) return BlockEnd(i) + 1;
         return i + 1;
     }
 

@@ -94,6 +94,7 @@ internal sealed class JobEditorForm : BaseForm
     private readonly FlowListView _flowList;
     private readonly RadioButton _viewGraph = ViewButton("◇ Sơ đồ");
     private readonly RadioButton _viewList = ViewButton("☰ Danh sách");
+    private readonly RadioButton _viewTree = ViewButton("├ Cây");
     private readonly ToolTip _tips = new();
     private readonly StepToolbox _toolbox = new() { Dock = DockStyle.Fill };
     private readonly Label _lblStepCount = new() { AutoSize = true, ForeColor = UiText.Muted, Margin = new Padding(3, 6, 3, 0) };
@@ -153,7 +154,7 @@ internal sealed class JobEditorForm : BaseForm
 
         LoadJob();
         _applyingView = true;
-        (SettingsStore.Current.FlowView == "list" ? _viewList : _viewGraph).Checked = true;
+        (SettingsStore.Current.FlowView switch { "list" => _viewList, "tree" => _viewTree, _ => _viewGraph }).Checked = true;
         _applyingView = false;
     }
 
@@ -174,6 +175,7 @@ internal sealed class JobEditorForm : BaseForm
 
     private const string GraphToolboxText = "Hộp công cụ\nKéo thả lên dây nối trên sơ đồ ➜";
     private const string ListToolboxText = "Hộp công cụ\nKéo thả vào danh sách ➜";
+    private const string TreeToolboxText = "Hộp công cụ\nKéo thả vào cây ➜";
 
     private const string GraphHint =
         "Bấm + trên dây (hoặc Tab) để thêm bước  ·  Kéo nút thả lên dây khác để di chuyển  ·  Nhấp đúp để sửa  ·  " +
@@ -184,16 +186,22 @@ internal sealed class JobEditorForm : BaseForm
         "Tab thêm bước sau dòng đang chọn  ·  Nhấp đúp (Enter) để sửa  ·  ▾ / ▸ (hoặc ← / →) thu gọn / mở khối Nếu, Lặp  ·  Chuột phải: menu của bước\n" +
         "↑↓ chọn, Ctrl+↑↓ di chuyển, Space bật/tắt, F9 điểm dừng, Ctrl+C/V sao chép, Ctrl+D nhân bản, Delete xóa, Ctrl+Z/Y hoàn tác/làm lại";
 
-    /// <summary>Đổi cách nhìn flow (sơ đồ / danh sách) — cùng bước đang chọn; nhớ lựa chọn cho lần mở sau.</summary>
-    private void SetFlowView(bool list)
+    private const string TreeHint =
+        "Tab thêm bước sau dòng đang chọn  ·  Nhấp đúp (Enter) để sửa  ·  ⊞ / ⊟ (hoặc ← / →) mở / thu nhánh Nếu, Không thì, Lặp  ·  Chuột phải: menu của bước\n" +
+        "↑↓ chọn, Ctrl+↑↓ di chuyển, Space bật/tắt, F9 điểm dừng, Ctrl+C/V sao chép, Ctrl+D nhân bản, Delete xóa, Ctrl+Z/Y hoàn tác/làm lại";
+
+    /// <summary>Đổi cách nhìn flow ("graph" sơ đồ / "list" danh sách / "tree" cây) — cùng bước đang chọn; nhớ lựa chọn cho lần mở sau.</summary>
+    private void SetFlowView(string view)
     {
+        bool list = view is "list" or "tree";
+        _flowList.Tree = view == "tree";
         _flowList.Visible = list;
         _designer.Visible = !list;
-        _toolboxHeader.Text = list ? ListToolboxText : GraphToolboxText;
-        _flowHint.Text = list ? ListHint : GraphHint;
+        _toolboxHeader.Text = view switch { "list" => ListToolboxText, "tree" => TreeToolboxText, _ => GraphToolboxText };
+        _flowHint.Text = view switch { "list" => ListHint, "tree" => TreeHint, _ => GraphHint };
         if (!_applyingView)
         {
-            SettingsStore.Current.FlowView = list ? "list" : "graph";
+            SettingsStore.Current.FlowView = view;
             SettingsStore.Save();
             FocusFlow();
         }
@@ -260,13 +268,15 @@ internal sealed class JobEditorForm : BaseForm
         toolboxPanel.Controls.Add(toolboxHeader);
 
         var designerPanel = new Panel { Dock = DockStyle.Fill, BorderStyle = BorderStyle.FixedSingle, Margin = new Padding(0, 3, 0, 3) };
-        // Hai cách nhìn cùng một flow (cùng bước đang chọn, menu, phím tắt): sơ đồ kiểu n8n hoặc danh sách thụt lề; nhớ lựa chọn.
+        // Ba cách nhìn cùng một flow (cùng bước đang chọn, menu, phím tắt): sơ đồ kiểu n8n, danh sách thụt lề, cây; nhớ lựa chọn.
         var viewBar = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = false, BackColor = Color.White, Padding = new Padding(4, 3, 4, 3) };
-        viewBar.Controls.AddRange([new Label { Text = "Cách nhìn:", AutoSize = true, ForeColor = UiText.Muted, Margin = new Padding(3, 7, 3, 3) }, _viewGraph, _viewList]);
+        viewBar.Controls.AddRange([new Label { Text = "Cách nhìn:", AutoSize = true, ForeColor = UiText.Muted, Margin = new Padding(3, 7, 3, 3) }, _viewGraph, _viewList, _viewTree]);
         _tips.SetToolTip(_viewGraph, "Sơ đồ nối từ trái sang phải, nhánh Nếu đúng/sai, vòng Lặp — thu phóng bằng Ctrl + lăn chuột");
         _tips.SetToolTip(_viewList, "Mỗi bước một dòng, bước trong Nếu / Lặp thụt vào — bấm ▾ / ▸ (hoặc ← / →) để thu gọn / mở khối");
-        _viewGraph.CheckedChanged += (_, _) => { if (_viewGraph.Checked) SetFlowView(list: false); };
-        _viewList.CheckedChanged += (_, _) => { if (_viewList.Checked) SetFlowView(list: true); };
+        _tips.SetToolTip(_viewTree, "Cây như thư mục: Nếu tách hai nhánh (đúng / Không thì), Lặp chứa các bước con, không có dòng Hết Nếu / Hết lặp — bấm ⊞ / ⊟ để mở / thu");
+        _viewGraph.CheckedChanged += (_, _) => { if (_viewGraph.Checked) SetFlowView("graph"); };
+        _viewList.CheckedChanged += (_, _) => { if (_viewList.Checked) SetFlowView("list"); };
+        _viewTree.CheckedChanged += (_, _) => { if (_viewTree.Checked) SetFlowView("tree"); };
         designerPanel.Controls.Add(_designer);
         designerPanel.Controls.Add(_flowList);
         designerPanel.Controls.Add(viewBar);

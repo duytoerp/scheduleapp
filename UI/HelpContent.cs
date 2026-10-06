@@ -80,11 +80,12 @@ internal static class HelpContent
             - **Lặp**: dây **lặp** xuống thân vòng lặp (hàng dưới) rồi quay về nút Lặp; dây **xong** đi tiếp sang bước sau.
             - Dây nét đứt phía trên: *Nhảy tới nhãn* (tím), *khi lỗi nhảy tới nhãn* (đỏ).
             - Vị trí nút tự tính theo thứ tự bước — thứ tự chạy vẫn như danh sách bước.
-            ## Hai cách nhìn: Sơ đồ / Danh sách
-            - Nút **◇ Sơ đồ** / **☰ Danh sách** ở đầu khung flow; lần mở sau nhớ cách nhìn đã chọn. Hai cách nhìn là cùng một flow: cùng bước đang chọn, menu chuột phải, phím tắt.
+            ## Ba cách nhìn: Sơ đồ / Danh sách / Cây
+            - Nút **◇ Sơ đồ** / **☰ Danh sách** / **├ Cây** ở đầu khung flow; lần mở sau nhớ cách nhìn đã chọn. Cả ba là cùng một flow: cùng bước đang chọn, menu chuột phải, phím tắt.
             - **Danh sách**: mỗi bước một dòng với số thứ tự và mô tả đầy đủ, bước trong Nếu / Lặp thụt vào — đọc nhanh flow dài.
-            - Bấm `▾` / `▸` (hoặc `←` / `→`) để thu gọn / mở khối Nếu, Lặp; khối thu gọn ghi số bước bên trong. Bước đang chạy / bị lỗi nằm trong khối thu gọn thì khối tự mở.
-            - Ở danh sách: thêm bước bằng `Tab` hoặc kéo thao tác từ hộp công cụ thả vào giữa hai dòng; sửa bằng nhấp đúp / `Enter`; di chuyển bằng `Ctrl+↑` / `Ctrl+↓`.
+            - **Cây**: như cây thư mục, có đường nối nhánh. *Nếu* tách hai nhánh: các bước khi đúng, và nút con *Không thì (nhánh sai)* chứa các bước khi sai. *Lặp* chứa các bước con. Không có dòng *Hết Nếu* / *Hết lặp* — nhìn nhánh là biết bước thuộc khối nào.
+            - Bấm `▾` / `▸` (ở cây: `⊟` / `⊞`), hoặc `←` / `→`, để thu gọn / mở khối Nếu, Lặp (ở cây thu được cả nhánh *Không thì*); khối thu gọn ghi số bước bên trong. Bước đang chạy / bị lỗi nằm trong khối thu gọn thì khối tự mở.
+            - Ở danh sách và cây: thêm bước bằng `Tab` hoặc kéo thao tác từ hộp công cụ thả vào giữa hai dòng (thả xuống khoảng trống dưới cùng = cuối flow); sửa bằng nhấp đúp / `Enter`; di chuyển bằng `Ctrl+↑` / `Ctrl+↓`.
             ## Thêm và sửa bước
             1. Di chuột lên một dây → bấm **+** → gõ tìm thao tác (không dấu cũng được) → chọn. Hoặc kéo thao tác từ hộp công cụ thả lên dây (dây sẽ chèn tô xanh). Chọn một bước rồi nhấn `Tab` để chèn ngay sau bước đó.
             2. Điền thông tin trong form soạn bước → **OK**. Bấm **▶ Thử bước này** để chạy riêng bước đó ngay.

@@ -3,9 +3,10 @@
 > Cập nhật mỗi khi bắt đầu / xong một việc. Một phiên làm việc giữ toàn bộ file (không còn nhóm agent).
 > Trạng thái: ⏳ đang làm · ✅ xong · ⛔ bị chặn · 💤 chờ người dùng
 
-**Cập nhật lần cuối:** 2026-10-06 · phiên `918ad934`: sửa bảo mật theo thứ tự — CI/bộ cài, B3, B4a, B5b xong; còn B2
+**Cập nhật lần cuối:** 2026-10-06 · phiên `918ad934`: thêm cách nhìn Danh sách + Cây cho flow; commit + push `main`
 
 ## Đang làm
+- ✅ **Cách nhìn flow: Sơ đồ / Danh sách / Cây** (2026-10-06): `UI/FlowListView.cs` dùng chung vùng chọn, menu, phím tắt với `FlowDesigner`; nút ở đầu khung flow, nhớ trong `AppSettings.FlowView` ("graph" / "list" / "tree"). Danh sách = thụt lề, ▾ / ▸ thu khối (`9a7505e`). Cây = đường nối kiểu thư mục, ⊞ / ⊟, "Không thì" là nút con của Nếu (thu được), ẩn Hết Nếu / Hết lặp đã ghép đúng. Thả xuống khoảng trống dưới cùng = cuối flow. Test Release **544 đạt, 0 lỗi, 17 bỏ qua**. Chưa phát hành (bản sau 2.2.1).
 - ✅ **Review + sửa lại B2, B3, B4a, B4b, B5b** (2026-10-05 → 06, phiên `918ad934`) — xong cả 5. Ánh xạ suy từ thứ tự commit: B2 = `962819d` · B3 = `7d661ae` · B4a = `9f7d619` · B4b = `5adf95c` · B5b = `64fe6d1`. Bản 2.2.1 (tag `v2.2.1`) đã phát hành, có B3 / B4a / B4b / B5b + tự vừa màn hình; B2 sau bản đó. Toàn bộ test Release sau B5b: **526 đạt, 0 lỗi, 17 bỏ qua**.
   - ✅ **Bảo mật CI + bộ cài** — `e8a18f7`: ci.yml `permissions: contents: read`; release.yml tên tag qua biến môi trường + kiểm dạng v1.2.3; ghim action theo mã commit; ghim Inno Setup 6.7.1; bộ cài chỉ chạy bộ cài .NET có chữ ký Microsoft (đã thử lệnh PowerShell: file Microsoft → 0, file chưa ký → 1). **Chưa kiểm:** bộ cài chưa biên dịch thử (máy không có Inno Setup — CI job `installer` sẽ kiểm khi push).
   - ✅ **B4b** — `7cbacc8` (cập nhật an toàn).
@@ -32,7 +33,7 @@
 - Test gần nhất: **263 đạt, 0 lỗi, 16 bỏ qua** (toàn bộ, chạy thật).
 
 ## Tiếp theo
-1. 💤 Commit + push khi người dùng yêu cầu (gồm cả `.claude/`).
+1. 💤 Ra bản 2.2.2 (B2 + tài liệu bảo mật + Danh sách / Cây) khi người dùng yêu cầu.
 2. Tùy chọn: bước phát video có "Esc = dừng bình thường" (review #23).
 3. Nâng cấp đề xuất (rà soát 2026-10-05, chưa sửa):
    - Nên sửa sớm: settings.json / secrets.json hỏng → giữ bản `.broken-*`, không ghi đè; bắt lỗi toàn cục + ghi crash log; bộ cài kiểm .NET 10 Desktop Runtime (hoặc publish self-contained); trình phát không giành phím khi ở màn hình khác; giới hạn thời gian chạy mỗi công việc (nhắc việc / bước treo chặn hàng đợi).
