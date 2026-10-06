@@ -159,6 +159,55 @@ public static class TestFolder
         return new MergeResult(updated, added, skipped);
     }
 
+    /// <summary>Đếm trước kết quả <see cref="Merge"/> (cùng quy tắc) để hỏi người dùng đúng con số: (cập nhật, thêm mới, bỏ qua — trùng Id công việc thường).</summary>
+    public static (int Updated, int Added, List<string> Skipped) PreviewMerge(IReadOnlyList<Job> current, IEnumerable<Job> incoming)
+    {
+        int updated = 0, added = 0;
+        var skipped = new List<string>();
+        foreach (var job in incoming)
+        {
+            var old = current.FirstOrDefault(j => j.Id == job.Id);
+            if (old == null) added++;
+            else if (!old.IsTestCase || !job.IsTestCase) skipped.Add(old.Name);
+            else updated++;
+        }
+        return (updated, added, skipped);
+    }
+
+    /// <summary>
+    /// Thay đổi biến môi trường nếu nhập <paramref name="incoming"/> (cùng tên thì thay cả môi trường): mỗi dòng một môi trường mới / biến thêm,
+    /// đổi giá trị, bị bỏ. Biến môi trường ghi đè biến của mọi kịch bản chạy với môi trường đó (kể cả công việc được gọi) → phải hỏi riêng.
+    /// Giá trị được che bí mật và rút gọn. Không có thay đổi → danh sách rỗng.
+    /// </summary>
+    public static List<string> DescribeEnvironmentChanges(IReadOnlyList<TestEnvironment> current, IEnumerable<TestEnvironment> incoming)
+    {
+        static string Show(string value)
+        {
+            var v = Log.Redact(value).Replace("\r", "").Replace("\n", " ⏎ ");
+            return v.Length > 60 ? v[..57] + "…" : v;
+        }
+        var lines = new List<string>();
+        foreach (var env in incoming)
+        {
+            var old = current.FirstOrDefault(e => e.Name.Trim().Equals(env.Name.Trim(), StringComparison.CurrentCultureIgnoreCase));
+            var before = (old?.Variables ?? []).Where(v => !string.IsNullOrWhiteSpace(v.Name))
+                .GroupBy(v => v.Name.Trim(), StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.Last().Value, StringComparer.OrdinalIgnoreCase);
+            var after = env.Variables.Where(v => !string.IsNullOrWhiteSpace(v.Name))
+                .GroupBy(v => v.Name.Trim(), StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.Last().Value, StringComparer.OrdinalIgnoreCase);
+            var changes = new List<string>();
+            foreach (var (name, value) in after)
+            {
+                if (!before.TryGetValue(name, out var was)) changes.Add($"+ {name} = {Show(value)}");
+                else if (was != value) changes.Add($"~ {name}: {Show(was)} → {Show(value)}");
+            }
+            changes.AddRange(before.Keys.Where(k => !after.ContainsKey(k)).Select(k => $"− {k}"));
+            if (changes.Count == 0) continue;
+            lines.Add($"Môi trường \"{env.Name.Trim()}\"{(old == null ? " (mới)" : "")}:");
+            lines.AddRange(changes.Select(c => "   " + c));
+        }
+        return lines;
+    }
+
     /// <summary>Nội dung công việc để so sánh (bỏ lần chạy cuối và trạng thái duyệt).</summary>
     private static string Content(Job job)
     {

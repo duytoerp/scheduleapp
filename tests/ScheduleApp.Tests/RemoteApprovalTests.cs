@@ -500,9 +500,7 @@ public class RemoteApprovalTests
         exported.Triggers.Add(new JobTrigger { Type = TriggerType.AppStartup });
         File.WriteAllText(path, JsonSerializer.Serialize(new[] { exported }, JsonDefaults.Options));
 
-        var imported = JobStore.Import(path);
-        var reason = JobApproval.ImportReason("file cong-viec.json", new DateTime(2026, 10, 5, 14, 32, 0));
-        foreach (var j in imported) JobApproval.Require(j, reason); // như MainForm.ImportJobs
+        var imported = JobApproval.ImportFile(path, new DateTime(2026, 10, 5, 14, 32, 0)); // MainForm.ImportJobs dùng đúng hàm này
         var job = Assert.Single(imported);
         Assert.True(job.NeedsApproval);
         Assert.Equal("Nhập từ file cong-viec.json 05/10 14:32", job.ApprovalReason);
@@ -646,6 +644,13 @@ public class RemoteApprovalTests
         Assert.True(RemotePathGate.IsRemote(@"\\?\UNC\may-chu\chia-se\a.xlsx"));
         Assert.True(RemotePathGate.IsRemote(" \"\\\\10.0.0.5\\c$\\a.csv\" "));
         Assert.True(RemotePathGate.IsRemote("file://may-chu/chia-se/a.mp4"));
+        // Dạng đường dẫn thiết bị cũng đi qua mạng (MUP).
+        Assert.True(RemotePathGate.IsRemote(@"\\.\UNC\may-chu\chia-se\v.mp4"));
+        Assert.True(RemotePathGate.IsRemote(@"\\?\GLOBALROOT\Device\Mup\may-chu\chia-se\x"));
+        Assert.True(RemotePathGate.IsRemote(@"\??\UNC\may-chu\chia-se\x"));
+        Assert.True(RemotePathGate.IsRemote(@"\\.\pipe\x"));
+        Assert.False(RemotePathGate.IsRemote(@"\\.\C:\video\a.mp4"));
+        Assert.False(RemotePathGate.IsRemote(@"\??\C:\video\a.mp4"));
         Environment.SetEnvironmentVariable("B2_UNC_TEST", @"\\may-chu\chia-se");
         try { Assert.True(RemotePathGate.IsRemote(@"%B2_UNC_TEST%\a.mp4")); }
         finally { Environment.SetEnvironmentVariable("B2_UNC_TEST", null); }
@@ -774,5 +779,84 @@ public class RemoteApprovalTests
             Assert.Equal(DialogResult.OK, approve.DialogResult);
             Assert.Equal(DialogResult.Cancel, ((Button)f.CancelButton!).DialogResult);
         });
+    }
+
+    // ───────────────────────────── Nhập thư mục kịch bản: môi trường, đếm đúng, gọi công việc có sẵn ─────────────────────────────
+
+    [Fact]
+    public void EnvironmentChangesFromFolderAreListedForApproval()
+    {
+        var current = new List<TestEnvironment>
+        {
+            new() { Name = "UAT", Variables = [new VariableDef { Name = "chromePath", Value = @"C:\Chrome\chrome.exe" }, new VariableDef { Name = "cu", Value = "1" }] },
+            new() { Name = "Dev", Variables = [new VariableDef { Name = "url", Value = "https://dev" }] }
+        };
+        var incoming = new List<TestEnvironment>
+        {
+            new() { Name = " uat ", Variables = [new VariableDef { Name = "chromePath", Value = @"\evil\x.exe" }, new VariableDef { Name = "moi", Value = "2" }] },
+            new() { Name = "Dev", Variables = [new VariableDef { Name = "url", Value = "https://dev" }] },
+            new() { Name = "Prod", Variables = [new VariableDef { Name = "url", Value = "https://prod" }] }
+        };
+        var lines = TestFolder.DescribeEnvironmentChanges(current, incoming);
+        Assert.Contains("Môi trường \"uat\":", lines);
+        Assert.Contains(@"   ~ chromePath: C:\Chrome\chrome.exe → \evil\x.exe", lines);
+        Assert.Contains("   + moi = 2", lines);
+        Assert.Contains("   − cu", lines);
+        Assert.Contains("Môi trường \"Prod\" (mới):", lines);
+        Assert.DoesNotContain(lines, l => l.Contains("Dev"));                                   // không đổi → không hỏi
+        Assert.Empty(TestFolder.DescribeEnvironmentChanges(current, [current[1]]));
+    }
+
+    [Fact]
+    public void FolderImportCountsMatchMerge()
+    {
+        var normal = new Job { Name = "Công việc thường", Steps = [LogStep("a")] };
+        var oldCase = TestCase("Kịch bản cũ");
+        var current = new List<Job> { normal, oldCase };
+        var clash = TestCase("Trùng Id công việc thường");
+        clash.Id = normal.Id;
+        var update = TestCase("Kịch bản cũ (sửa)");
+        update.Id = oldCase.Id;
+        var incoming = new List<Job> { clash, update, TestCase("Mới") };
+
+        var (updated, added, skipped) = TestFolder.PreviewMerge(current, incoming);
+        var r = TestFolder.Merge(current, incoming);
+        Assert.Equal((r.Updated, r.Added, r.Skipped), (updated, added, skipped.Count));
+        Assert.Equal((1, 1, 1), (updated, added, skipped.Count));
+        Assert.Equal(["Công việc thường"], skipped);
+    }
+
+    [Fact]
+    public void CallToExistingJobShowsItsRealName()
+    {
+        // File ghi nhãn "Ghi nhật ký" nhưng JobRef trỏ tới công việc đã duyệt "Dọn dữ liệu D365" có sẵn trên máy.
+        var existing = new Job { Name = "Dọn dữ liệu D365", Steps = [LogStep("x")] };
+        var imported = new Job
+        {
+            Name = "Mỗi giờ",
+            OnFailureJobId = existing.Id,
+            Steps = [LogStep("a"), S(StepType.CallJob, s => { s.JobRef = existing.Id; s.Target = "Ghi nhật ký"; })]
+        };
+        JobApproval.Require(imported, "Nhập từ file x.json");
+        List<Job> all = [existing, imported];
+
+        var summary = JobApproval.Summary(imported, all);
+        Assert.Contains("⚠ 2. Chạy công việc \"Dọn dữ liệu D365\" (nhãn trong file ghi \"Ghi nhật ký\" — KHÁC tên thật)", summary);
+        Assert.Contains("ĐÃ DUYỆT có sẵn trên máy", summary);
+
+        var bulk = JobApproval.ImportSummary([imported], all);
+        Assert.Contains("⚠ 2. Chạy công việc \"Dọn dữ liệu D365\"", bulk);
+        Assert.Contains("↪ Khi lỗi chạy: Dọn dữ liệu D365 — công việc ĐÃ DUYỆT có sẵn trên máy", bulk);
+    }
+
+    [Fact]
+    public void PendingTestCaseDataFileIsNotOpened()
+    {
+        // Kịch bản chờ duyệt có file dữ liệu ở máy lạ: chạy bộ kiểm thử phải từ chối ngay, không đọc file (không gửi thông tin đăng nhập).
+        var job = TestCase("Chờ duyệt");
+        job.DataFile = @"\may-chu-b4a.invalid\chia-se\du-lieu.xlsx";
+        JobApproval.Require(job, "Nhập từ thư mục kịch bản");
+        var run = Assert.Single(TestSuite.Runs(job, SuiteOptions.Default));
+        Assert.Contains("đang chờ duyệt", run.Error);
     }
 }

@@ -314,19 +314,33 @@ internal sealed class TestDashboard : UserControl
                 MessageBox.Show(this, "Thư mục không có file kịch bản nào (*.json).", "Kiểm thử", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
-            var existing = _host.AllJobs.Select(j => j.Id).ToHashSet();
-            int update = jobs.Count(j => existing.Contains(j.Id));
+            var (update, add, skipped) = TestFolder.PreviewMerge(_host.AllJobs, jobs);
+            var envChanges = TestFolder.DescribeEnvironmentChanges(SettingsStore.Current.Environments, envs);
             if (MessageBox.Show(this,
                     $"Nhập {jobs.Count} công việc ({jobs.Count(j => j.IsTestCase)} kịch bản kiểm thử) từ thư mục:\n" +
-                    $"• {update} công việc đã có sẽ được thay bằng bản trong thư mục\n• {jobs.Count - update} công việc mới" +
-                    (envs.Count > 0 ? $"\n• {envs.Count} môi trường ({string.Join(", ", envs.Select(e => e.Name))})" : "") + "\n\nTiếp tục?",
+                    $"• {update} kịch bản đã có sẽ được thay bằng bản trong thư mục\n• {add} công việc mới" +
+                    (skipped.Count > 0 ? $"\n• {skipped.Count} bỏ qua — trùng công việc thường đang có (giữ nguyên): {string.Join(", ", skipped.Take(5))}{(skipped.Count > 5 ? "…" : "")}" : "") +
+                    "\n\nKịch bản mới / có thay đổi phải duyệt trước khi chạy." +
+                    (envChanges.Count > 0 ? "\nThay đổi môi trường sẽ được hỏi riêng ở bước sau." : "") + "\n\nTiếp tục?",
                     "Kiểm thử", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
             _host.ImportTests(jobs);
-            foreach (var env in envs)
+            // Biến môi trường ghi đè biến của mọi kịch bản chạy với môi trường đó (kể cả công việc đã duyệt được gọi tới) —
+            // chỉ áp dụng khi người dùng đã xem và đồng ý từng thay đổi; mặc định là Không.
+            if (envChanges.Count > 0 && MessageBox.Show(this,
+                    "Thư mục có biến môi trường khác với trên máy này:\n\n" + string.Join("\n", envChanges.Take(30)) +
+                    (envChanges.Count > 30 ? $"\n… và {envChanges.Count - 30} dòng nữa" : "") +
+                    "\n\nBiến môi trường ghi đè biến của MỌI kịch bản chạy với môi trường đó, kể cả công việc đã duyệt mà kịch bản gọi tới. " +
+                    "Chỉ đồng ý khi bạn tin nguồn của thư mục này.\n\nÁp dụng các thay đổi môi trường?",
+                    "Kiểm thử — thay đổi môi trường", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) == DialogResult.Yes)
             {
-                SettingsStore.Current.Environments.RemoveAll(e => e.Name.Trim().Equals(env.Name.Trim(), StringComparison.CurrentCultureIgnoreCase));
-                SettingsStore.Current.Environments.Add(env);
+                foreach (var env in envs)
+                {
+                    SettingsStore.Current.Environments.RemoveAll(e => e.Name.Trim().Equals(env.Name.Trim(), StringComparison.CurrentCultureIgnoreCase));
+                    SettingsStore.Current.Environments.Add(env);
+                }
+                Log.Info($"Đã cập nhật môi trường kiểm thử từ thư mục: {string.Join(", ", envs.Select(e => e.Name))}.");
             }
+            else if (envChanges.Count > 0) Log.Warn("Không áp dụng thay đổi môi trường từ thư mục kịch bản (giữ môi trường trên máy).");
             SettingsStore.Current.TestFolder = folder;
             SettingsStore.Save();
             RefreshData();

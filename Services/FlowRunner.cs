@@ -69,6 +69,12 @@ public sealed class FlowRunner
     /// <summary>Số lần người dùng bấm dừng tất cả — bộ kiểm thử dùng để biết cần ngừng chạy các kịch bản còn lại.</summary>
     public int StopCount { get; private set; }
 
+    /// <summary>
+    /// Đã đồng ý cho bộ cài đặt / cập nhật đóng ScheduleApp: không nhận flow mới (lịch / kích hoạt không được bắt đầu một flow
+    /// rồi bị cắt ngang khi app đóng). Bỏ khi Windows báo phiên không kết thúc.
+    /// </summary>
+    public volatile bool HoldNewRuns;
+
     public bool IsBusy
     {
         get { lock (_sync) return _pending.Count > 0; }
@@ -104,6 +110,11 @@ public sealed class FlowRunner
     /// </summary>
     public async Task<FlowResult?> EnqueueAsync(Job job, string trigger, RunOptions? options = null)
     {
+        if (HoldNewRuns)
+        {
+            Log.Warn($"[{job.Name}] không chạy ({trigger}) — ScheduleApp sắp được bộ cài đặt / cập nhật đóng lại.");
+            return null;
+        }
         if (job.NeedsApproval)
         {
             var refused = JobApproval.RefusalMessage(job);

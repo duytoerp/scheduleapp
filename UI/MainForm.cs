@@ -965,8 +965,12 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
             var job = FindForCommand(_jobs, name);
             if (job == null)
             {
-                Log.Warn($"Dòng lệnh: không tìm thấy công việc \"{name}\".");
-                Notify("Không tìm thấy công việc", name, true);
+                // Shortcut trên Desktop chạy theo Id: công việc đã xóa / nhập lại (Id mới) thì shortcut cũ không còn trỏ đúng.
+                var text = Guid.TryParse(name, out _)
+                    ? "Shortcut trỏ tới công việc đã xóa hoặc đã nhập lại — hãy tạo lại shortcut (chuột phải công việc → Tạo shortcut trên Desktop)."
+                    : $"Không có công việc nào tên \"{name}\".";
+                Log.Warn("Dòng lệnh: " + text);
+                Notify("Không tìm thấy công việc", text, true);
                 return;
             }
             RunJob(job, "dòng lệnh");
@@ -1018,7 +1022,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
             $"Đã nhập {jobs.Count} công việc từ {source}. Chúng chờ duyệt — chưa chạy theo lịch, kích hoạt hay lệnh nào. " +
             "Dưới đây là lịch, kích hoạt, biến và mọi bước chạy lệnh / mở ứng dụng / gửi dữ liệu / ghi file / gõ phím (đầy đủ). " +
             "Chỉ duyệt khi bạn tin nguồn của file; hoặc để sau rồi duyệt từng công việc (chuột phải → Duyệt…).",
-            JobApproval.ImportSummary(jobs), jobs.Count == 1 ? "✔ Duyệt" : $"✔ Duyệt cả {jobs.Count} công việc", "Để sau");
+            JobApproval.ImportSummary(jobs, _jobs), jobs.Count == 1 ? "✔ Duyệt" : $"✔ Duyệt cả {jobs.Count} công việc", "Để sau");
         if (form.ShowDialog(this) != DialogResult.OK) return;
         foreach (var j in jobs) JobApproval.Approve(j);
         _scheduler.RecalculateAll();
@@ -1234,11 +1238,9 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
         try
         {
-            var imported = JobStore.Import(dlg.FileName);
             // File từ nơi khác có thể chứa lệnh / lịch tự chạy → chờ duyệt, không chạy ngay.
+            var imported = JobApproval.ImportFile(dlg.FileName);
             var source = "file " + Path.GetFileName(dlg.FileName);
-            var reason = JobApproval.ImportReason(source);
-            foreach (var j in imported) JobApproval.Require(j, reason);
             _jobs.AddRange(imported);
             foreach (var j in imported) _scheduler.Recalculate(j);
             JobsChanged();
@@ -1424,7 +1426,7 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         base.OnHandleDestroyed(e);
     }
 
-    private const int WM_QUERYENDSESSION = 0x0011;
+    private const int WM_QUERYENDSESSION = 0x0011, WM_ENDSESSION = 0x0016;
 
     /// <summary>
     /// WM_QUERYENDSESSION: từ chối khi Restart Manager (bộ cài đặt / cập nhật — lParam có ENDSESSION_CLOSEAPP) muốn đóng ScheduleApp
@@ -1446,6 +1448,9 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
             m.Result = IntPtr.Zero;
             return;
         }
+        // Đã đồng ý cho bộ cài đặt đóng app → không bắt đầu flow mới tới lúc đóng; Windows báo phiên không kết thúc (bộ cài hủy) → nhận lại.
+        if (m.Msg == WM_QUERYENDSESSION && ((long)m.LParam & 0x1) != 0) _runner.HoldNewRuns = true;
+        if (m.Msg == WM_ENDSESSION && m.WParam == IntPtr.Zero) _runner.HoldNewRuns = false;
         if (m.Msg == Win32.WM_HOTKEY)
         {
             int id = (int)m.WParam;

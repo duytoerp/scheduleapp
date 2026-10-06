@@ -16,6 +16,18 @@ public static class JobApproval
     /// <summary>Lý do cho công việc nhập từ file / thư mục, vd "Nhập từ file cong-viec.json 05/10 14:32".</summary>
     public static string ImportReason(string source, DateTime? at = null) => $"Nhập từ {source} {at ?? DateTime.Now:dd/MM HH:mm}";
 
+    /// <summary>
+    /// Nhập công việc từ file (<paramref name="path"/>): đọc như <see cref="JobStore.Import"/> rồi đánh dấu TẤT CẢ chờ duyệt —
+    /// file từ nơi khác có thể chứa lệnh / lịch tự chạy, không được chạy trước khi người dùng xem.
+    /// </summary>
+    public static List<Job> ImportFile(string path, DateTime? at = null)
+    {
+        var imported = JobStore.Import(path);
+        var reason = ImportReason("file " + Path.GetFileName(path), at);
+        foreach (var j in imported) Require(j, reason);
+        return imported;
+    }
+
     /// <summary>Đánh dấu chờ duyệt.</summary>
     public static void Require(Job job, string reason)
     {
@@ -63,29 +75,53 @@ public static class JobApproval
         for (int i = 0; i < job.Steps.Count; i++)
         {
             var s = job.Steps[i];
-            var text = s.FullDescribe();
-            if (s.Type == StepType.CallJob && s.JobRef is Guid id && Find(id) is { NeedsApproval: true }) text += " (công việc này cũng đang chờ duyệt)";
-            Line((s.IsRisky ? "⚠ " : "   ") + new string(' ', Math.Min(i < depth.Length ? depth[i] : 0, 6) * 2) + $"{i + 1}. {text}" + (s.Enabled ? "" : " (đang tắt)"));
+            bool call = s.Type == StepType.CallJob;
+            var text = call ? CallText(s, all) : s.FullDescribe();
+            Line((s.IsRisky || call ? "⚠ " : "   ") + new string(' ', Math.Min(i < depth.Length ? depth[i] : 0, 6) * 2) + $"{i + 1}. {text}" + (s.Enabled ? "" : " (đang tắt)"));
         }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Bước "Chạy công việc khác": tên công việc THẬT sẽ chạy (theo JobRef — nhãn trong file có thể ghi sai / giả), cảnh báo khi đó là
+    /// công việc đã duyệt có sẵn trên máy (công việc này sẽ được chạy theo lịch của công việc nhập vào).
+    /// </summary>
+    private static string CallText(ActionStep s, IReadOnlyList<Job>? all)
+    {
+        if (s.JobRef is not Guid id) return $"Chạy công việc \"{s.Target}\" (không gắn công việc nào — bước sẽ lỗi)";
+        var target = all?.FirstOrDefault(j => j.Id == id);
+        if (target == null) return all == null ? s.FullDescribe() : $"Chạy công việc (không có trên máy — Id {id}; nhãn trong file: \"{s.Target}\")";
+        var text = $"Chạy công việc \"{target.Name}\"";
+        if (!string.Equals(s.Target.Trim(), target.Name.Trim(), StringComparison.CurrentCultureIgnoreCase) && s.Target.Trim().Length > 0)
+            text += $" (nhãn trong file ghi \"{s.Target}\" — KHÁC tên thật)";
+        return text + (target.NeedsApproval ? " (công việc này cũng đang chờ duyệt)" : " — công việc ĐÃ DUYỆT có sẵn trên máy, sẽ được chạy bởi công việc này");
     }
 
     /// <summary>
     /// Tóm tắt sau khi nhập nhiều công việc: mỗi công việc kèm lịch / kích hoạt, biến (bước có thể dùng {{biến}} làm lệnh) và các bước
     /// cần xem kỹ (đầy đủ); công việc không có bước nào như vậy chỉ ghi một dòng.
     /// </summary>
-    public static string ImportSummary(IReadOnlyList<Job> jobs)
+    /// <param name="all">Mọi công việc trên máy — để ghi tên thật của công việc được gọi / chạy khi lỗi.</param>
+    public static string ImportSummary(IReadOnlyList<Job> jobs, IReadOnlyList<Job>? all = null)
     {
         var sb = new StringBuilder();
         void Line(string text) => sb.Append(Log.Redact(text)).Append("\r\n");
         foreach (var job in jobs)
         {
-            var risky = job.Steps.Select((s, i) => (Step: s, Number: i + 1)).Where(x => x.Step.IsRisky).ToList();
+            // Bước gọi công việc khác luôn được liệt kê: có thể chạy một công việc đã duyệt có sẵn trên máy.
+            var risky = job.Steps.Select((s, i) => (Step: s, Number: i + 1)).Where(x => x.Step.IsRisky || x.Step.Type == StepType.CallJob).ToList();
             Line($"■ {job.Name} — {job.Steps.Count} bước" + (risky.Count > 0 ? $", {risky.Count} bước cần xem kỹ" : ", không có bước chạy lệnh / mở ứng dụng / gõ phím…"));
             if (job.Enabled && job.Schedule.Type != ScheduleType.Manual) Line("   ⏰ " + job.Schedule.Describe());
             foreach (var t in job.Triggers.Where(t => t.Enabled)) Line("   ⚡ " + t.Describe());
             foreach (var v in job.Variables) Line($"   🔣 {v.Name} = \"{v.Value.Replace("\r", "").Replace("\n", " ⏎ ")}\"");
-            foreach (var (step, number) in risky) Line($"   ⚠ {number}. {step.FullDescribe()}" + (step.Enabled ? "" : " (đang tắt)"));
+            if (job.OnFailureJobId is Guid f)
+            {
+                var onFailure = all?.FirstOrDefault(j => j.Id == f);
+                Line($"   ↪ Khi lỗi chạy: {onFailure?.Name ?? "(không có trên máy)"}" +
+                     (onFailure is { NeedsApproval: false } ? " — công việc ĐÃ DUYỆT có sẵn trên máy" : ""));
+            }
+            foreach (var (step, number) in risky)
+                Line($"   ⚠ {number}. {(step.Type == StepType.CallJob ? CallText(step, all) : step.FullDescribe())}" + (step.Enabled ? "" : " (đang tắt)"));
             sb.Append("\r\n");
         }
         return sb.ToString().TrimEnd();

@@ -96,6 +96,8 @@ public static class TestSuite
     /// </summary>
     internal static List<TestRun> Runs(Job job, SuiteOptions options)
     {
+        // Kịch bản chờ duyệt: báo lỗi ngay, không mở file dữ liệu (có thể là \\máy-lạ\… — mở là Windows gửi thông tin đăng nhập).
+        if (job.NeedsApproval) return [new TestRun(job.Name, null, options.Variables, JobApproval.RefusalMessage(job))];
         if (string.IsNullOrWhiteSpace(job.DataFile)) return [new TestRun(job.Name, null, options.Variables)];
         DataTableResult table;
         try

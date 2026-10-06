@@ -6,7 +6,7 @@ namespace ScheduleApp.Services;
 /// thời lượng, tên sheet Excel… Trong lúc có màn hình như vậy (<see cref="Block"/>), các hàm xem trước trả về "không đọc được" thay vì mở.
 /// Lúc flow chạy thật (<see cref="EnterRun"/>) không bị chặn — công việc đã được duyệt.
 /// </summary>
-public static class RemotePathGate
+public static partial class RemotePathGate
 {
     private static int _blocks;
     private static readonly AsyncLocal<bool> InRun = new();
@@ -30,18 +30,26 @@ public static class RemotePathGate
     /// </summary>
     public static void EnterRun() => InRun.Value = true;
 
-    /// <summary>Đường dẫn UNC, \\?\UNC\…, file://máy/… (sau khi thay biến môi trường).</summary>
+    /// <summary>
+    /// Đường dẫn UNC, file://máy/… và mọi dạng đường dẫn thiết bị (\\?\, \\.\, \??\) không trỏ tới một ổ đĩa của máy này
+    /// (\\.\UNC\máy\…, \\?\GLOBALROOT\Device\Mup\máy\… đều đi qua mạng) — sau khi thay biến môi trường.
+    /// </summary>
     public static bool IsRemote(string? path)
     {
         if (string.IsNullOrWhiteSpace(path)) return false;
         var p = Environment.ExpandEnvironmentVariables(path.Trim().Trim('"', '\'')).Replace('/', '\\');
-        if (p.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) return true;
-        if (p.StartsWith(@"\\?\", StringComparison.Ordinal) || p.StartsWith(@"\\.\", StringComparison.Ordinal)) return false; // đường dẫn cục bộ dạng dài / thiết bị
+        foreach (var prefix in (string[])[@"\\?\", @"\\.\", @"\??\"])
+            if (p.StartsWith(prefix, StringComparison.Ordinal))
+                // Chỉ "X:\…" (ổ đĩa) sau tiền tố mới là cục bộ — UNC\, GLOBALROOT\, tên thiết bị lạ đều coi là mạng (chặn nhầm còn hơn lộ).
+                return !LocalDrive().IsMatch(p[prefix.Length..]);
         if (p.StartsWith(@"\\", StringComparison.Ordinal)) return true;
         if (p.StartsWith("file:", StringComparison.OrdinalIgnoreCase))
             return Uri.TryCreate(path.Trim().Trim('"', '\''), UriKind.Absolute, out var uri) && uri.IsUnc;
         return false;
     }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^[a-zA-Z]:(\\|$)")]
+    private static partial System.Text.RegularExpressions.Regex LocalDrive();
 
     /// <summary>Có được mở <paramref name="path"/> để xem trước không (false = đường dẫn mạng trong lúc đang chặn, ngoài flow chạy thật).</summary>
     public static bool Allows(string? path) => !IsBlocking || InRun.Value || !IsRemote(path);
