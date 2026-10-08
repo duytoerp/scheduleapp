@@ -1316,10 +1316,13 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
     {
         using var dlg = new SaveFileDialog { Filter = "ScheduleApp (*.json)|*.json", FileName = "ScheduleApp-jobs.json", Title = "Xuất công việc" };
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        var found = SecretHider.FindLiteralSecrets(_jobs);
+        if (ConfirmForm.AskStripSecrets(this, found) is not { } strip) return;
         try
         {
-            JobStore.Export(dlg.FileName, _jobs);
-            Log.Info($"Đã xuất {_jobs.Count} công việc ra {dlg.FileName} (bí mật không nằm trong file xuất).");
+            JobStore.Export(dlg.FileName, strip ? _jobs.Select(SecretHider.WithoutLiteralSecrets) : _jobs);
+            Log.Info($"Đã xuất {_jobs.Count} công việc ra {dlg.FileName} — bí mật trong 🔑 Bí mật không nằm trong file" +
+                     (found.Count == 0 ? "." : strip ? $"; đã bỏ {found.Count} bí mật ghi thẳng trong công việc." : $"; file CÓ {found.Count} bí mật ghi thẳng trong công việc (đã chọn xuất nguyên)."));
         }
         catch (Exception ex) { ShowError("Không xuất được file: " + ex.Message); }
     }

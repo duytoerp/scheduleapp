@@ -281,9 +281,12 @@ internal sealed class TestDashboard : UserControl
         }
         var folder = PickFolder($"Chọn thư mục lưu {jobs.Count} kịch bản (vd thư mục tests trong repo git)");
         if (folder == null) return;
+        // Thư mục kịch bản thường vào git — hỏi trước khi ghi mật khẩu / token ghi thẳng trong kịch bản, công việc dùng chung, môi trường.
+        var found = SecretHider.FindLiteralSecrets(TestFolder.WithDependencies(jobs, _host.AllJobs), SettingsStore.Current.Environments);
+        if (ConfirmForm.AskStripSecrets(this, found) is not { } strip) return;
         try
         {
-            var r = TestFolder.Export(folder, jobs, _host.AllJobs, SettingsStore.Current.Environments);
+            var r = TestFolder.Export(folder, jobs, _host.AllJobs, SettingsStore.Current.Environments, strip);
             SettingsStore.Current.TestFolder = folder;
             SettingsStore.Save();
             Log.Info($"🗂 Đã xuất {r.Written.Count} file kịch bản ra {folder}.");

@@ -474,8 +474,11 @@ public sealed class FlowGenerator
                 if (s.D365Action == D365Action.QuickCreate && !s.Text.Contains('=')) Problem("Text phải gồm các dòng \"field=giá trị\".");
                 if (s.D365Action == D365Action.WebApi && !ActionStep.HttpMethods.Contains(s.Method.Trim().ToUpperInvariant()))
                     Problem($"Method \"{s.Method}\" không hợp lệ (GET, POST, PATCH, PUT, DELETE).");
-                if (s.D365Action == D365Action.Login && s.Arguments.Trim().Length > 0 && !s.Arguments.Contains("{{secret:"))
+                // Bước đã có trên máy giữ mật khẩu mã hóa (dpapi:) — hợp lệ; AI chỉ không được ghi mật khẩu / khóa TOTP thật.
+                if (s.D365Action == D365Action.Login && s.Arguments.Trim().Length > 0 && !s.Arguments.Contains("{{secret:") && !Protector.IsProtected(s.Arguments))
                     Problem("mật khẩu (Arguments) phải là {{secret:Tên}}, không ghi mật khẩu thật.");
+                if (s.D365Action == D365Action.Login && s.RowRef.Trim().Length > 0 && !s.RowRef.Contains("{{secret:") && !Protector.IsProtected(s.RowRef))
+                    Problem("khóa TOTP (RowRef) phải là {{secret:Tên}}, không ghi khóa thật.");
                 break;
             }
             case StepType.Loop when s.LoopKind is LoopKind.Rows or LoopKind.Lines or LoopKind.Files:

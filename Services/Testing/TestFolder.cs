@@ -56,8 +56,10 @@ public static class TestFolder
     /// <summary>
     /// Ghi các công việc (kèm công việc phụ thuộc) vào <paramref name="folder"/>. File cũ của cùng công việc ở chỗ khác (đổi tên / nhóm)
     /// được xóa; các file khác trong thư mục giữ nguyên. Không ghi thời điểm / kết quả lần chạy cuối để diff gọn.
+    /// <paramref name="stripSecrets"/> = bỏ bí mật ghi thẳng trong công việc / biến môi trường (<see cref="SecretHider.WithoutLiteralSecrets(Job)"/>).
     /// </summary>
-    public static ExportResult Export(string folder, IEnumerable<Job> jobs, IReadOnlyList<Job> all, IReadOnlyList<TestEnvironment>? environments = null)
+    public static ExportResult Export(string folder, IEnumerable<Job> jobs, IReadOnlyList<Job> all, IReadOnlyList<TestEnvironment>? environments = null,
+        bool stripSecrets = false)
     {
         Directory.CreateDirectory(folder);
         var existing = Scan(folder);
@@ -71,7 +73,7 @@ public static class TestFolder
             if (!used.Add(rel)) rel = Path.ChangeExtension(rel, null) + "_" + job.Id.ToString("N")[..8] + ".json";
             var path = Path.Combine(folder, rel);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            var copy = job.Clone();
+            var copy = stripSecrets ? SecretHider.WithoutLiteralSecrets(job) : job.Clone();
             copy.LastRun = null;
             copy.LastResult = null;
             JobApproval.Approve(copy); // duyệt là việc của từng máy — máy nhập về tự đánh dấu chờ duyệt
@@ -84,7 +86,7 @@ public static class TestFolder
             }
         }
         if (environments is { Count: > 0 })
-            File.WriteAllText(Path.Combine(folder, EnvironmentsFile), JsonSerializer.Serialize(environments, JsonDefaults.Options) + Environment.NewLine);
+            File.WriteAllText(Path.Combine(folder, EnvironmentsFile), JsonSerializer.Serialize(stripSecrets ? environments.Select(SecretHider.WithoutLiteralSecrets).ToList() : environments, JsonDefaults.Options) + Environment.NewLine);
         return new ExportResult(written, removed);
     }
 

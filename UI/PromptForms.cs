@@ -99,6 +99,28 @@ internal sealed class ConfirmForm : BaseForm
         Activate();
         SystemSounds.Exclamation.Play();
     }
+
+    /// <summary>
+    /// Trước khi xuất file / thư mục: có bí mật ghi thẳng trong công việc (<see cref="SecretHider.FindLiteralSecrets"/>) thì hỏi bỏ đi hay
+    /// giữ. True = bỏ, false = giữ nguyên (hoặc không có gì để hỏi), null = hủy xuất.
+    /// </summary>
+    public static bool? AskStripSecrets(IWin32Window owner, IReadOnlyList<string> found)
+    {
+        if (found.Count == 0) return false;
+        const int Shown = 8;
+        var list = string.Join("\n", found.Take(Shown).Select(f => "• " + f)) + (found.Count > Shown ? $"\n… và {found.Count - Shown} mục khác" : "");
+        using var form = new ConfirmForm("Xuất có bí mật",
+            $"File xuất sẽ chứa {found.Count} bí mật ghi thẳng trong công việc (không nằm trong 🔑 Bí mật):\n\n{list}\n\n" +
+            "\"Bỏ bí mật rồi xuất\": mật khẩu / giá trị biến bị xóa, header được thay bằng {{secret:Tên header}} — ở máy nhận, tạo bí mật cùng tên " +
+            "trong 🔑 Bí mật. \"Xuất nguyên\": chỉ khi file chỉ đến tay người được phép biết các giá trị này.",
+            "Bỏ bí mật rồi xuất", "Xuất nguyên", "Hủy", topMost: false);
+        return form.ShowDialog(owner) switch
+        {
+            DialogResult.Yes => true,
+            DialogResult.No => false,
+            _ => null
+        };
+    }
 }
 
 /// <summary>Thanh gỡ lỗi luôn trên cùng: hiện bước sắp chạy, giá trị biến và các nút Bước tiếp / Chạy tiếp / Dừng.</summary>

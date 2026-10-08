@@ -49,8 +49,44 @@ public static class JobStore
                 (copy != null ? $"Công việc lỗi vẫn còn nguyên trong bản sao file gốc: {copy}"
                               : "Chưa chép được file gốc (file đang bị chương trình khác giữ?) — ScheduleApp sẽ không ghi đè lên nó."));
         }
+        if (ProtectLoginSecrets(parsed.Jobs) > 0)
+        {
+            // Mật khẩu chữ thường của bản cũ: ghi lại ngay, hai lần — lần đầu đẩy file cũ (còn chữ thường) thành .bak, lần hai thay .bak bằng bản đã mã hóa.
+            try
+            {
+                Save(path, parsed.Jobs);
+                Save(path, parsed.Jobs);
+                Log.Info("Đã mã hóa mật khẩu / khóa TOTP còn lưu dạng chữ thường trong bước Đăng nhập D365.");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Log.Warn("Chưa mã hóa lại được mật khẩu chữ thường trong bước Đăng nhập D365 (sẽ thử ở lần lưu sau): " + ex.Message);
+            }
+        }
         JobVersions.Remember(parsed.Jobs);
+        JobVersions.ProtectLoginSecretsOnce();
         return parsed.Jobs;
+    }
+
+    /// <summary>
+    /// Mã hóa (DPAPI) mật khẩu / khóa TOTP còn chữ thường trong bước Đăng nhập D365 — bước lưu bằng bản cũ, công việc nhập từ file,
+    /// tạo bằng AI / Telegram. {{secret:Tên}} / {{biến}} giữ nguyên. Trả về số bước đã mã hóa.
+    /// </summary>
+    internal static int ProtectLoginSecrets(IEnumerable<Job> jobs)
+    {
+        int changed = 0;
+        foreach (var s in jobs.SelectMany(j => j.Steps))
+        {
+            if (s.Type != StepType.Dynamics || s.D365Action != D365Action.Login) continue;
+            var (password, totp) = (Protect(s.Arguments, trim: false), Protect(s.RowRef, trim: true));
+            if (password == s.Arguments && totp == s.RowRef) continue;
+            (s.Arguments, s.RowRef) = (password, totp);
+            changed++;
+        }
+        return changed;
+
+        static string Protect(string value, bool trim) =>
+            value.Trim().Length == 0 || value.Contains("{{") ? value : Protector.EnsureProtected(trim ? value.Trim() : value);
     }
 
     /// <summary>Số công việc không đọc được nêu tên trong thông báo (còn lại ghi trong nhật ký).</summary>
@@ -59,6 +95,7 @@ public static class JobStore
     public static void Save(IEnumerable<Job> jobs)
     {
         var list = jobs.ToList();
+        ProtectLoginSecrets(list); // jobs.json, .bak, lịch sử phiên bản không bao giờ nhận mật khẩu chữ thường
         Save(FilePath, list);
         JobVersions.Track(list);
     }
@@ -205,6 +242,42 @@ public static class JobVersions
                 }
                 LastSaved[j.Id] = now;
             }
+        }
+    }
+
+    /// <summary>Đánh dấu đã mã hóa mật khẩu chữ thường trong mọi phiên bản cũ (phiên bản ghi sau đó lấy từ nội dung đã mã hóa).</summary>
+    private static string ProtectedMarker => Path.Combine(Dir, ".login-secrets-protected");
+
+    /// <summary>
+    /// Một lần: mã hóa mật khẩu / khóa TOTP chữ thường của bước Đăng nhập D365 trong các phiên bản cũ (versions\…) — giữ nguyên
+    /// thời điểm của từng phiên bản. File không đọc được thì bỏ qua (lần mở sau thử lại).
+    /// </summary>
+    public static void ProtectLoginSecretsOnce()
+    {
+        lock (Sync)
+        {
+            if (!Directory.Exists(Dir) || File.Exists(ProtectedMarker)) return;
+            bool complete = true;
+            foreach (var file in Directory.EnumerateFiles(Dir, "*.json", SearchOption.AllDirectories))
+            {
+                try
+                {
+                    var text = File.ReadAllText(file);
+                    if (!text.Contains("login", StringComparison.OrdinalIgnoreCase)) continue;
+                    var job = JsonSerializer.Deserialize<Job>(text, JsonDefaults.Options);
+                    if (job == null || JobStore.ProtectLoginSecrets([job]) == 0) continue;
+                    var time = File.GetLastWriteTime(file);
+                    File.WriteAllText(file, JsonSerializer.Serialize(job, JsonDefaults.Options));
+                    File.SetLastWriteTime(file, time);
+                }
+                catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException or NotSupportedException)
+                {
+                    complete = false;
+                }
+            }
+            if (!complete) return;
+            try { File.WriteAllText(ProtectedMarker, ""); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
     }
 

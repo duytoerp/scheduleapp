@@ -158,7 +158,7 @@ internal static class HelpContent
             1. Khai báo giá trị ban đầu ở tab **Biến** của công việc.
             2. Gán / đổi trong flow bằng bước **Gán biến** (giá trị, phép tính, clipboard, output lệnh, trích JSON, hỏi người dùng…).
             ## Bí mật
-            Mật khẩu, token lưu trong **Bí mật** (mã hóa bằng tài khoản Windows của bạn), dùng bằng `{{secret:Tên}}`. Giá trị không hiện lại, được che `***` trong nhật ký và không bị xuất ra file khi chia sẻ công việc.
+            Mật khẩu, token lưu trong **Bí mật** (mã hóa bằng tài khoản Windows của bạn), dùng bằng `{{secret:Tên}}`. Giá trị không hiện lại, được che `***` trong nhật ký và không bị xuất ra file khi chia sẻ công việc. Mật khẩu / token ghi thẳng trong bước hay biến thì có nằm trong file xuất — lúc xuất ScheduleApp liệt kê và hỏi bỏ đi.
             ## Dữ liệu test ngẫu nhiên
             Giá trị biến viết như công thức Excel, bắt đầu bằng `=`, được **sinh mới ở mỗi lần chạy** (giá trị đã dùng ghi trong nhật ký để tái hiện lần chạy lỗi). Bấm **⚄ Giá trị ngẫu nhiên** ở tab Biến, màn hình Thiết lập mẫu hoặc Môi trường để chọn nhanh:
             - `=hoten()` · `=hoten(nữ)` · `=ho()` · `=ten()` — họ tên người Việt.
@@ -448,7 +448,7 @@ internal static class HelpContent
             ScheduleApp.exe --test * --test-dir "C:\agent\_work\1\s\tests\d365" --env UAT --report "$(Build.ArtifactStagingDirectory)"
             ```
             Không cần nhập kịch bản vào máy CI trước. Mỗi file giữ Id nên bước *Chạy công việc khác* vẫn trỏ đúng.
-            ! Bí mật (`{{secret:…}}`) không nằm trong file. Trên máy CI, thêm các bí mật cùng tên trong 🔑 Bí mật của tài khoản Windows chạy agent.
+            ! Bí mật (`{{secret:…}}`) không nằm trong file. Trên máy CI, thêm các bí mật cùng tên trong 🔑 Bí mật của tài khoản Windows chạy agent. Kịch bản có mật khẩu / token ghi thẳng (header `Authorization`, biến `matKhau`…) thì ScheduleApp hỏi **Bỏ bí mật rồi xuất** trước khi ghi.
             """),
 
         new("ci", "Kiểm thử Dynamics 365", "Chạy từ dòng lệnh / CI",

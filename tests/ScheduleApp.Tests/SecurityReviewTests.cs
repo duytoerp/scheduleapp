@@ -156,6 +156,147 @@ public class SecurityReviewTests
         Assert.False(summary.Contains(Rlo));
     }
 
+    // ───────────────────────────── Mật khẩu D365 cũ còn chữ thường ─────────────────────────────
+
+    private const string OldPassword = "MatKhau-Cu-Chu-Thuong-7q";
+    private const string OldTotp = "JBSWY3DPEHPK3PXP";
+
+    private static ActionStep Login(string password, string totp) =>
+        S(StepType.Dynamics, s => { s.D365Action = D365Action.Login; s.Text = "user@congty.vn"; s.Arguments = password; s.RowRef = totp; });
+
+    [Fact]
+    public void PlaintextLoginSecretsAreProtectedOnce()
+    {
+        var plain = Login(OldPassword, OldTotp);
+        var placeholders = Login("{{secret:MatKhau}}", "{{secret:Totp}}");
+        var protectedAlready = Login(Protector.Protect("da-ma-hoa"), "");
+        var before = protectedAlready.Arguments;
+        var jobs = new List<Job> { new() { Name = "Đăng nhập", Steps = [plain, placeholders, protectedAlready] } };
+
+        Assert.Equal(1, JobStore.ProtectLoginSecrets(jobs));
+        Assert.True(Protector.IsProtected(plain.Arguments) && Protector.IsProtected(plain.RowRef));
+        Assert.Equal(OldPassword, Protector.Unprotect(plain.Arguments));
+        Assert.Equal(OldTotp, Protector.Unprotect(plain.RowRef));
+        Assert.Equal("{{secret:MatKhau}}", placeholders.Arguments);
+        Assert.Equal(before, protectedAlready.Arguments);
+        Assert.Equal(0, JobStore.ProtectLoginSecrets(jobs)); // không mã hóa chồng
+    }
+
+    [Fact]
+    public void LoadingOldJobsFileRewritesFileAndBackupWithoutPlaintext()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "sa-sr-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var path = Path.Combine(dir, "jobs.json");
+            var old = new List<Job> { new() { Name = "Bản cũ", Steps = [Login(OldPassword, OldTotp)] } };
+            File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(old, JsonDefaults.Options));
+
+            var loaded = JobStore.Load(path);
+            Assert.True(Protector.IsProtected(Assert.Single(loaded).Steps[0].Arguments));
+            Assert.DoesNotContain(OldPassword, File.ReadAllText(path));
+            Assert.DoesNotContain(OldTotp, File.ReadAllText(path));
+            Assert.DoesNotContain(OldPassword, File.ReadAllText(SafeFile.BackupPath(path)));
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public void OldVersionsAreProtectedKeepingTheirTimestamp()
+    {
+        var versions = Path.Combine(JobStore.DataDir, "versions");
+        var jobDir = Path.Combine(versions, Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(jobDir);
+        var file = Path.Combine(jobDir, "20261001-080000-000.json");
+        File.WriteAllText(file, System.Text.Json.JsonSerializer.Serialize(new Job { Name = "Phiên bản cũ", Steps = [Login(OldPassword, "")] }, JsonDefaults.Options));
+        var time = new DateTime(2026, 10, 1, 8, 0, 0);
+        File.SetLastWriteTime(file, time);
+        File.Delete(Path.Combine(versions, ".login-secrets-protected"));
+        try
+        {
+            JobVersions.ProtectLoginSecretsOnce();
+            Assert.DoesNotContain(OldPassword, File.ReadAllText(file));
+            Assert.Equal(time, File.GetLastWriteTime(file));
+            Assert.True(File.Exists(Path.Combine(versions, ".login-secrets-protected")));
+        }
+        finally
+        {
+            Directory.Delete(jobDir, true);
+        }
+    }
+
+    // ───────────────────────────── Xuất file có bí mật ghi thẳng ─────────────────────────────
+
+    private static Job WithLiteralSecrets() => new()
+    {
+        Name = "Gọi API",
+        Variables = [new VariableDef { Name = "matKhau", Value = "mk-ghi-thang" }, new VariableDef { Name = "token", Value = "{{secret:Token}}" }, new VariableDef { Name = "url", Value = "https://a.vn" }],
+        Steps =
+        [
+            S(StepType.HttpRequest, s => { s.Method = "GET"; s.Target = "https://api.vi-du.vn/x"; s.Headers = "Authorization: Bearer abcdef123456\nx-api-key: {{secret:ApiKey}}\nAccept: application/json"; }),
+            Login(Protector.Protect(OldPassword), "{{secret:Totp}}"),
+            S(StepType.SetVariable, s => { s.Variable = "apiToken"; s.VarSource = VarSource.Value; s.Text = "tk-ghi-thang"; }),
+            S(StepType.HttpRequest, s => { s.Target = "https://api.vi-du.vn/y"; s.Headers = "Authorization: Bearer {{token}}"; })
+        ]
+    };
+
+    [Fact]
+    public void ExportFindsAndStripsLiteralSecretsOnly()
+    {
+        var job = WithLiteralSecrets();
+        var env = new TestEnvironment { Name = "UAT", Variables = [new VariableDef { Name = "password", Value = "uat-mk" }, new VariableDef { Name = "d365Url", Value = "https://uat" }] };
+        var found = SecretHider.FindLiteralSecrets([job], [env]);
+        Assert.Equal(
+        [
+            "\"Gọi API\": biến matKhau",
+            "\"Gọi API\" bước 1: header Authorization",
+            "\"Gọi API\" bước 2: mật khẩu đăng nhập D365",
+            "\"Gọi API\" bước 3: giá trị gán cho {{apiToken}}",
+            "môi trường \"UAT\": biến password"
+        ], found);
+
+        var stripped = SecretHider.WithoutLiteralSecrets(job);
+        Assert.Equal("", stripped.Variables[0].Value);
+        Assert.Equal("{{secret:Token}}", stripped.Variables[1].Value);
+        Assert.Equal("https://a.vn", stripped.Variables[2].Value);
+        Assert.Equal("Authorization: {{secret:Authorization}}\nx-api-key: {{secret:ApiKey}}\nAccept: application/json", stripped.Steps[0].Headers);
+        Assert.Equal("", stripped.Steps[1].Arguments);
+        Assert.Equal("{{secret:Totp}}", stripped.Steps[1].RowRef);
+        Assert.Equal("", stripped.Steps[2].Text);
+        Assert.Equal("Authorization: Bearer {{token}}", stripped.Steps[3].Headers);
+        Assert.Contains("abcdef123456", job.Steps[0].Headers);                     // công việc gốc không đổi
+        Assert.Equal("", SecretHider.WithoutLiteralSecrets(env).Variables[0].Value);
+        Assert.Equal("uat-mk", env.Variables[0].Value);
+        Assert.Empty(SecretHider.FindLiteralSecrets([stripped]));
+    }
+
+    [Fact]
+    public void TestFolderExportCanStripSecrets()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "sa-sr-" + Guid.NewGuid().ToString("N")[..8]);
+        try
+        {
+            var job = WithLiteralSecrets();
+            job.IsTestCase = true;
+            var envs = new List<TestEnvironment> { new() { Name = "UAT", Variables = [new VariableDef { Name = "password", Value = "uat-mk" }] } };
+            Services.Testing.TestFolder.Export(dir, [job], [job], envs, stripSecrets: true);
+            var text = string.Concat(Directory.GetFiles(dir, "*.json", SearchOption.AllDirectories).Select(File.ReadAllText));
+            Assert.DoesNotContain("abcdef123456", text);
+            Assert.DoesNotContain("mk-ghi-thang", text);
+            Assert.DoesNotContain("tk-ghi-thang", text);
+            Assert.DoesNotContain("uat-mk", text);
+            Assert.DoesNotContain("dpapi:", text);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); } catch (IOException) { }
+        }
+    }
+
     [Fact]
     public void NeedsReviewCoversValueSourcesSecretsAndD365()
     {
