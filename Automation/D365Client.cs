@@ -1105,7 +1105,10 @@ internal static class D365Client
               'Accept': 'application/json', 'OData-MaxVersion': '4.0', 'OData-Version': '4.0',
               'Prefer': 'odata.include-annotations="*"' } };
             if (method !== 'GET' && method !== 'DELETE') { init.headers['Content-Type'] = 'application/json; charset=utf-8'; init.body = {{Js(body)}}; }
-            const r = await fetch(/^https?:/i.test(path) ? path : base + path.replace(/^\/+/, ''), init);
+            // URL đầy đủ chỉ được trỏ về chính tổ chức D365 đang mở: fetch kèm cookie đăng nhập, URL ngoài = gửi dữ liệu / bí mật ra máy khác.
+            const url = new URL(/^[a-z][a-z0-9+.-]*:/i.test(path) ? path : base + path.replace(/^\/+/, ''), base);
+            if (url.origin !== new URL(base).origin) throw new Error('Web API chỉ gọi được tới ' + new URL(base).origin + ' (không gửi tới ' + url.origin + ').');
+            const r = await fetch(url.href, init);
             return JSON.stringify({ status: r.status, body: await r.text(), entityId: r.headers.get('OData-EntityId') || '' });
             """), ct, timeoutMs);
         using var doc = JsonDocument.Parse(json);

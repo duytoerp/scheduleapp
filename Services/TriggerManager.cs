@@ -129,7 +129,7 @@ public sealed class TriggerManager : IDisposable
     {
         if (job.Steps.Count(s => s.Enabled) == 0) return;
         Log.Info($"⚡ [{job.Name}] kích hoạt: {trigger}");
-        _ = _runner.EnqueueAsync(job, trigger, vars == null ? null : new RunOptions { Variables = vars });
+        _ = _runner.EnqueueAsync(job, trigger, vars == null ? null : new RunOptions { ExternalVariables = vars });
     }
 
     // ───────────────────────────── File mới ─────────────────────────────
@@ -171,7 +171,7 @@ public sealed class TriggerManager : IDisposable
 
             if (item.Vars.TryGetValue("trigger.file", out var file)) await WaitUntilReadableAsync(file);
             Log.Info($"⚡ [{job.Name}] kích hoạt: {item.Trigger}");
-            await _runner.EnqueueAsync(job, item.Trigger, new RunOptions { Variables = item.Vars });
+            await _runner.EnqueueAsync(job, item.Trigger, new RunOptions { ExternalVariables = item.Vars });
 
             lock (_queueSync)
             {

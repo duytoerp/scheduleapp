@@ -20,8 +20,16 @@ public sealed class RunOptions
     /// <summary>Báo vị trí bước đang chạy của flow gốc (để tô sáng trên khung thiết kế). Gọi từ luồng nền.</summary>
     public Action<int>? StepStarted { get; init; }
 
-    /// <summary>Biến có sẵn khi bắt đầu (vd {{trigger.file}} khi kích hoạt do có file mới).</summary>
+    /// <summary>
+    /// Biến tin cậy có sẵn khi bắt đầu — của môi trường / dòng dữ liệu kiểm thử: {{secret:Tên}} được thay, công thức "=hoten()" được tính.
+    /// </summary>
     public Dictionary<string, string>? Variables { get; init; }
+
+    /// <summary>
+    /// Biến từ bên ngoài (vd {{trigger.file}}, {{email.subject}} của trình kích hoạt) — giữ nguyên chữ: người gửi email / người đặt tên file
+    /// không được đọc bí mật qua "{{secret:…}}" hay chạy công thức. Ghi đè biến cùng tên trong <see cref="Variables"/>.
+    /// </summary>
+    public Dictionary<string, string>? ExternalVariables { get; init; }
 
     /// <summary>Chạy kiểm thử: ghi lại kết quả từng bước để xuất báo cáo (null = không ghi).</summary>
     public Testing.TestRecorder? Recorder { get; init; }
@@ -37,6 +45,7 @@ public sealed class RunOptions
         UseBreakpoints = UseBreakpoints,
         StepStarted = StepStarted,
         Variables = Variables,
+        ExternalVariables = ExternalVariables,
         Recorder = recorder
     };
 
@@ -49,6 +58,7 @@ public sealed class RunOptions
         UseBreakpoints = UseBreakpoints,
         StepStarted = StepStarted,
         Variables = variables,
+        ExternalVariables = ExternalVariables,
         Recorder = Recorder
     };
 }

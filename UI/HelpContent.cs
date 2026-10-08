@@ -506,7 +506,7 @@ internal static class HelpContent
             "Duyệt công việc từ xa, che bí mật, dữ liệu từ ngoài vào lệnh, sao lưu dữ liệu, giới hạn thời gian chạy, cập nhật an toàn.",
             """
             ## Công việc từ nơi khác phải duyệt trước khi chạy
-            - Công việc tạo / sửa qua **Telegram**, **nhập từ file** `.json` hoặc từ **thư mục kịch bản** ở trạng thái *chờ duyệt*: không chạy theo bất kỳ cách nào (lịch, kích hoạt, phím tắt, Telegram `/run`, shortcut, được công việc khác gọi) cho tới khi bạn duyệt trên máy.
+            - Công việc tạo / sửa qua **Telegram**, **nhập từ file** `.json` hoặc từ **thư mục kịch bản** ở trạng thái *chờ duyệt*: không chạy theo bất kỳ cách nào (lịch, kích hoạt, phím tắt, Telegram `/run`, shortcut, được công việc khác gọi, **▶ Thử bước này**) cho tới khi bạn duyệt trên máy. Màn hình duyệt hiện đầy đủ (không cắt chữ) các bước ⚠: chạy lệnh, gán biến, gọi công việc khác, truy vấn / xóa dữ liệu D365, bước dùng `{{secret:…}}`.
             - Chuột phải công việc → **✔ Duyệt…** (hoặc nút **✔ Duyệt…** trong trình soạn): xem lịch, kích hoạt, biến và từng bước. Bước cần xem kỹ có dấu ⚠; bước gọi công việc khác ghi **tên thật** của công việc sẽ chạy.
             - Trong lúc xem công việc chờ duyệt, ScheduleApp không mở đường dẫn mạng (`\\máy\thư mục`) có trong đó — mở là Windows tự gửi thông tin đăng nhập tới máy đó.
             - Nhập thư mục kịch bản: thay đổi **biến môi trường** được hỏi riêng (liệt kê từng biến, mặc định *Không*), vì biến môi trường ghi đè biến của mọi kịch bản chạy với môi trường đó.
@@ -519,7 +519,7 @@ internal static class HelpContent
             - Ảnh chụp màn hình lúc lỗi mặc định **không** gửi kèm Telegram / email (ảnh cả màn hình có thể lộ thông tin khác) — bật lại ở **Cài đặt → Thông báo** nếu cần.
             ## Dữ liệu từ ngoài đưa vào lệnh
             - Bước **Chạy lệnh**: đưa dữ liệu không tin cậy (tên file, nội dung email, ô Excel…) vào lệnh bằng `{{biến:cmd}}` — tự bọc dấu nháy, không thể thoát ra thành lệnh khác. Vd `move {{tep:cmd}} D:\luu`.
-            - Kích hoạt **Có email mới**: nhập người gửi (`ketoan@congty.vn` hoặc `@congty.vn`) và tick **Chỉ nhận email đã xác thực** — tên hiển thị thì ai cũng đặt được. File đính kèm lưu xuống được đánh dấu "tải từ Internet" để Windows / Office cảnh báo khi mở.
+            - Kích hoạt **Có email mới**: nhập người gửi (`ketoan@congty.vn` hoặc `@congty.vn`) và tick **Chỉ nhận email đã xác thực** — tên hiển thị thì ai cũng đặt được. File đính kèm lưu xuống được đánh dấu "tải từ Internet" để Windows / Office cảnh báo khi mở. Tiêu đề / nội dung email đưa vào flow nguyên chữ: người gửi viết `{{secret:…}}` cũng không đọc được bí mật của bạn.
             - Ghi CSV: giá trị bắt đầu bằng `=` `+` `-` `@` được thêm dấu `'` để Excel không chạy nó như công thức.
             ## Chạy ổn định, không mất dữ liệu
             - **Dừng nếu chạy quá … phút** (tab *Lỗi · thông báo* của công việc): flow bị treo được dừng, không chặn các công việc khác trong hàng đợi.

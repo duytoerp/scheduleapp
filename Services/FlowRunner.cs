@@ -134,7 +134,7 @@ public sealed class FlowRunner
             {
                 // Kiểm thử theo dữ liệu: mỗi dòng một lần chạy, chung một báo cáo.
                 var suite = await TestSuite.RunAsync(this, [job], job.Name, null,
-                    new SuiteOptions { Environment = env?.Name, Variables = options?.Variables });
+                    new SuiteOptions { Environment = env?.Name, Variables = options?.Variables, ExternalVariables = options?.ExternalVariables });
                 return new FlowResult(suite.Ok, TestReport.Summary(suite.Cases));
             }
         }
@@ -257,6 +257,7 @@ public sealed class FlowRunner
             StepMode = options.StepMode,
             UseBreakpoints = options.UseBreakpoints,
             Variables = options.Variables,
+            ExternalVariables = options.ExternalVariables,
             Recorder = options.Recorder,
             StepStarted = i =>
             {
@@ -309,6 +310,9 @@ public sealed class FlowRunner
                 return new FlowResult(false, ex.Message);
             }
         }
+        // Biến của trình kích hoạt (tiêu đề / nội dung email, tên file…) do người ngoài đặt — giữ nguyên chữ, không thay {{secret:…}}.
+        if (options.ExternalVariables != null)
+            foreach (var (k, v) in options.ExternalVariables) ctx.Vars[k] = v;
 
         IDisposable? awake = null;
         FlowResult? result = null;

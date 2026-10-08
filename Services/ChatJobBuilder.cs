@@ -130,14 +130,14 @@ public sealed class ChatJobBuilder(IRemoteHost host)
         {
             var step = r.Steps[i];
             // Bước cần xem kỹ (chạy lệnh, mở ứng dụng, gửi HTTP, ghi file, gõ phím…) luôn hiện, đầy đủ — kể cả sau giới hạn số bước.
-            if (i >= PreviewSteps && !step.IsRisky)
+            if (i >= PreviewSteps && !step.NeedsReview)
             {
                 omitted++;
                 continue;
             }
-            sb.AppendLine(new string(' ', Math.Min(depth[i], 6) * 3) + $"{(step.IsRisky ? "⚠ " : "")}{i + 1}. {Log.Redact(step.FullDescribe())}");
+            sb.AppendLine(new string(' ', Math.Min(depth[i], 6) * 3) + $"{(step.NeedsReview ? "⚠ " : "")}{i + 1}. {Log.Redact(step.NeedsReview ? step.FullDescribe() : step.Describe())}");
         }
-        if (omitted > 0) sb.AppendLine($"… và {omitted} bước khác không hiện (không có bước chạy lệnh / mở ứng dụng / gõ phím nào trong số đó)");
+        if (omitted > 0) sb.AppendLine($"… và {omitted} bước khác không hiện (không có bước chạy lệnh / mở ứng dụng / gõ phím / gán biến / gọi công việc nào trong số đó)");
 
         if (r.Variables.Count > 0) sb.AppendLine().AppendLine("🔣 Biến: " + Log.Redact(string.Join(", ", r.Variables.Select(v => $"{v.Name} = \"{v.Value}\""))));
         if (r.Notes.Count > 0)

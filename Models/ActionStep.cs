@@ -784,13 +784,44 @@ public sealed class ActionStep
         || (Type == StepType.Dynamics && D365Action is D365Action.RunScript or D365Action.WebApi);
 
     /// <summary>
-    /// Như <see cref="Describe"/> nhưng KHÔNG cắt ngắn với bước <see cref="IsRisky"/>: lệnh, đường dẫn + tham số, phương thức + URL + nội dung,
-    /// file ghi, chữ gõ… (xuống dòng thành " ⏎ "). Không che bí mật — người gọi dùng <c>Log.Redact</c>.
+    /// Bước phải hiện ra (đầy đủ) khi duyệt công việc từ nguồn khác: bước <see cref="IsRisky"/>, gọi công việc khác, và các bước tạo giá trị
+    /// mà bước nguy hiểm có thể dùng qua {{biến}} (Gán biến, Lặp theo dòng / file), điều kiện / bước D365 gửi truy vấn hoặc xóa / sửa
+    /// bản ghi, và mọi bước có dùng {{secret:…}} (bí mật có thể bị gửi đi ở bất cứ trường nào).
+    /// </summary>
+    [JsonIgnore]
+    public bool NeedsReview => IsRisky || Type is StepType.CallJob or StepType.SetVariable
+        || (Type == StepType.Loop && LoopKind is LoopKind.Rows or LoopKind.Lines or LoopKind.Files)
+        || (HasCondition && Condition == ConditionKind.D365RecordCount)
+        || (Type == StepType.Dynamics && D365Action is D365Action.Cleanup or D365Action.QuickCreate)
+        || UsesSecret;
+
+    /// <summary>Có trường nào chứa {{secret:…}}.</summary>
+    [JsonIgnore]
+    public bool UsesSecret => new[] { Target, Text, Arguments, Headers, RowRef, Message, Form }
+        .Any(f => f?.Contains("{{secret:", StringComparison.OrdinalIgnoreCase) == true);
+
+    /// <summary>Đang dựng mô tả đầy đủ (<see cref="FullDescribe"/>) — <see cref="Short"/> không cắt chữ.</summary>
+    [ThreadStatic] private static bool _fullText;
+
+    /// <summary>
+    /// Như <see cref="Describe"/> nhưng KHÔNG cắt ngắn: lệnh, đường dẫn + tham số, phương thức + URL + nội dung, file ghi, chữ gõ, giá trị
+    /// gán biến, điều kiện… (xuống dòng thành " ⏎ ", ký tự điều khiển vô hình hiện thành ⟦U+…⟧). Không che bí mật — người gọi dùng <c>Log.Redact</c>.
     /// </summary>
     public string FullDescribe()
     {
-        if (!IsRisky) return Describe();
-        static string One(string s) => s.Replace("\r", "").Replace("\n", " ⏎ ");
+        bool outer = _fullText;
+        _fullText = true;
+        try { return FullDescribeCore(); }
+        finally { _fullText = outer; }
+    }
+
+    private string FullDescribeCore()
+    {
+        if (!IsRisky)
+            return Type == StepType.Assert && !string.IsNullOrWhiteSpace(Message)
+                ? $"Kiểm tra: {Short(Message)} ({DescribeCondition()})" // nhãn tự đặt có thể che điều kiện thật
+                : Describe();
+        static string One(string s) => Visible(s.Replace("\r", "").Replace("\n", " ⏎ "));
         var window = string.IsNullOrWhiteSpace(Target) ? " (vào cửa sổ đang dùng)" : $" vào \"{Target}\"";
         return Type switch
         {
@@ -910,6 +941,20 @@ public sealed class ActionStep
     private static string Short(string s)
     {
         s = s.Replace("\r", "").Replace("\n", " ⏎ ");
+        if (_fullText) return Visible(s);
         return s.Length > 50 ? s[..50] + "…" : s;
+    }
+
+    /// <summary>
+    /// Ký tự định dạng vô hình (đảo chiều chữ U+202E, khoảng trắng độ rộng 0…) thành ⟦U+XXXX⟧ — để màn hình duyệt không hiện lệnh khác lệnh thật.
+    /// </summary>
+    internal static string Visible(string s)
+    {
+        if (!s.Any(c => char.GetUnicodeCategory(c) == System.Globalization.UnicodeCategory.Format)) return s;
+        var sb = new System.Text.StringBuilder(s.Length + 16);
+        foreach (var c in s)
+            if (char.GetUnicodeCategory(c) == System.Globalization.UnicodeCategory.Format) sb.Append($"⟦U+{(int)c:X4}⟧");
+            else sb.Append(c);
+        return sb.ToString();
     }
 }

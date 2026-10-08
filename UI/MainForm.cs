@@ -1151,6 +1151,8 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
     private string RunFromTelegram(Job job)
     {
         if (job.NeedsApproval) return "🔒 " + JobApproval.RefusalMessage(job);
+        // Tắt trên máy = ngừng công việc — nút "Chạy lại" ở tin báo cũ / /run không được chạy lại nó (như danh sách ▶ của /list).
+        if (!job.Enabled) return $"\"{job.Name}\" đang tắt trên máy tính — bật lại trong ScheduleApp nếu muốn chạy từ Telegram.";
         if (job.Steps.Count(s => s.Enabled) == 0) return $"\"{job.Name}\" chưa có bước nào được bật.";
         bool queued = _runner.IsBusy;
         RunJob(job, TelegramBot.Trigger);

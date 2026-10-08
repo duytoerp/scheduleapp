@@ -20,6 +20,9 @@ public sealed class SuiteOptions
     /// <summary>Biến của môi trường — ghi đè biến khai báo trong kịch bản.</summary>
     public Dictionary<string, string>? Variables { get; init; }
 
+    /// <summary>Biến của trình kích hoạt (email, file mới…) — giữ nguyên chữ, xem <see cref="RunOptions.ExternalVariables"/>.</summary>
+    public Dictionary<string, string>? ExternalVariables { get; init; }
+
     /// <summary>Kịch bản không đạt được chạy lại tối đa N lần; đạt ở lần chạy lại thì ghi "đạt sau khi chạy lại" (kịch bản chập chờn).</summary>
     public int Retries { get; init; }
 
@@ -158,7 +161,7 @@ public static class TestSuite
                     cases.Add(TestCaseResult.Create(job, DateTime.Now, DateTime.Now, new FlowResult(false, run.Error), new TestRecorder(null), run));
                     continue;
                 }
-                cases.Add(await RunCaseAsync(runner, job, run, shots, options.Retries));
+                cases.Add(await RunCaseAsync(runner, job, run, shots, options.Retries, options.ExternalVariables));
                 if (runner.StopCount != stops) break; // người dùng bấm dừng — không chạy tiếp
             }
             if (runner.StopCount != stops) break;
@@ -170,7 +173,7 @@ public static class TestSuite
         return new SuiteResult(name, cases, report);
     }
 
-    private static async Task<TestCaseResult> RunCaseAsync(FlowRunner runner, Job job, TestRun run, string shots, int retries)
+    private static async Task<TestCaseResult> RunCaseAsync(FlowRunner runner, Job job, TestRun run, string shots, int retries, Dictionary<string, string>? external)
     {
         string? firstFailure = null;
         int stops = runner.StopCount;
@@ -178,7 +181,7 @@ public static class TestSuite
         {
             var recorder = new TestRecorder(shots);
             var start = DateTime.Now;
-            var r = await runner.EnqueueAsync(job, "kiểm thử", new RunOptions { IsTest = true, Recorder = recorder, Variables = run.Variables });
+            var r = await runner.EnqueueAsync(job, "kiểm thử", new RunOptions { IsTest = true, Recorder = recorder, Variables = run.Variables, ExternalVariables = external });
             var result = TestCaseResult.Create(job, start, DateTime.Now, r, recorder, run, attempt, firstFailure);
             if (result.Ok || r == null || attempt > retries || runner.StopCount != stops) return result;
             firstFailure ??= result.FailureSummary;

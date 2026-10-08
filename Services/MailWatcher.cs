@@ -215,9 +215,22 @@ public static partial class MailWatcher
     [GeneratedRegex(@"\([^()]*\)")]
     private static partial Regex AuthComment();
 
-    /// <summary>Xác thực người gửi theo các header của thư (Authentication-Results đầu tiên, X-MS-Exchange-Organization-AuthAs).</summary>
-    internal static (MailAuth Result, string Detail) EvaluateAuthentication(HeaderList headers, string fromAddress) =>
-        EvaluateAuthentication(headers[HeaderId.AuthenticationResults], headers["X-MS-Exchange-Organization-AuthAs"], fromAddress);
+    /// <summary>
+    /// Xác thực người gửi theo các header của thư (Authentication-Results đầu tiên, X-MS-Exchange-Organization-AuthAs).
+    /// AuthAs chỉ được tin khi <paramref name="exchangeMailbox"/>: Exchange xóa header này ở thư từ ngoài vào, còn Gmail / IMAP thường
+    /// giữ nguyên — người gửi tự chèn "AuthAs: Internal" là qua mặt được "chỉ nhận email đã xác thực".
+    /// </summary>
+    internal static (MailAuth Result, string Detail) EvaluateAuthentication(HeaderList headers, string fromAddress, bool exchangeMailbox) =>
+        EvaluateAuthentication(headers[HeaderId.AuthenticationResults], exchangeMailbox ? headers["X-MS-Exchange-Organization-AuthAs"] : null, fromAddress);
+
+    /// <summary>Máy chủ IMAP của Exchange Online / Outlook.com (outlook.office365.com, outlook.office.com, imap-mail.outlook.com…).</summary>
+    internal static bool IsExchangeOnlineHost(string? host)
+    {
+        var h = (host ?? "").Trim().TrimEnd('.').ToLowerInvariant();
+        return h is "office365.com" or "outlook.com" or "office.com"
+            || h.EndsWith(".office365.com", StringComparison.Ordinal) || h.EndsWith(".outlook.com", StringComparison.Ordinal)
+            || h.EndsWith(".office.com", StringComparison.Ordinal);
+    }
 
     /// <summary>
     /// Đánh giá người gửi theo header Authentication-Results ĐẦU TIÊN — do máy chủ nhận thư của bạn thêm lên trên cùng; các header
@@ -462,7 +475,7 @@ public static partial class MailWatcher
                     var id = "imap:" + (env.MessageId ?? $"{folder.FullName}/{m.UniqueId}");
                     lock (Processed) if (Processed.Contains(id)) continue;
                     var message = await folder.GetMessageAsync(m.UniqueId, ct);
-                    var outcome = await ProcessIsolatedAsync(message, id, received, filters, result, ct);
+                    var outcome = await ProcessIsolatedAsync(message, id, received, filters, result, ct, IsExchangeOnlineHost(s.Host));
                     if (ShouldMarkSeen(outcome, s.MarkAsRead)) await folder.AddFlagsAsync(m.UniqueId, MessageFlags.Seen, true, ct);
                 }
             }
@@ -481,12 +494,12 @@ public static partial class MailWatcher
     /// đính kèm) được ghi nhật ký để các thư sau vẫn chạy. Thư bị từ chối / lỗi không được xét lại trong phiên này.
     /// </summary>
     internal static async Task<MailOutcome> ProcessIsolatedAsync(MimeMessage message, string id, DateTime received, IReadOnlyList<MailFilter> filters,
-        List<IncomingMail> result, CancellationToken ct)
+        List<IncomingMail> result, CancellationToken ct, bool exchangeMailbox = false)
     {
         MailOutcome outcome;
         try
         {
-            var mail = await ProcessMessageAsync(message, id, received, filters, ct);
+            var mail = await ProcessMessageAsync(message, id, received, filters, ct, exchangeMailbox);
             if (mail != null) result.Add(mail);
             outcome = mail != null ? MailOutcome.Processed : MailOutcome.Rejected;
         }
@@ -503,11 +516,11 @@ public static partial class MailWatcher
     /// Xử lý một email đã tải: kiểm tra bộ lọc + xác thực người gửi, lưu đính kèm (tên đã làm sạch, gắn Mark-of-the-Web). Null = không
     /// khớp hoặc bị từ chối (đã ghi nhật ký). Ném lỗi nếu không lưu được đính kèm — người gọi ghi nhật ký rồi xử lý thư tiếp theo.
     /// </summary>
-    internal static async Task<IncomingMail?> ProcessMessageAsync(MimeMessage message, string id, DateTime received, IReadOnlyList<MailFilter> filters, CancellationToken ct)
+    internal static async Task<IncomingMail?> ProcessMessageAsync(MimeMessage message, string id, DateTime received, IReadOnlyList<MailFilter> filters, CancellationToken ct, bool exchangeMailbox = false)
     {
         var sender = message.From.Mailboxes.FirstOrDefault();
         var from = sender?.Address ?? "";
-        var (auth, detail) = EvaluateAuthentication(message.Headers, from);
+        var (auth, detail) = EvaluateAuthentication(message.Headers, from, exchangeMailbox);
         var mail = new IncomingMail(id, message.Subject ?? "", from, sender?.Name ?? "", "", received, [], "") { Auth = auth };
         if (!Accept(mail, filters, detail)) return null;
 
@@ -675,10 +688,12 @@ public static partial class MailWatcher
         string raw = "";
         try { raw = (string)item.PropertyAccessor.GetProperty(TransportHeadersProperty) ?? ""; }
         catch (Exception ex) when (ex is COMException or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException or InvalidCastException) { }
-        if (raw.Trim().Length > 0) return EvaluateAuthentication(ParseHeaders(raw), from);
+        // Người gửi là tài khoản Exchange (Outlook đã khớp với danh bạ tổ chức) → thư đi trong Exchange, header AuthAs là của Exchange.
+        // Thư từ ngoài (người gửi kiểu SMTP, kể cả tài khoản IMAP mở trong Outlook) bỏ qua AuthAs do người gửi có thể tự chèn.
         bool exchange = false;
         try { exchange = (string)item.SenderEmailType == "EX"; }
         catch (Exception ex) when (ex is COMException or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException) { }
+        if (raw.Trim().Length > 0) return EvaluateAuthentication(ParseHeaders(raw), from, exchange);
         return exchange ? (MailAuth.Pass, "thư nội bộ Exchange") : (MailAuth.Unknown, "không có header Internet");
     }
 

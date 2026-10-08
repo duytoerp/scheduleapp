@@ -17,6 +17,9 @@ internal sealed class StepEditorContext
     public IReadOnlyList<string> Variables { get; init; } = [];
     public IReadOnlyList<VariableDef> JobVariables { get; init; } = [];
     public IUserNotifier? Notifier { get; init; }
+
+    /// <summary>Công việc đang soạn còn chờ duyệt (xét lúc bấm — duyệt trong trình soạn thì thôi chờ): không cho "Thử bước".</summary>
+    public Func<bool> PendingApproval { get; init; } = () => false;
 }
 
 /// <summary>Soạn một bước trong flow. Các trường hiển thị thay đổi theo loại thao tác.</summary>
@@ -2162,6 +2165,9 @@ internal sealed class StepEditorForm : BaseForm
         var error = Validate(step);
         if (error != null) { Warn(error.Value.Message); return; }
         if (_ctx.Notifier == null) { Warn("Không chạy thử được ở đây."); return; }
+        // Công việc nhập từ file / tạo qua Telegram không chạy theo bất kỳ cách nào khi chưa duyệt — kể cả thử riêng một bước
+        // (lệnh thật có thể nằm trong biến của công việc, không thấy trên ô lệnh).
+        if (_ctx.PendingApproval()) { Warn("Công việc đang chờ duyệt — đóng ô này, bấm \"Duyệt…\" ở trình soạn công việc rồi mới thử bước."); return; }
 
         _btnTestStep.Enabled = false;
         ShowInfo("Đang chạy thử…", true);

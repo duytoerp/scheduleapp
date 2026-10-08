@@ -55,7 +55,7 @@ public static class JobApproval
     public static string Summary(Job job, IReadOnlyList<Job>? all = null)
     {
         var sb = new StringBuilder();
-        void Line(string text) => sb.Append(Log.Redact(text)).Append("\r\n");
+        void Line(string text) => sb.Append(ActionStep.Visible(Log.Redact(text))).Append("\r\n");
         Job? Find(Guid id) => all?.FirstOrDefault(j => j.Id == id);
 
         Line($"Công việc: {job.Name}" + (job.Group.Trim().Length > 0 ? $"  (nhóm {job.Group.Trim()})" : ""));
@@ -66,9 +66,10 @@ public static class JobApproval
             Line($"⚡ Kích hoạt: {t.Describe()}" + (t.Enabled ? "" : " (đang tắt)") + (t.Type == TriggerType.AppStartup ? " — chạy mỗi lần mở ScheduleApp" : ""));
         if (job.OnFailureJobId is Guid f) Line($"↪ Khi lỗi chạy: {Find(f)?.Name ?? f.ToString()}" + (Find(f) is { NeedsApproval: true } ? " (cũng đang chờ duyệt)" : ""));
         if (!string.IsNullOrWhiteSpace(job.DataFile)) Line($"📄 Dữ liệu kiểm thử: {job.DataFile}");
+        foreach (var flag in Flags(job)) Line(flag);
         foreach (var v in job.Variables) Line($"🔣 Biến {v.Name} = \"{v.Value.Replace("\r", "").Replace("\n", " ⏎ ")}\"");
 
-        int risky = job.Steps.Count(s => s.Enabled && s.IsRisky);
+        int risky = job.Steps.Count(s => s.Enabled && s.NeedsReview);
         sb.Append("\r\n");
         Line($"🔧 {job.Steps.Count} bước" + (risky > 0 ? $" — {risky} bước cần xem kỹ (⚠, hiện đầy đủ):" : ":"));
         var depth = FlowStructure.Build(job.Steps).Depth;
@@ -77,7 +78,7 @@ public static class JobApproval
             var s = job.Steps[i];
             bool call = s.Type == StepType.CallJob;
             var text = call ? CallText(s, all) : s.FullDescribe();
-            Line((s.IsRisky || call ? "⚠ " : "   ") + new string(' ', Math.Min(i < depth.Length ? depth[i] : 0, 6) * 2) + $"{i + 1}. {text}" + (s.Enabled ? "" : " (đang tắt)"));
+            Line((s.NeedsReview ? "⚠ " : "   ") + new string(' ', Math.Min(i < depth.Length ? depth[i] : 0, 6) * 2) + $"{i + 1}. {text}" + (s.Enabled ? "" : " (đang tắt)"));
         }
         return sb.ToString();
     }
@@ -94,7 +95,17 @@ public static class JobApproval
         var text = $"Chạy công việc \"{target.Name}\"";
         if (!string.Equals(s.Target.Trim(), target.Name.Trim(), StringComparison.CurrentCultureIgnoreCase) && s.Target.Trim().Length > 0)
             text += $" (nhãn trong file ghi \"{s.Target}\" — KHÁC tên thật)";
-        return text + (target.NeedsApproval ? " (công việc này cũng đang chờ duyệt)" : " — công việc ĐÃ DUYỆT có sẵn trên máy, sẽ được chạy bởi công việc này");
+        return text + (target.NeedsApproval ? " (công việc này cũng đang chờ duyệt)"
+            : " — công việc ĐÃ DUYỆT có sẵn trên máy, sẽ được chạy bởi công việc này và dùng chung biến: biến công việc này gán trước"
+              + " (vd {{đường dẫn}}) thay cho giá trị khai báo của công việc được gọi");
+    }
+
+    /// <summary>Tùy chọn của công việc có tác dụng ngoài các bước: xóa bản ghi D365, ẩn khung trạng thái, đánh thức máy.</summary>
+    private static IEnumerable<string> Flags(Job job)
+    {
+        if (job.CleanupTestData) yield return "🧹 Sau khi chạy: XÓA các bản ghi Dynamics 365 trong {{d365.created}} (các bước có thể tự gán danh sách này)";
+        if (job.RunOverlay == RunOverlayMode.Hide) yield return "🙈 Không hiện khung trạng thái khi chạy";
+        if (job.WakeComputer) yield return "⏻ Đánh thức máy khỏi chế độ ngủ để chạy";
     }
 
     /// <summary>
@@ -105,14 +116,15 @@ public static class JobApproval
     public static string ImportSummary(IReadOnlyList<Job> jobs, IReadOnlyList<Job>? all = null)
     {
         var sb = new StringBuilder();
-        void Line(string text) => sb.Append(Log.Redact(text)).Append("\r\n");
+        void Line(string text) => sb.Append(ActionStep.Visible(Log.Redact(text))).Append("\r\n");
         foreach (var job in jobs)
         {
             // Bước gọi công việc khác luôn được liệt kê: có thể chạy một công việc đã duyệt có sẵn trên máy.
-            var risky = job.Steps.Select((s, i) => (Step: s, Number: i + 1)).Where(x => x.Step.IsRisky || x.Step.Type == StepType.CallJob).ToList();
-            Line($"■ {job.Name} — {job.Steps.Count} bước" + (risky.Count > 0 ? $", {risky.Count} bước cần xem kỹ" : ", không có bước chạy lệnh / mở ứng dụng / gõ phím…"));
+            var risky = job.Steps.Select((s, i) => (Step: s, Number: i + 1)).Where(x => x.Step.NeedsReview).ToList();
+            Line($"■ {job.Name} — {job.Steps.Count} bước" + (risky.Count > 0 ? $", {risky.Count} bước cần xem kỹ" : ", không có bước chạy lệnh / mở ứng dụng / gõ phím / gán biến / dùng bí mật…"));
             if (job.Enabled && job.Schedule.Type != ScheduleType.Manual) Line("   ⏰ " + job.Schedule.Describe());
             foreach (var t in job.Triggers.Where(t => t.Enabled)) Line("   ⚡ " + t.Describe());
+            foreach (var flag in Flags(job)) Line("   " + flag);
             foreach (var v in job.Variables) Line($"   🔣 {v.Name} = \"{v.Value.Replace("\r", "").Replace("\n", " ⏎ ")}\"");
             if (job.OnFailureJobId is Guid f)
             {

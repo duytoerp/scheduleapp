@@ -1047,7 +1047,8 @@ internal sealed class JobEditorForm : BaseForm
         Labels = _job.Steps.Where(s => s.Type == StepType.Label && s.Target.Trim().Length > 0).Select(s => s.Target.Trim()).Distinct().ToList(),
         Variables = KnownVariables(),
         JobVariables = ReadVariables(),
-        Notifier = _notifier
+        Notifier = _notifier,
+        PendingApproval = () => _job.NeedsApproval
     };
 
     /// <summary>Tên biến xuất hiện trong flow (để gợi ý khi soạn bước).</summary>

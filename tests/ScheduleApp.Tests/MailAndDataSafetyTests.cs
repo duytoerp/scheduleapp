@@ -119,11 +119,11 @@ public class MailSafetyTests
         // Máy chủ nhận thư thêm header lên trên cùng; header phía dưới do người gửi tự chèn ("dmarc=pass") không được tin.
         var m = Mail("orders@shop.vn", authResults: "mx.google.com; dmarc=fail (p=NONE) header.from=shop.vn");
         m.Headers.Add("Authentication-Results", "evil.com; dmarc=pass header.from=shop.vn");
-        Assert.Equal(MailAuth.Fail, MailWatcher.EvaluateAuthentication(m.Headers, "orders@shop.vn").Result);
+        Assert.Equal(MailAuth.Fail, MailWatcher.EvaluateAuthentication(m.Headers, "orders@shop.vn", exchangeMailbox: false).Result);
 
         // Khối header thô (Outlook) cũng chỉ lấy header đầu tiên, kể cả khi bị gập dòng.
         var raw = "Received: from x\r\nAuthentication-Results: mx.google.com;\r\n\tdmarc=pass header.from=shop.vn\r\nAuthentication-Results: evil; dmarc=fail\r\nFrom: orders@shop.vn\r\n";
-        Assert.Equal(MailAuth.Pass, MailWatcher.EvaluateAuthentication(MailWatcher.ParseHeaders(raw), "orders@shop.vn").Result);
+        Assert.Equal(MailAuth.Pass, MailWatcher.EvaluateAuthentication(MailWatcher.ParseHeaders(raw), "orders@shop.vn", exchangeMailbox: false).Result);
     }
 
     [Fact]
