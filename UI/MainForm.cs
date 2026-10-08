@@ -28,7 +28,13 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
     private volatile RunProgress? _lastProgress;
     private UpdateInfo? _pendingUpdate;
 
-    private readonly ListView _list = new()
+    /// <summary>ListView vẽ qua bộ đệm (LVS_EX_DOUBLEBUFFER) — cột "Còn lại" cập nhật mỗi giây không nhấp nháy.</summary>
+    private sealed class BufferedListView : ListView
+    {
+        public BufferedListView() => DoubleBuffered = true;
+    }
+
+    private readonly ListView _list = new BufferedListView()
     {
         Dock = DockStyle.Fill,
         View = View.Details,
@@ -646,7 +652,12 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         {
             if (!Visible) return;
             foreach (ListViewItem item in _list.Items)
-                if (item.Tag is Job job) item.SubItems[3].Text = Countdown(job);
+            {
+                // Chỉ gán khi chữ đổi: gán lại (dù y hệt) vẫn làm Windows vẽ lại ô; trên 1 giờ chữ chỉ đổi mỗi phút.
+                if (item.Tag is not Job job) continue;
+                var text = Countdown(job);
+                if (item.SubItems[3].Text != text) item.SubItems[3].Text = text;
+            }
         };
         _uiTimer.Start();
     }
@@ -669,31 +680,30 @@ internal sealed class MainForm : BaseForm, IUserNotifier, IHotkeyHost, IRemoteHo
         {
             _list.Items.Clear();
             _list.Groups.Clear();
+            static string GroupName(Job job) => string.IsNullOrWhiteSpace(job.Group) ? "(Chưa phân nhóm)" : job.Group.Trim();
+            var shown = _jobs.Where(job => filter.Length == 0 ||
+                job.Name.Contains(filter, StringComparison.CurrentCultureIgnoreCase) ||
+                job.Group.Contains(filter, StringComparison.CurrentCultureIgnoreCase)).ToList();
+            // Nhóm phải có trong _list.Groups TRƯỚC khi thêm dòng: dòng thêm vào lúc nhóm chưa đăng ký không được gán nhóm,
+            // và khi bật hiện nhóm (vd thêm công việc nhóm mới → từ 1 lên 2 nhóm) Windows ẩn mọi dòng không thuộc nhóm nào → danh sách trắng.
+            // Nhóm sắp theo tên, "(Chưa phân nhóm)" ở cuối.
             var groups = new Dictionary<string, ListViewGroup>(StringComparer.CurrentCultureIgnoreCase);
-            foreach (var job in _jobs)
+            foreach (var name in shown.Select(GroupName).Distinct(StringComparer.CurrentCultureIgnoreCase)
+                         .OrderBy(n => n.StartsWith('(')).ThenBy(n => n, StringComparer.CurrentCultureIgnoreCase))
             {
-                if (filter.Length > 0 &&
-                    !job.Name.Contains(filter, StringComparison.CurrentCultureIgnoreCase) &&
-                    !job.Group.Contains(filter, StringComparison.CurrentCultureIgnoreCase))
-                    continue;
-
-                var groupName = string.IsNullOrWhiteSpace(job.Group) ? "(Chưa phân nhóm)" : job.Group.Trim();
-                if (!groups.TryGetValue(groupName, out var group))
-                {
-                    group = new ListViewGroup(groupName, groupName);
-                    groups[groupName] = group;
-                }
-
-                var item = new ListViewItem(job.Name) { Tag = job, Checked = job.Enabled, Group = group };
+                var group = new ListViewGroup(name, name);
+                groups[name] = group;
+                _list.Groups.Add(group);
+            }
+            _list.ShowGroups = groups.Count > 1;
+            foreach (var job in shown)
+            {
+                var item = new ListViewItem(job.Name) { Tag = job, Checked = job.Enabled, Group = groups[GroupName(job)] };
                 for (int i = 1; i < _list.Columns.Count; i++) item.SubItems.Add("");
                 UpdateItem(item);
                 _list.Items.Add(item);
                 if (job.Id == selectedId) item.Selected = true;
             }
-            // Nhóm sắp theo tên, "(Chưa phân nhóm)" ở cuối.
-            foreach (var g in groups.Values.OrderBy(g => g.Header.StartsWith('(')).ThenBy(g => g.Header, StringComparer.CurrentCultureIgnoreCase))
-                _list.Groups.Add(g);
-            _list.ShowGroups = groups.Count > 1;
             _emptyJobs.Text = _jobs.Count == 0
                 ? "Chưa có công việc nào.\n\nBấm \"＋ Thêm công việc\" để tự dựng, hoặc \"Mẫu có sẵn…\" để bắt đầu từ ví dụ.\n\nLần đầu dùng? Mở \"Hướng dẫn\" ở thanh bên trái (hoặc nhấn F1)."
                 : $"Không có công việc nào khớp \"{filter}\".";
