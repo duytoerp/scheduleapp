@@ -169,7 +169,7 @@ internal static class HelpContent
             ## Thiết lập mẫu
             Thêm từ **Mẫu có sẵn** thì màn hình *Thiết lập mẫu* hỏi một lần các giá trị của riêng bạn: biến (`tenant`, `d365Url`, tài khoản test…), bí mật, kết nối API và đường dẫn file / thư mục — của mẫu và các công việc dùng chung nó gọi tới. Giá trị còn là chữ mẫu được đánh dấu ⚠; giá trị đã điền được nhớ để tự điền cho mẫu sau.
             Sửa lại bất cứ lúc nào: chuột phải công việc → **⚙ Thiết lập biến & bí mật…**, hoặc **⋯ Thêm → Thiết lập biến & bí mật (mọi công việc)…** để đổi một giá trị cho tất cả công việc cùng lúc.
-            > Định dạng giá trị: `{{ten:upper}}`, `{{ten:trim}}`, `{{duongDan:unquote}}` (bỏ dấu nháy bao quanh), `{{ten:nodiacritics}}` (bỏ dấu), `{{tien:N0}}` (1.234.568), `{{ten:json}}` (đặt vào chuỗi JSON an toàn).
+            > Định dạng giá trị: `{{ten:upper}}`, `{{ten:trim}}`, `{{duongDan:unquote}}` (bỏ dấu nháy bao quanh), `{{ten:nodiacritics}}` (bỏ dấu), `{{tien:N0}}` (1.234.568), `{{ten:json}}` (đặt vào chuỗi JSON an toàn), `{{tep:cmd}}` (tham số lệnh an toàn), `{{ten:ps}}` (chuỗi PowerShell), `{{ten:filename}}` (tên file an toàn).
             """,
             new HelpAction("Mở Bí mật", CmdSecrets)),
 
@@ -518,7 +518,11 @@ internal static class HelpContent
             - Email SMTP bắt buộc SSL/TLS. Máy chủ chuyển tiếp nội bộ cũ (cổng 25): tick **Cho phép gửi không mã hóa** ở **Cài đặt → Thông báo**. Webhook bắt buộc `https://`.
             - Ảnh chụp màn hình lúc lỗi mặc định **không** gửi kèm Telegram / email (ảnh cả màn hình có thể lộ thông tin khác) — bật lại ở **Cài đặt → Thông báo** nếu cần.
             ## Dữ liệu từ ngoài đưa vào lệnh
-            - Bước **Chạy lệnh**: đưa dữ liệu không tin cậy (tên file, nội dung email, ô Excel…) vào lệnh bằng `{{biến:cmd}}` — tự bọc dấu nháy, không thể thoát ra thành lệnh khác. Vd `move {{tep:cmd}} D:\luu`.
+            - Bước **Chạy lệnh**: đưa dữ liệu không tin cậy (tên file, nội dung email, ô Excel…) vào lệnh bằng `{{biến:cmd}}` — tự bọc dấu nháy, không thể thoát ra thành lệnh khác, kể cả khi lỡ bọc thêm dấu nháy (`"{{tep:cmd}}"`). Vd `move {{tep:cmd}} D:\luu`. Trong `powershell -Command "…"` dùng `{{biến:ps}}`.
+            - `{{biến}}` để trần trong lệnh mà giá trị có dấu nháy kép, xuống dòng, hoặc `& | < > ^` ngoài dấu nháy → bước báo lỗi thay vì chạy. Lưu bước có biến chưa `:cmd` → ScheduleApp hỏi **Thêm :cmd** / **Giữ nguyên**; màn hình duyệt và xem trước AI ghi ⚠ cạnh lệnh.
+            - **Đường dẫn lấy từ biến** (mở ứng dụng, đọc / ghi file, Nếu file tồn tại, lặp Excel / thư mục, phát video) không được trỏ tới máy lạ (`\\máy\…`, `\??\UNC\…`, `file://máy/…`) — mở là Windows tự gửi thông tin đăng nhập tới máy đó. Dùng được máy ghi thẳng `\\máy\thư-mục\` trước `{{biến}}` (vd `\\nas\chung\{{tep}}.xlsx`), máy có trong biến / bước của công việc, hoặc máy bạn tự gõ ở bước hỏi lúc chạy.
+            - Ghi file: đường dẫn sau khi thay biến không được ra khỏi thư mục ghi thẳng trong bước (`D:\BaoCao\{{ten}}.txt` với `ten = ..\..\x` → lỗi). Tên file lấy từ dữ liệu: `{{ten:filename}}`.
+            - **Tạo flow bằng AI**: xem trước hiện đầy đủ bước ⚠; áp dụng flow có bước chạy lệnh / mở ứng dụng / gửi dữ liệu / gõ phím, hoặc có lịch / kích hoạt đề xuất → hỏi lại (lịch chỉ áp dụng khi chọn **Áp dụng cả lịch**). Công việc chờ duyệt không được gửi cho AI.
             - Kích hoạt **Có email mới**: nhập người gửi (`ketoan@congty.vn` hoặc `@congty.vn`) và tick **Chỉ nhận email đã xác thực** — tên hiển thị thì ai cũng đặt được. File đính kèm lưu xuống được đánh dấu "tải từ Internet" để Windows / Office cảnh báo khi mở. Tiêu đề / nội dung email đưa vào flow nguyên chữ: người gửi viết `{{secret:…}}` cũng không đọc được bí mật của bạn.
             - Ghi CSV: giá trị bắt đầu bằng `=` `+` `-` `@` được thêm dấu `'` để Excel không chạy nó như công thức.
             ## Chạy ổn định, không mất dữ liệu

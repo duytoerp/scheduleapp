@@ -1230,6 +1230,14 @@ internal sealed class JobEditorForm : BaseForm
     /// <summary>Mô tả bằng lời → AI dựng flow → thay cả flow hoặc chèn sau bước đang chọn (hoàn tác được bằng Ctrl+Z).</summary>
     private void GenerateWithAi()
     {
+        // Công việc chờ duyệt đến từ nguồn khác (Telegram, file nhập): chữ trong các bước có thể điều khiển AI — không gửi trước khi duyệt.
+        if (_job.NeedsApproval)
+        {
+            MessageBox.Show(this, "Công việc này đang chờ duyệt (đến từ Telegram / file nhập) nên chưa gửi cho AI — chữ trong các bước có thể khiến AI " +
+                                  "thêm việc bạn không yêu cầu.\n\nDuyệt công việc trước (danh sách công việc → chuột phải → Duyệt…), rồi dùng AI.",
+                Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
         int insertAt = _designer.SelectedIndex >= 0 ? _designer.SelectedIndex + 1 : _job.Steps.Count;
         var context = new FlowGenerator.Context
         {
@@ -1267,8 +1275,8 @@ internal sealed class JobEditorForm : BaseForm
         if (result.Mode == FlowGenerator.Mode.Replace && result.Name.Length > 0 &&
             (string.IsNullOrWhiteSpace(_txtName.Text) || _txtName.Text.Trim() == new Job().Name))
             _txtName.Text = result.Name;
-        // Người dùng có nói lúc nào chạy ("8h sáng các ngày làm việc", "khi có email hóa đơn"…) → đặt lịch / kích hoạt luôn.
-        if (result.Mode == FlowGenerator.Mode.Replace)
+        // Người dùng có nói lúc nào chạy ("8h sáng các ngày làm việc", "khi có email hóa đơn"…) → đặt lịch / kích hoạt khi đã đồng ý ở hộp hỏi.
+        if (result.Mode == FlowGenerator.Mode.Replace && dialog.ApplySchedule)
         {
             if (result.Schedule != null)
             {

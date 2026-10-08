@@ -51,6 +51,44 @@ public static partial class RemotePathGate
     [System.Text.RegularExpressions.GeneratedRegex(@"^[a-zA-Z]:(\\|$)")]
     private static partial System.Text.RegularExpressions.Regex LocalDrive();
 
+    [System.Text.RegularExpressions.GeneratedRegex(@"^[a-zA-Z][a-zA-Z0-9+.\-]+:")]
+    private static partial System.Text.RegularExpressions.Regex UrlScheme();
+
+    /// <summary>
+    /// Mở <paramref name="path"/> có đi qua mạng không: như <see cref="IsRemote"/>, cộng thêm ổ mạng đã ánh xạ (Z:\…, \\?\Z:\…, \??\Z:\…,
+    /// file:///Z:/…) và đường dẫn tương đối khi thư mục hiện tại là thư mục mạng. Không hiểu được đường dẫn → coi là mạng (chặn nhầm còn hơn lộ).
+    /// URL không phải file: (https:, mailto:…) không phải đường dẫn → false.
+    /// </summary>
+    public static bool IsNetworkPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        if (IsRemote(path)) return true;
+        var raw = path.Trim().Trim('"', '\'');
+        var p = Environment.ExpandEnvironmentVariables(raw).Replace('/', '\\');
+        if (p.StartsWith("file:", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri) || !uri.IsFile) return true;
+            p = uri.LocalPath;
+        }
+        else if (UrlScheme().IsMatch(p)) return false;
+        foreach (var prefix in (string[])[@"\\?\", @"\\.\", @"\??\"])
+        {
+            if (!p.StartsWith(prefix, StringComparison.Ordinal)) continue;
+            p = p[prefix.Length..];
+            break;
+        }
+        try
+        {
+            var full = Path.GetFullPath(p);
+            return full.StartsWith(@"\\", StringComparison.Ordinal)
+                   || (full.Length >= 2 && full[1] == ':' && new DriveInfo(full[..1]).DriveType == DriveType.Network);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException or System.Security.SecurityException)
+        {
+            return true;
+        }
+    }
+
     /// <summary>Có được mở <paramref name="path"/> để xem trước không (false = đường dẫn mạng trong lúc đang chặn, ngoài flow chạy thật).</summary>
     public static bool Allows(string? path) => !IsBlocking || InRun.Value || !IsRemote(path);
 

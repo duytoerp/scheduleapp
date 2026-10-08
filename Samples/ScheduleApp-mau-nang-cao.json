@@ -1971,7 +1971,7 @@
       {
         "Type": "RunCommand",
         "Enabled": true,
-        "Target": "ren {{f:cmd}} \"{{loop.index:000}}_{{f.name}}\"",
+        "Target": "ren {{f:cmd}} \"{{loop.index:000}}_{{f.name:cmd}}\"",
         "Arguments": "",
         "Text": "",
         "X": 0,

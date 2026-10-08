@@ -289,10 +289,12 @@ internal sealed class AiFlowForm : BaseForm
         for (int i = 0; i < r.Steps.Count; i++)
         {
             var s = r.Steps[i];
-            var text = new string(' ', Math.Min(depth[offset + i], 8) * 4) + ActionStep.TypeNames[s.Type] + " — " + s.Describe();
+            // Bước cần xem kỹ (chạy lệnh, mở ứng dụng, gửi dữ liệu, gán biến…): hiện ĐẦY ĐỦ, không cắt chữ — phần bị cắt có thể là lệnh thật.
+            var text = new string(' ', Math.Min(depth[offset + i], 8) * 4) + (s.NeedsReview ? "⚠ " : "") + ActionStep.TypeNames[s.Type] + " — " +
+                       Log.Redact(s.NeedsReview ? s.FullDescribe() : s.Describe());
             _preview.Items.Add(new ListViewItem([(offset + i + 1).ToString(), text])
             {
-                ForeColor = s.IsControl ? StepVisuals.Accent(s.Type) : SystemColors.WindowText,
+                ForeColor = s.IsRisky ? RiskyColor : s.IsControl ? StepVisuals.Accent(s.Type) : SystemColors.WindowText,
                 ToolTipText = text.Trim()
             });
         }
@@ -302,13 +304,13 @@ internal sealed class AiFlowForm : BaseForm
 
         var nl = Environment.NewLine;
         var info = new List<string>();
+        int risky = r.Steps.Count(s => s.IsRisky);
+        if (risky > 0) info.Add($"⚠ {risky} bước chạy lệnh / mở ứng dụng / gửi dữ liệu / gõ phím… (chữ cam) — đọc kỹ nội dung đầy đủ trước khi áp dụng.");
         if (r.Summary.Length > 0) info.Add("📝 " + r.Summary);
         if (r.Name.Length > 0 && r.Mode == FlowGenerator.Mode.Replace) info.Add("Tên đề xuất: " + r.Name);
-        if (r.Variables.Count > 0) info.Add("Biến khai báo thêm: " + string.Join(", ", r.Variables.Select(v => $"{v.Name} = \"{v.Value}\"")));
-        if (r.Mode == FlowGenerator.Mode.Replace && (r.Schedule != null || r.Triggers.Count > 0))
-            info.Add("⏰ Lịch chạy đề xuất (áp dụng cùng flow): " + string.Join("; ",
-                (r.Schedule != null ? [r.Schedule.Describe() + (r.SkipHolidays ? ", bỏ qua ngày nghỉ lễ" : "")] : Array.Empty<string>())
-                .Concat(r.Triggers.Select(t => t.Describe()))));
+        if (r.Variables.Count > 0) info.Add("Biến khai báo thêm: " + string.Join(", ", r.Variables.Select(v => $"{v.Name} = \"{Log.Redact(v.Value)}\"")));
+        if (HasScheduleProposal(r))
+            info.Add("⏰ Lịch chạy đề xuất (hỏi trước khi áp dụng): " + ScheduleProposal(r));
         if (r.Notes.Count > 0) info.Add("⚠ Cần kiểm tra / điền trước khi chạy:" + nl + string.Join(nl, r.Notes.Select(n => "   • " + n)));
         if (r.Problems.Count > 0)
             info.Add("✖ Lỗi AI chưa tự sửa được — áp dụng rồi sửa tay, hoặc gửi yêu cầu sửa:" + nl + string.Join(nl, r.Problems.Select(p => "   • " + p)));
@@ -327,6 +329,18 @@ internal sealed class AiFlowForm : BaseForm
         _txtPrompt.Focus();
     }
 
+    private static readonly Color RiskyColor = Color.FromArgb(175, 75, 0);
+
+    /// <summary>Người dùng đồng ý áp dụng cả lịch / kích hoạt AI đề xuất (chỉ có ở chế độ viết lại).</summary>
+    public bool ApplySchedule { get; private set; }
+
+    private static bool HasScheduleProposal(FlowGenerator.Result r) =>
+        r.Mode == FlowGenerator.Mode.Replace && (r.Schedule != null || r.Triggers.Count > 0);
+
+    private static string ScheduleProposal(FlowGenerator.Result r) => string.Join("; ",
+        (r.Schedule != null ? [r.Schedule.Describe() + (r.SkipHolidays ? ", bỏ qua ngày nghỉ lễ" : "")] : Array.Empty<string>())
+        .Concat(r.Triggers.Select(t => t.Describe())));
+
     private void Apply()
     {
         if (Result is not { } r) return;
@@ -334,8 +348,44 @@ internal sealed class AiFlowForm : BaseForm
             MessageBox.Show(this, $"Flow còn {r.Problems.Count} lỗi AI chưa tự sửa được (xem phần dưới). Vẫn áp dụng để sửa tay?",
                 Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
             return;
+        if (!ConfirmApply(r)) return;
         DialogResult = DialogResult.OK;
         Close();
+    }
+
+    /// <summary>
+    /// Bước chạy lệnh / mở ứng dụng / gửi dữ liệu / gõ phím… và lịch / kích hoạt tự chạy do AI đề xuất: hỏi riêng trước khi áp dụng — chữ trong
+    /// flow cũ / tên cửa sổ gửi kèm có thể khiến AI thêm việc người dùng không yêu cầu. Lịch / kích hoạt chỉ áp dụng khi chọn "Áp dụng cả lịch".
+    /// </summary>
+    private bool ConfirmApply(FlowGenerator.Result r)
+    {
+        ApplySchedule = false;
+        int offset = r.Mode == FlowGenerator.Mode.Insert ? _context.InsertAt : 0;
+        var risky = r.Steps.Select((s, i) => (Step: s, Number: offset + i + 1)).Where(x => x.Step.IsRisky).ToList();
+        bool schedule = HasScheduleProposal(r);
+        if (risky.Count == 0 && !schedule) return true;
+
+        const int Shown = 6;
+        static string Cut(string s) => s.Length > 220 ? s[..220] + "…" : s;
+        var sb = new System.Text.StringBuilder();
+        if (risky.Count > 0)
+        {
+            sb.Append($"⚠ {risky.Count} bước chạy lệnh / mở ứng dụng / gửi dữ liệu / gõ phím…:\n");
+            foreach (var (step, number) in risky.Take(Shown)) sb.Append($"• {number}. {Cut(Log.Redact(step.FullDescribe()))}\n");
+            if (risky.Count > Shown) sb.Append($"… và {risky.Count - Shown} bước khác (dòng chữ cam trong danh sách)\n");
+            sb.Append('\n');
+        }
+        if (schedule) sb.Append("⏰ AI đề xuất tự chạy (không cần bạn bấm Chạy): " + ScheduleProposal(r) + "\n\n");
+        sb.Append("Flow do AI tạo có thể làm khác điều bạn yêu cầu. Chỉ áp dụng khi các bước trên đúng ý bạn.");
+
+        using var ask = schedule
+            ? new ConfirmForm("Áp dụng flow AI", sb.ToString(), "Áp dụng cả lịch", "Chỉ áp dụng các bước", "Xem lại", topMost: false)
+            : new ConfirmForm("Áp dụng flow AI", sb.ToString(), "Áp dụng", "Xem lại", topMost: false);
+        var answer = ask.ShowDialog(this);
+        if (!schedule) return answer == DialogResult.Yes;
+        if (answer is not (DialogResult.Yes or DialogResult.No)) return false;
+        ApplySchedule = answer == DialogResult.Yes;
+        return true;
     }
 
     protected override void Dispose(bool disposing)

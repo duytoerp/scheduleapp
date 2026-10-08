@@ -421,7 +421,12 @@ public class DataSafetyTests
         Assert.True(LoopFrame.IsNetworkPath("//attacker/share/x.txt"));
         Assert.True(LoopFrame.IsNetworkPath(@"\\?\UNC\attacker\share\x.txt"));
         Assert.True(LoopFrame.IsNetworkPath(@"\\attacker@SSL\DavWWWRoot\x.txt"));
+        Assert.True(LoopFrame.IsNetworkPath(@"\??\UNC\attacker\share\x.txt"));          // dạng NT — trước đây lọt
+        Assert.True(LoopFrame.IsNetworkPath(@"\\.\UNC\attacker\share\x.txt"));
+        Assert.True(LoopFrame.IsNetworkPath("file://attacker/share/x.txt"));
         Assert.False(LoopFrame.IsNetworkPath(Path.Combine(DataDir, "a.txt")));
+        Assert.False(LoopFrame.IsNetworkPath(@"\??\" + Path.Combine(DataDir, "a.txt")));
+        Assert.False(LoopFrame.IsNetworkPath("https://example.com/a.txt"));
     }
 
     private static async Task<string> LinesLoopAsync(string target, string? pathVar)
@@ -447,19 +452,22 @@ public class DataSafetyTests
     {
         var file = Path.Combine(NewDir(), "ds.txt");
         File.WriteAllText(file, "mot\nhai\n");
-        // \\?\ là đường dẫn dạng UNC trỏ về file có thật trên máy → phân biệt được "đã mở file" với "coi là nội dung".
-        var unc = @"\\?\" + file;
+        // Máy không có thật: nếu bị mở thì chỉ thấy "không có file" sau khi đã gửi thông tin đăng nhập — phân biệt qua dòng nhật ký.
+        foreach (var unc in (string[])[@"\\sa-test-khong-co\chung\ds.txt", @"\??\UNC\sa-test-khong-co\chung\ds.txt"])
+        {
+            var log = new List<string>();
+            void OnLog(string l) { lock (log) log.Add(l); }
+            Log.Written += OnLog;
+            string fromVariable;
+            try { fromVariable = await LinesLoopAsync("{{p}}", unc); }
+            finally { Log.Written -= OnLog; }
+            Assert.Equal($"[{unc}]", fromVariable); // lấy từ biến (vd nội dung email) → không mở, coi là nội dung
+            Assert.Contains(log, l => l.Contains("đường dẫn mạng lấy từ biến"));
+        }
 
-        var log = new List<string>();
-        void OnLog(string l) { lock (log) log.Add(l); }
-        Log.Written += OnLog;
-        string fromVariable;
-        try { fromVariable = await LinesLoopAsync("{{p}}", unc); }
-        finally { Log.Written -= OnLog; }
-        Assert.Equal($"[{unc}]", fromVariable); // lấy từ biến (vd nội dung email) → không mở, coi là nội dung
-        Assert.Contains(log, l => l.Contains("đường dẫn mạng lấy từ biến"));
-
-        Assert.Equal("[mot][hai]", await LinesLoopAsync(unc, null));       // ghi thẳng trong bước → vẫn đọc file
-        Assert.Equal("[mot][hai]", await LinesLoopAsync("{{p}}", file));   // đường dẫn trên máy lấy từ biến → vẫn đọc file như trước
+        var local = @"\\?\" + file;                                          // đường dẫn thiết bị tới ổ đĩa của máy này — không phải mạng
+        Assert.Equal("[mot][hai]", await LinesLoopAsync(local, null));       // ghi thẳng trong bước → vẫn đọc file
+        Assert.Equal("[mot][hai]", await LinesLoopAsync("{{p}}", local));
+        Assert.Equal("[mot][hai]", await LinesLoopAsync("{{p}}", file));     // đường dẫn trên máy lấy từ biến → vẫn đọc file như trước
     }
 }

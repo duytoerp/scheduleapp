@@ -825,8 +825,8 @@ public sealed class ActionStep
         var window = string.IsNullOrWhiteSpace(Target) ? " (vào cửa sổ đang dùng)" : $" vào \"{Target}\"";
         return Type switch
         {
-            StepType.RunCommand => $"Chạy lệnh: {One(Target)}" + IntoVar(),
-            StepType.SetVariable => $"{{{{{Variable}}}}} ← output lệnh: {One(Target)}",
+            StepType.RunCommand => $"Chạy lệnh: {One(Target)}" + IntoVar() + CommandNote(),
+            StepType.SetVariable => $"{{{{{Variable}}}}} ← output lệnh: {One(Target)}" + CommandNote(),
             StepType.LaunchApp => $"Mở \"{Target}\"" + (string.IsNullOrWhiteSpace(Arguments) ? "" : $" với tham số: {One(Arguments)}"),
             StepType.HttpRequest => $"{(string.IsNullOrWhiteSpace(Method) ? "GET" : Method.ToUpperInvariant())} " +
                                     (string.IsNullOrWhiteSpace(Connection) ? "" : $"[kết nối {Connection}] ") + One(Target) +
@@ -857,6 +857,10 @@ public sealed class ActionStep
             _ => Describe()
         };
     }
+
+    /// <summary>Cảnh báo về lệnh ({{biến}} chưa :cmd, bí mật trên dòng lệnh) cho màn hình duyệt / xem trước AI.</summary>
+    private string CommandNote() =>
+        Services.Engine.VariableExpander.CommandWarnings(Target) is { Count: > 0 } w ? "   ⚠ " + string.Join(" · ", w) : "";
 
     /// <summary>Gán biến: ô "Tham số" là regex trích xuất (với các nguồn đọc dữ liệu thô).</summary>
     [JsonIgnore]

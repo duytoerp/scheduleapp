@@ -86,7 +86,10 @@ public sealed class FlowContext
         Ct = ct;
         StepMode = options.StepMode;
         Expander = new VariableExpander(Vars);
-        CurrentJob = rootJob;
+        _currentJob = rootJob;
+        TrustJob(rootJob);
+        if (options.Variables != null)
+            foreach (var value in options.Variables.Values) TrustServersIn(value);
     }
 
     public Job RootJob { get; }
@@ -120,8 +123,43 @@ public sealed class FlowContext
     /// <summary>Ảnh chụp màn hình lần lỗi gần nhất.</summary>
     public string? LastScreenshot { get; set; }
 
+    private Job _currentJob;
+
     /// <summary>Công việc đang chạy (gốc hoặc công việc con được gọi).</summary>
-    public Job CurrentJob { get; set; }
+    public Job CurrentJob
+    {
+        get => _currentJob;
+        set
+        {
+            _currentJob = value;
+            TrustJob(value);
+        }
+    }
+
+    private readonly HashSet<string> _trustedServers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<Guid> _trustedJobs = [];
+
+    /// <summary>
+    /// Máy (\\máy\…) có trong công việc đang chạy hoặc do người dùng tự nhập lúc chạy — đường dẫn lấy từ biến được mở tới máy này
+    /// (<see cref="PathGuard"/>); máy lạ chỉ xuất hiện trong dữ liệu ngoài (email, Excel, API…) thì không.
+    /// </summary>
+    public bool IsTrustedServer(string server) => _trustedServers.Contains(server);
+
+    /// <summary>Tin các máy trong đường dẫn mạng ghi trong <paramref name="text"/> (vd giá trị người dùng nhập ở bước hỏi).</summary>
+    public void TrustServersIn(string? text)
+    {
+        foreach (var server in PathGuard.ServersIn(text)) _trustedServers.Add(server);
+    }
+
+    /// <summary>Máy ghi trong các bước và biến khai báo của công việc (người dùng viết / đã duyệt).</summary>
+    private void TrustJob(Job job)
+    {
+        if (!_trustedJobs.Add(job.Id)) return;
+        foreach (var v in job.Variables) TrustServersIn(v.Value);
+        foreach (var s in job.Steps)
+            foreach (var text in (string?[])[s.Target, s.Text, s.Arguments, s.RowRef, s.Headers, s.Message, s.Form])
+                TrustServersIn(text);
+    }
 
     /// <summary>Giá trị thực tế của điều kiện vừa đánh giá (vd giá trị field) — hiện trong báo cáo khi bước Kiểm tra sai.</summary>
     public string ConditionDetail { get; set; } = "";
@@ -162,24 +200,30 @@ public sealed class FlowContext
         return generated;
     }
 
-    /// <summary>Bản sao của bước với các trường văn bản đã thay {{biến}}.</summary>
+    /// <summary>
+    /// Bản sao của bước với các trường văn bản đã thay {{biến}}. Lệnh cmd thay theo dấu nháy (<see cref="VariableExpander.ExpandCommand"/>);
+    /// đường dẫn lấy từ biến không được trỏ ra mạng (<see cref="PathGuard"/>) — vi phạm thì báo lỗi bước.
+    /// </summary>
     public ActionStep ExpandStep(ActionStep s)
     {
         var copy = s.ShallowCopy();
-        copy.Target = Expand(s.Target);
+        copy.Target = s.Type == StepType.RunCommand || (s.Type == StepType.SetVariable && s.VarSource == VarSource.Command)
+            ? Expander.ExpandCommand(s.Target ?? "")
+            : Expand(s.Target);
         copy.Arguments = Expand(s.Arguments);
         // Ghi Excel: mỗi dòng "Cột=giá trị" được thay biến riêng lúc ghi (giá trị có thể chứa xuống dòng).
         copy.Text = s.Type switch
         {
             StepType.WriteData => s.Text,
             // Phát video: bỏ dòng ghi chú (#) trước khi thay biến — biến trong ghi chú không làm lỗi bước.
-            StepType.PlayMedia => string.Join("\n", s.MediaLines.Select(Expand)),
+            StepType.PlayMedia => string.Join("\n", s.MediaLines.Select(l => PathGuard.Ensure(l, Expand(l), "Video / nhạc", this))),
             _ => Expand(s.Text)
         };
         copy.RowRef = Expand(s.RowRef);
         copy.Headers = Expand(s.Headers);
         copy.Message = Expand(s.Message);
         copy.Form = Expand(s.Form);
+        PathGuard.Check(s, copy, this);
         return copy;
     }
 

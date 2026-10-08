@@ -117,57 +117,15 @@ internal sealed class LoopFrame
 
     private static bool MayOpen(string path, ActionStep? original)
     {
-        if (!IsNetworkPath(path) || RootWrittenInStep(original, path)) return true;
+        // Bước gốc ghi thẳng đường dẫn, hoặc ít nhất ghi thẳng ổ đĩa / \\máy\thư-mục-chung\ trước {{biến}} → mở được (xem PathGuard).
+        if (!IsNetworkPath(path) || (original != null && PathGuard.RootWrittenIn(original.Target, path))) return true;
         Log.Warn($"      \"{path}\" là đường dẫn mạng lấy từ biến — không mở (tránh gửi thông tin đăng nhập Windows tới máy lạ), coi là nội dung văn bản. " +
                  "Muốn đọc file trên máy khác, ghi thẳng \\\\tên-máy\\thư-mục trong bước.");
         return false;
     }
 
-    /// <summary>Đường dẫn UNC (\\máy\..., //máy/..., \\?\UNC\...) hoặc nằm trên ổ mạng đã ánh xạ. Không hiểu được đường dẫn → coi là mạng.</summary>
-    internal static bool IsNetworkPath(string path)
-    {
-        var p = path.Trim().Replace('/', '\\');
-        if (p.StartsWith(@"\\", StringComparison.Ordinal)) return true;
-        try
-        {
-            var full = Path.GetFullPath(p);
-            return full.StartsWith(@"\\", StringComparison.Ordinal)
-                   || (full.Length >= 2 && full[1] == ':' && new DriveInfo(full[..1]).DriveType == DriveType.Network);
-        }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException or System.Security.SecurityException)
-        {
-            return true;
-        }
-    }
-
-    /// <summary>
-    /// Bước gốc ghi thẳng đường dẫn (không có {{biến}}), hoặc ít nhất ghi thẳng ổ đĩa / \\máy\thư-mục-chung và đường dẫn sau khi thay biến
-    /// vẫn nằm trong đó — vd "\\nas\chung\{{tenFile}}.txt" vẫn được mở, "{{duongDan}}" thì không.
-    /// </summary>
-    private static bool RootWrittenInStep(ActionStep? original, string path)
-    {
-        if (original == null) return false;
-        var t = original.Target.Trim().Trim('"').Replace('/', '\\');
-        if (!t.Contains("{{", StringComparison.Ordinal)) return true;
-        string root;
-        if (t.Length >= 2 && char.IsAsciiLetter(t[0]) && t[1] == ':') root = t[..2];
-        else
-        {
-            int server = t.StartsWith(@"\\", StringComparison.Ordinal) ? t.IndexOf('\\', 2) : -1;
-            int share = server > 2 ? t.IndexOf('\\', server + 1) : -1;
-            if (share < 0) return false;
-            root = t[..(share + 1)];
-            if (root.Contains("{{", StringComparison.Ordinal) || root.Contains('%') || root[2] is '?' or '.') return false;
-        }
-        try
-        {
-            return Path.GetFullPath(path.Replace('/', '\\')).StartsWith(root, StringComparison.OrdinalIgnoreCase);
-        }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException)
-        {
-            return false;
-        }
-    }
+    /// <summary>Đường dẫn đi qua mạng (UNC, \\?\UNC\, \??\UNC\, ổ mạng ánh xạ…) — xem <see cref="RemotePathGate.IsNetworkPath"/>.</summary>
+    internal static bool IsNetworkPath(string path) => RemotePathGate.IsNetworkPath(path);
 
     private static List<Dictionary<string, string>> LoadFiles(ActionStep s)
     {

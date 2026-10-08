@@ -849,6 +849,7 @@ internal sealed class StepEditorForm : BaseForm
             error.Value.Focus?.Focus();
             return;
         }
+        if (!ConfirmCommandVariables(s)) return;
 
         // Ghi ngược vào đối tượng bước gốc (giữ tham chiếu cho nơi gọi).
         foreach (var p in typeof(ActionStep).GetProperties().Where(p => p.CanWrite && p.CanRead))
@@ -856,6 +857,34 @@ internal sealed class StepEditorForm : BaseForm
 
         DialogResult = DialogResult.OK;
         Close();
+    }
+
+    /// <summary>
+    /// Lệnh có {{biến}} dữ liệu chưa :cmd / bí mật trên dòng lệnh: hỏi tự thêm :cmd, giữ nguyên, hay quay lại sửa (false = chưa lưu).
+    /// </summary>
+    private bool ConfirmCommandVariables(ActionStep s)
+    {
+        if (s.Type != StepType.RunCommand && !(s.Type == StepType.SetVariable && s.VarSource == VarSource.Command)) return true;
+        var warnings = VariableExpander.CommandWarnings(s.Target);
+        if (warnings.Count == 0) return true;
+        var fixedCommand = VariableExpander.AddCmdFormat(s.Target);
+        bool canFix = fixedCommand != s.Target;
+        var message = "Lệnh này cần xem lại:\n\n• " + string.Join("\n• ", warnings) + "\n\n" +
+                      (canFix ? "\"Thêm :cmd\": giá trị được bọc dấu nháy an toàn (đặt trong hay ngoài dấu nháy của bạn đều được), không thể chạy thành lệnh khác. " : "") +
+                      "\"Giữ nguyên\": chỉ khi giá trị chắc chắn do bạn tự đặt.";
+        using var ask = canFix
+            ? new ConfirmForm("Biến trong lệnh", message, "Thêm :cmd", "Giữ nguyên", "Sửa lại", topMost: false)
+            : new ConfirmForm("Biến trong lệnh", message, "Giữ nguyên", "Sửa lại", topMost: false);
+        var answer = ask.ShowDialog(this);
+        if (canFix && answer == DialogResult.Yes)
+        {
+            s.Target = fixedCommand;
+            _cboTarget.Text = fixedCommand;
+            return true;
+        }
+        if (answer == (canFix ? DialogResult.No : DialogResult.Yes)) return true;
+        _cboTarget.Focus();
+        return false;
     }
 
     private (string Message, Control? Focus)? Validate(ActionStep s)
@@ -1529,7 +1558,8 @@ internal sealed class StepEditorForm : BaseForm
                              "Bộ gõ UniKey/EVKey có thể làm sai chữ khi gõ từng phím — chế độ Tự động sẽ dán qua clipboard.",
         StepType.KeyPress => "Ví dụ: Enter · Ctrl+S · Alt+F4 · Win+R · Ctrl+Shift+Esc · Tab*3 (nhấn 3 lần). Nhiều tổ hợp cách nhau dấu phẩy: Ctrl+A, Delete.",
         StepType.RunCommand => "Lệnh chạy ẩn bằng cmd.exe (vd: robocopy D:\\src E:\\bak /MIR, powershell -File C:\\script.ps1). " +
-                               "Timeout = 0 nghĩa là không chờ. Mã thoát khác 0 được tính là lỗi. Output luôn có trong {{lastOutput}}.",
+                               "Timeout = 0 nghĩa là không chờ. Mã thoát khác 0 được tính là lỗi. Output luôn có trong {{lastOutput}}. " +
+                               "Dữ liệu từ ngoài (tên file, email, Excel…) viết {{biến:cmd}}; trong powershell -Command \"…\" viết {{biến:ps}}.",
         StepType.CloseApp => "Tên tiến trình không cần .exe (vd: notepad, EXCEL, chrome). Mặc định yêu cầu đóng lịch sự như bấm nút X.",
         StepType.ClickImage or StepType.WaitForImage =>
             "Bấm \"Chụp hình mẫu\" rồi kéo chọn đúng phần cần tìm (vd: nút Lưu) — nên chọn vùng đặc trưng, tránh chữ/số hay thay đổi. " +

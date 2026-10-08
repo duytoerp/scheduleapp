@@ -421,6 +421,8 @@ public static class StepExecutor
                 value = await ctx.Ui.PromptAsync(title, s.Text, s.Arguments, s.Force, ct)
                         ?? throw new OperationCanceledException("Người dùng đã hủy nhập giá trị.");
                 if (s.Force) Log.MaskGuessed(value);
+                // Người dùng tự gõ \\máy\thư-mục → các bước sau được mở đường dẫn tới máy đó.
+                else ctx.TrustServersIn(value);
                 break;
             }
             case VarSource.File:
@@ -634,9 +636,12 @@ public static class StepExecutor
         bool wait = timeoutMs > 0;
         // cmd.exe chỉ đọc code page lúc khởi động, nên lệnh phải chạy trong một cmd con khởi động SAU chcp 65001
         // thì output tiếng Việt mới đúng UTF-8. Lệnh được bọc thêm một cặp nháy ngoài → phải "trung hòa" cho lớp
-        // cmd NGOÀI (xem EscapeForOuterCmd) để dữ liệu nằm trong dấu nháy không bị hiểu thành lệnh. Việc này KHÔNG
-        // chặn được dữ liệu tự chứa dấu nháy ("{{x}}" với x = a" & calc & ") ở lớp trong — chỉ {{x:cmd}} mới an toàn.
-        var psi = new ProcessStartInfo("cmd.exe", $"/d /c chcp 65001>nul & cmd /d /s /c \"{EscapeForOuterCmd(command)}\"")
+        // cmd NGOÀI (xem EscapeForOuterCmd) để dữ liệu nằm trong dấu nháy không bị hiểu thành lệnh. Dữ liệu tự chứa dấu nháy
+        // ở lớp trong do VariableExpander.ExpandCommand chặn ({{x}} có dấu nháy → lỗi, {{x:cmd}} bỏ dấu nháy).
+        // cmd.exe / chcp.com gọi bằng đường dẫn đầy đủ (không chạy nhầm file cùng tên cạnh ScheduleApp / trong thư mục hiện tại);
+        // /v:off: dấu ! trong dữ liệu không bị thay như biến kể cả khi máy bật DelayedExpansion trong registry.
+        var psi = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+            $"/d /v:off /c {SystemExe("chcp.com")} 65001>nul & {SystemExe("cmd.exe")} /d /v:off /s /c \"{EscapeForOuterCmd(command)}\"")
         {
             UseShellExecute = false,
             CreateNoWindow = true,
@@ -669,6 +674,16 @@ public static class StepExecutor
         if (proc.ExitCode != 0)
             throw new InvalidOperationException($"Lệnh trả về mã {proc.ExitCode}. {Truncate(error)}");
         return output;
+    }
+
+    /// <summary>
+    /// Đường dẫn đầy đủ trong System32 để đặt thẳng vào dòng lệnh cmd; thư mục Windows có khoảng trắng / ký tự đặc biệt (hiếm) thì dùng tên
+    /// trần — không bọc nháy được vì dấu nháy đầu dòng làm cmd bỏ cặp nháy ngoài cùng của lệnh.
+    /// </summary>
+    private static string SystemExe(string exe)
+    {
+        var path = Path.Combine(Environment.SystemDirectory, exe);
+        return path.IndexOfAny([' ', '&', '(', ')', '^', '%', '!']) < 0 ? path : exe;
     }
 
     private static async Task CloseAppAsync(ActionStep s, CancellationToken ct)
